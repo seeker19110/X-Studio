@@ -12,7 +12,8 @@ lên lịch/đăng/trả lời công khai trước khi qua human gate.
 2. **Key = video_id** (cấp kênh: channel_id): mọi message của một video đi cùng partition, giữ thứ tự.
 3. **Blackboard có chủ**: `shared-context` chia namespace, mỗi namespace một agent ghi (`topics/README.md`).
 4. **Model quyết định, code hành động** (ADR-0003): TTS, sinh ảnh, ghép video, preflight, kiểm định A/B, map retention,
-   đăng — đều là code xác định. Model không có tool-use, chỉ trả JSON có cấu trúc.
+   đăng — đều là code xác định. Model chỉ trả JSON có cấu trúc; ngoại lệ duy nhất là tool **chỉ đọc** web (ADR-0007) cho
+   agent khai `tools: [web]` (trend-researcher, fact-checker) — không tool nào ghi/đăng.
 5. **Approval-first** (ADR-0002): ba review bắt buộc (factual, rights, quality) + preflight → gate `publish`; kế hoạch
    biên tập → gate `plan`; trả lời bình luận → gate `replies`; kẹt → gate `escalation`. Gate không bao giờ tự đi tiếp.
 6. **Sửa, không dựng lại** (ADR-0004): scene manifest có version; editor sửa từng cảnh, khoá cảnh đạt; renderer chỉ sinh
@@ -38,7 +39,7 @@ lên lịch/đăng/trả lời công khai trước khi qua human gate.
 | — | Human gate | (con người) | plan · publish · replies · escalation |
 
 Thành phần code (không phải agent): **renderer** (media), **desk** (vòng đời video, gom review), **preflight**,
-**analytics** (retention/A-B), **orchestrator**.
+**analytics** (retention/A-B), **tools** (web chỉ đọc), **orchestrator**.
 
 ## Topic
 
@@ -106,6 +107,15 @@ Timeout 24h, nhắc ở 12h, four-eyes (người duyệt ≠ người tạo). Ch
 `media.py`: `TTS.synthesize`, `ImageGen.generate`, `VideoAssembler.assemble`; provider `fake` (offline, file giữ chỗ hợp lệ),
 `openai` (endpoint OpenAI-compatible cho TTS/ảnh), `ffmpeg` (ghép MP4). `renderer.py` biến manifest thành asset có
 checksum + provenance (provider:model, prompt_ref, license) và publish `media-assets`. Asset nằm trong `output/<video_id>/`.
+
+## Tool web chỉ đọc (ADR-0007)
+
+`tools.py`: `ToolSpec`/`ToolCall`/`ToolBox` trung lập provider và `WebTools` với `web_fetch(url)` (http/https công khai,
+chặn IP riêng/loopback/link-local kể cả từng chặng redirect, timeout 20 s, ≤ 20k ký tự, HTML → văn bản, kèm title + URL
+cuối) và `web_search(query)` (`STUDIO_SEARCH_URL`, SearXNG JSON; chưa cấu hình → lỗi rõ). Runner bật vòng lặp
+model ↔ tool (`_tool_loop`, ≤ 10 lượt, ≤ `budget_tokens_per_task`) chỉ cho agent có `tools: [web]`; mọi kết quả tool
+mang nhãn DỮ LIỆU; kết thúc ghi audit `tools_used` {turns, calls, urls}. Provider `claude-code` uỷ quyền vòng tool cho
+CLI (`--tools WebFetch,WebSearch`), audit ghi `delegated`. Eval: bản ghi chỉ giữ câu trả lời cuối, phát lại không gọi tool.
 
 ## Orchestrator
 

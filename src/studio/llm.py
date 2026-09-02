@@ -11,19 +11,22 @@ Cấu hình (ưu tiên: biến môi trường > llm.yaml > mặc định):
     STUDIO_LLM_BASE_URL    base URL cho provider openai
     STUDIO_LLM_API_KEY     key cho provider openai (Anthropic dùng ANTHROPIC_API_KEY)
     STUDIO_LLM_BACKENDS    lọc/sắp thứ tự backend của `backends:` trong llm.yaml (vd. "claude-sub,antigravity")
+    STUDIO_SEARCH_URL      endpoint tìm kiếm cho tool web_search (tools.py, ADR-0007); không đặt thì tool báo chưa cấu hình
 
 ADR-0006 — nhiều tài khoản subscription thay vì API: `backends:` trong llm.yaml khai báo từng gói (Claude Max qua
 claude-code, Antigravity qua gateway, model local...) với model theo tier; `routing.py` gộp thành một client, chọn backend
 theo tier và tự chuyển khi một gói hết quota. Không có `backends:` thì `provider`/`models` là một backend duy nhất.
 
 Token trả về là số thật từ `usage` của provider, để runner ghi vào `audit-log.tokens` và supervisor cộng dồn.
-Phòng ban video không cần tool-use trong vòng lặp model: mọi hành động có tác dụng phụ (TTS, ảnh, ghép video, đăng)
-là code xác định trong `media.py` / `renderer.py`, model chỉ ra quyết định có cấu trúc.
+Mọi hành động có tác dụng phụ (TTS, ảnh, ghép video, đăng) là code xác định trong `media.py` / `renderer.py`; tool-use
+chỉ mở cho tool CHỈ ĐỌC (web, ADR-0007) qua `tools`/`messages` trung lập provider — provider `claude-code` uỷ quyền
+vòng tool cho CLI (`--tools WebFetch,WebSearch`), các provider khác chạy vòng lặp trong runner.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -32,6 +35,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import yaml
+
+from .tools import ToolCall, ToolSpec
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT / "llm.yaml"
@@ -53,6 +58,7 @@ class Completion:
     model: str
     stop_reason: str = "end_turn"
     cached_input_tokens: int = 0
+    tool_calls: list[ToolCall] = field(default_factory=list)  # model muốn gọi tool (rỗng = trả lời cuối)
 
     @property
     def tokens(self) -> int:
@@ -63,21 +69,41 @@ class Completion:
         return self.cached_input_tokens / self.input_tokens if self.input_tokens else 0.0
 
     def json(self) -> dict[str, Any]:
+        """JSON object trong câu trả lời: chấp nhận JSON trần, JSON trong code fence, hoặc văn xuôi + fence/object
+        (model có tool hay CLI hay kể lại quá trình trước khi trả JSON). Không có object nào → LLMError."""
         text = self.text.strip()
-        if text.startswith("```"):  # model nhỏ hay bọc JSON trong code fence
-            text = text.strip("`").split("\n", 1)[1] if "\n" in text else text.strip("`")
-            text = text.rsplit("```", 1)[0].strip()
         try:
             return json.loads(text)
-        except json.JSONDecodeError as e:
-            raise LLMError(f"đầu ra không phải JSON: {e}\n{self.text[:500]}") from e
+        except json.JSONDecodeError:
+            pass
+        m = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", text, re.DOTALL)  # fence đầu tiên
+        if m:
+            try: return json.loads(m.group(1))
+            except json.JSONDecodeError: pass
+        start = text.find("{")
+        if start >= 0:  # object ngoài cùng đầu tiên: từ `{` đầu tới `}` cuối, rồi lùi dần
+            end = text.rfind("}")
+            while end > start:
+                try: return json.loads(text[start:end + 1])
+                except json.JSONDecodeError: end = text.rfind("}", start, end)
+        raise LLMError(f"đầu ra không phải JSON:\n{self.text[:500]}")
 
 
 class ModelClient(Protocol):
     """Một lời gọi = system + user + JSON Schema đầu ra + tier. Provider nào cũng phải trả `Completion`.
-    `cache_key` (agent id) giúp provider định tuyến request cùng system prompt vào cùng cache."""
+    `cache_key` (agent id) giúp provider định tuyến request cùng system prompt vào cùng cache.
+
+    Tool-use (ADR-0007): `tools` là bảng tool trung lập; `messages` là hội thoại nhiều lượt thay cho `user`:
+    {"role": "user", "content"}, {"role": "assistant", "content", "tool_calls": [{id, name, args}]},
+    {"role": "tool", "tool_call_id", "content"}. Model muốn gọi tool thì `Completion.tool_calls` khác rỗng.
+    `user` vẫn luôn là message lượt đầu (khoá ghi/phát lại eval)."""
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None) -> Completion: ...
+                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
+                 messages: list[dict[str, Any]] | None = None) -> Completion: ...
+
+
+def neutral_messages(user: str, messages: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    return list(messages) if messages else [{"role": "user", "content": user}]
 
 
 # ---------- cấu hình ----------
@@ -210,17 +236,39 @@ class AnthropicClient:
         self._anthropic = anthropic
         self._client = anthropic.Anthropic()
 
+    @staticmethod
+    def _messages(msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Định dạng trung lập → content block của Anthropic (tool_use / tool_result)."""
+        out: list[dict[str, Any]] = []
+        for m in msgs:
+            if m["role"] == "assistant":
+                blocks: list[dict[str, Any]] = [{"type": "text", "text": m["content"]}] if m.get("content") else []
+                blocks += [{"type": "tool_use", "id": t["id"], "name": t["name"], "input": t["args"]} for t in m.get("tool_calls", [])]
+                out.append({"role": "assistant", "content": blocks})
+            elif m["role"] == "tool":
+                block = {"type": "tool_result", "tool_use_id": m["tool_call_id"], "content": m["content"]}
+                if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
+                    out[-1]["content"].append(block)
+                else:
+                    out.append({"role": "user", "content": [block]})
+            else:
+                out.append({"role": "user", "content": m["content"]})
+        return out
+
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None) -> Completion:
+                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
+                 messages: list[dict[str, Any]] | None = None) -> Completion:
         kwargs: dict[str, Any] = dict(
             model=self.cfg.model_for(model_tier), max_tokens=self.cfg.max_tokens,
             system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user}],
+            messages=self._messages(neutral_messages(user, messages)),
             thinking={"type": "adaptive"},
             output_config={"effort": self.cfg.effort.get(model_tier, "medium"),
                            "format": {"type": "json_schema", "schema": strict_schema(schema)}},
             **self.cfg.extra,
         )
+        if tools:
+            kwargs["tools"] = [{"name": t.name, "description": t.description, "input_schema": t.parameters} for t in tools]
         try:
             with self._client.messages.stream(**kwargs) as stream:
                 msg = stream.get_final_message()
@@ -231,9 +279,10 @@ class AnthropicClient:
         if msg.stop_reason == "refusal":
             raise Refused("model từ chối")
         text = next((b.text for b in msg.content if b.type == "text"), "")
+        calls = [ToolCall(id=b.id, name=b.name, args=dict(b.input or {})) for b in msg.content if b.type == "tool_use"]
         inp, read = anthropic_input_tokens(msg.usage)
         return Completion(text=text, input_tokens=inp, output_tokens=msg.usage.output_tokens, model=msg.model,
-                          stop_reason=msg.stop_reason or "end_turn", cached_input_tokens=read)
+                          stop_reason=msg.stop_reason or "end_turn", cached_input_tokens=read, tool_calls=calls)
 
 
 # ---------- provider: OpenAI-compatible (không cần SDK) ----------
@@ -274,11 +323,31 @@ class OpenAICompatClient:
             if "prompt_cache_key" in body: self._cache_key_ok = True
         return data
 
+    @staticmethod
+    def _messages(system: str, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        for m in msgs:
+            if m["role"] == "assistant":
+                a: dict[str, Any] = {"role": "assistant", "content": m.get("content") or None}
+                if m.get("tool_calls"):
+                    a["tool_calls"] = [{"id": t["id"], "type": "function", "function": {
+                        "name": t["name"], "arguments": json.dumps(t["args"], ensure_ascii=False)}} for t in m["tool_calls"]]
+                out.append(a)
+            elif m["role"] == "tool":
+                out.append({"role": "tool", "tool_call_id": m["tool_call_id"], "content": m["content"]})
+            else:
+                out.append({"role": "user", "content": m["content"]})
+        return out
+
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None) -> Completion:
+                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
+                 messages: list[dict[str, Any]] | None = None) -> Completion:
         model = self.cfg.model_for(model_tier)
-        msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        msgs = self._messages(system, neutral_messages(user, messages))
         base: dict[str, Any] = {"model": model, "max_tokens": self.cfg.max_tokens, **self.cfg.extra, "messages": msgs}
+        if tools:
+            base["tools"] = [{"type": "function", "function": {"name": t.name, "description": t.description,
+                                                               "parameters": t.parameters}} for t in tools]
         if cache_key and self._cache_key_ok is not False:
             base["prompt_cache_key"] = cache_key
         data: dict[str, Any] | None = None
@@ -292,24 +361,38 @@ class OpenAICompatClient:
                 self._json_schema_ok = False
         if data is None:
             hint = "\n\n# JSON Schema bắt buộc\n```json\n" + json.dumps(schema, ensure_ascii=False) + "\n```"
-            fb = [msgs[0], {"role": "user", "content": user + hint}]
-            data = self._post_cacheable({**base, "messages": fb, "response_format": {"type": "json_object"}})
+            fb = [*msgs]; i = max(k for k, m in enumerate(fb) if m["role"] == "user")
+            fb[i] = {**fb[i], "content": fb[i]["content"] + hint}
+            # json_object ép mọi lượt là JSON, kể cả lượt model muốn gọi tool → có tool thì không ép; runner chốt JSON sau
+            data = self._post_cacheable({**base, "messages": fb, **({} if tools else {"response_format": {"type": "json_object"}})})
         choice = (data.get("choices") or [{}])[0]
         finish = choice.get("finish_reason") or "stop"
         if finish == "content_filter":
             raise Refused("model từ chối (content_filter)")
+        calls: list[ToolCall] = []
+        for tc in (choice.get("message") or {}).get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            try: args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError: args = {"_raw": fn.get("arguments")}
+            calls.append(ToolCall(id=tc.get("id") or f"call_{len(calls)}", name=fn.get("name", ""), args=args))
         usage = data.get("usage") or {}
         cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0)
         return Completion(text=(choice.get("message") or {}).get("content") or "",
                           input_tokens=int(usage.get("prompt_tokens", 0)), output_tokens=int(usage.get("completion_tokens", 0)),
-                          model=data.get("model", model), stop_reason=finish, cached_input_tokens=cached)
+                          model=data.get("model", model), stop_reason=finish, cached_input_tokens=cached, tool_calls=calls)
 
 
 # ---------- provider: Claude Code CLI (dùng đăng nhập sẵn có của máy, không cần API key) ----------
 
+CLI_WEB_TOOLS = "WebFetch,WebSearch"  # tool sẵn có của CLI, bản đồ 1-1 của web_fetch/web_search (ADR-0007)
+CLI_TOOL_TURNS = 8
+
+
 class ClaudeCodeClient:
-    """Gọi `claude -p --output-format json` như một model backend: mỗi lượt là một tiến trình con, không tool,
-    system prompt truyền qua `--system-prompt`, schema nhúng vào user message (CLI không có structured output).
+    """Gọi `claude -p --output-format json` như một model backend: mỗi lượt là một tiến trình con, system prompt
+    truyền qua `--system-prompt`, schema nhúng vào user message (CLI không có structured output).
+    Không `tools` → `--tools ""` một lượt. Có `tools` (web) → uỷ quyền vòng tool cho CLI: `--tools WebFetch,WebSearch`
+    nhiều lượt, CLI tự tìm/đọc rồi trả kết quả cuối; `Completion.tool_calls` luôn rỗng nên runner không lặp thêm.
     Token thật lấy từ `usage` trong JSON trả về (input + cache read + cache creation, cùng nghĩa với adapter Anthropic).
     Dùng khi máy đã đăng nhập Claude Code mà không có ANTHROPIC_API_KEY (vd. ghi bản ghi eval tại chỗ)."""
 
@@ -320,6 +403,7 @@ class ClaudeCodeClient:
         self.binary = shutil.which(binary) or binary
         self.timeout = timeout
         self._run = runner or self._subprocess  # test thay bằng hàm giả
+        self.delegated_tools = False  # lần gọi gần nhất có uỷ quyền vòng tool cho CLI không (runner ghi audit)
 
     def _subprocess(self, args: list[str]) -> str:
         import subprocess
@@ -335,11 +419,16 @@ class ClaudeCodeClient:
         return r.stdout
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None) -> Completion:
+                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
+                 messages: list[dict[str, Any]] | None = None) -> Completion:
         model = self.cfg.model_for(model_tier)
         hint = "\n\n# JSON Schema bắt buộc cho câu trả lời\n```json\n" + json.dumps(schema, ensure_ascii=False) + "\n```"
-        args = [self.binary, "-p", "--output-format", "json", "--model", model, "--tools", "", "--max-turns", "1",
-                "--system-prompt", system, user + hint]
+        if messages:  # CLI không nhận hội thoại nhiều lượt: chỉ dùng message lượt đầu (vòng tool là của CLI)
+            user = next((m["content"] for m in messages if m["role"] == "user"), user)
+        self.delegated_tools = bool(tools)
+        tool_args = (["--tools", CLI_WEB_TOOLS, "--allowedTools", CLI_WEB_TOOLS, "--max-turns", str(CLI_TOOL_TURNS)]
+                     if tools else ["--tools", "", "--max-turns", "1"])
+        args = [self.binary, "-p", "--output-format", "json", "--model", model, *tool_args, "--system-prompt", system, user + hint]
         out = self._run(args)
         try:
             data = json.loads(out[out.index("{"):]) if "{" in out else {}
@@ -353,7 +442,11 @@ class ClaudeCodeClient:
             raise Refused("model từ chối")
         u = data.get("usage") or {}
         read = int(u.get("cache_read_input_tokens", 0) or 0); write = int(u.get("cache_creation_input_tokens", 0) or 0)
-        used = next(iter((data.get("modelUsage") or {}).keys()), model)
+        # modelUsage có thể gồm cả model phụ CLI dùng cho tool (WebFetch tóm tắt bằng haiku): lấy model đã yêu cầu,
+        # không có thì model sinh nhiều output nhất.
+        mu = data.get("modelUsage") or {}
+        used = next((k for k in mu if k.startswith(model) or str(mu[k].get("canonicalModel", "")).startswith(model)),
+                    max(mu, key=lambda k: int(mu[k].get("outputTokens", 0) or 0), default=model))
         return Completion(text=str(data["result"]), input_tokens=int(u.get("input_tokens", 0) or 0) + read + write,
                           output_tokens=int(u.get("output_tokens", 0) or 0), model=used,
                           stop_reason=str(data.get("stop_reason") or "end_turn"), cached_input_tokens=read)
@@ -368,10 +461,20 @@ class FakeClient:
     handler: Callable[[str, str], dict[str, Any]] | None = None
     tokens_per_call: tuple[int, int] = (1_000, 300)
     calls: list[dict[str, Any]] = field(default_factory=list)
+    # tool_handler(messages, tools) → danh sách ToolCall; rỗng = model trả lời cuối (qua handler/responses như thường)
+    tool_handler: Callable[[list[dict[str, Any]], list[ToolSpec]], list[ToolCall]] | None = None
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None) -> Completion:
-        self.calls.append({"system": system, "user": user, "schema": schema, "model_tier": model_tier, "cache_key": cache_key})
+                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
+                 messages: list[dict[str, Any]] | None = None) -> Completion:
+        msgs = neutral_messages(user, messages)
+        self.calls.append({"system": system, "user": user, "schema": schema, "model_tier": model_tier, "cache_key": cache_key,
+                           "tools": [t.name for t in tools or []], "messages": msgs})
+        if tools and self.tool_handler:
+            wanted = self.tool_handler(msgs, tools)
+            if wanted:
+                return Completion(text="", input_tokens=self.tokens_per_call[0], output_tokens=self.tokens_per_call[1],
+                                  model=f"fake-{model_tier}", stop_reason="tool_use", tool_calls=list(wanted))
         if self.handler:
             payload = self.handler(system, user)
         elif self.responses:

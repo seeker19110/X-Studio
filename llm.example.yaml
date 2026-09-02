@@ -16,6 +16,12 @@ models:
 base_url: https://api.openai.com/v1
 # api key đặt qua biến môi trường STUDIO_LLM_API_KEY (không ghi vào file)
 
+# Tool web chỉ đọc (ADR-0007) cho agent có `tools: [web]` (trend-researcher, fact-checker) — cấu hình bằng biến môi trường:
+#   STUDIO_SEARCH_URL=http://localhost:8080/search   endpoint SearXNG (JSON `?q=...&format=json`) hoặc endpoint tương thích
+#                                                    `{results: [{title, url, content}]}`; URL có `{q}` thì thay vào đó.
+#   Không đặt → web_search báo "chưa cấu hình search", web_fetch vẫn chạy (URL đã biết).
+#   Provider claude-code không cần: CLI tự dùng WebSearch/WebFetch.
+
 max_tokens: 16000
 
 # chỉ provider anthropic: mức nỗ lực theo tier (low | medium | high | xhigh | max)

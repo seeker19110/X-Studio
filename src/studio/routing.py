@@ -116,7 +116,10 @@ class RoutingClient:
         self.notes.append(f"backend {b.name} {kind} → nghỉ {int(secs)}s: {msg[:120]}")
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None) -> Completion:
+                 cache_key: str | None = None, tools: list[Any] | None = None,
+                 messages: list[dict[str, Any]] | None = None) -> Completion:
+        """`tools`/`messages` (ADR-0007) chuyển nguyên cho backend được chọn; xoay backend giữa chừng một vòng tool là
+        chấp nhận được vì hội thoại trung lập nằm trong `messages`, không nằm ở phía provider."""
         candidates = self.order(model_tier)
         tried = 0
         for b in candidates:
@@ -125,7 +128,10 @@ class RoutingClient:
             tried += 1
             b.calls += 1
             try:
-                c = b.client.complete(system=system, user=user, schema=schema, model_tier=model_tier, cache_key=cache_key)
+                extra: dict[str, Any] = {}  # chỉ truyền khi có, để client không tool-use vẫn dùng được
+                if tools: extra["tools"] = tools
+                if messages: extra["messages"] = messages
+                c = b.client.complete(system=system, user=user, schema=schema, model_tier=model_tier, cache_key=cache_key, **extra)
             except Refused:
                 raise
             except LLMError as e:

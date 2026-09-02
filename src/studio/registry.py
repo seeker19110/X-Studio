@@ -25,6 +25,7 @@ class AgentSpec:
     prompt: str
     version: int = 1  # prompt là code: tăng mỗi khi nội dung prompt đổi
     skills_core: list[str] = field(default_factory=list)  # skill phụ, chỉ nạp quy trình + checklist
+    tools: list[str] = field(default_factory=list)  # toolset chỉ đọc được bật cho agent (ADR-0007): hiện chỉ `web`
     skill_text: str = field(default="")
     skill_core_text: str = field(default="")
 

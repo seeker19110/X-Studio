@@ -15,6 +15,7 @@ import pytest
 
 from studio.events import NAMESPACE_OWNERS, Topic
 from studio.registry import AgentSpec, load_agents
+from studio.tools import KNOWN_TOOLSETS
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 AGENT_GOLDEN_DIR = GOLDEN_DIR / "agents"
@@ -39,7 +40,8 @@ def render(a: AgentSpec) -> str:
 def contract(a: AgentSpec) -> dict:
     return {"block": a.block, "model_tier": a.model_tier, "version": a.version, "reads": a.reads, "writes": a.writes,
             "context_namespace_write": a.context_namespace_write, "skills": a.skills, "skills_core": a.skills_core,
-            "budget_tokens_per_task": a.budget_tokens_per_task, "max_retries": a.max_retries, "timeout_minutes": a.timeout_minutes}
+            "budget_tokens_per_task": a.budget_tokens_per_task, "max_retries": a.max_retries, "timeout_minutes": a.timeout_minutes,
+            "tools": a.tools}
 
 
 def _write(path: Path, text: str) -> None:
@@ -93,6 +95,7 @@ def test_front_matter_is_well_formed(agent_id: str):
     assert a.max_retries >= 0 and a.timeout_minutes > 0
     assert len(a.all_skills) == len(set(a.all_skills))
     assert a.skills
+    assert set(a.tools) <= KNOWN_TOOLSETS, f"{agent_id}: toolset lạ {a.tools}"
 
 
 @pytest.mark.parametrize("agent_id", IDS)

@@ -37,11 +37,11 @@ gates/         checklist 4 human gate
 templates/     brief, kịch bản, scene manifest, metadata, gói đăng, postmortem, ADR
 topics/        19 JSON Schema topic + bảng owner 10 namespace
 src/studio/    events, bus, sqlite_bus, blackboard, registry, gates, gate_cli, llm (text), routing (nhiều gói tài khoản,
-               chọn theo tier, xoay khi hết quota — ADR-0006), media (TTS/ảnh/video),
+               chọn theo tier, xoay khi hết quota — ADR-0006), tools (web chỉ đọc — ADR-0007), media (TTS/ảnh/video),
                renderer, preflight, analytics, desk, supervisor, runner, orchestrator, evals, fakes, demo
 evals/         ca eval theo agent (YAML) — 14 agent, mỗi agent 2 ca; recordings/ = phản hồi model đã ghi
 tests/         pytest: bus, registry, golden 14 agent, preflight/analytics, media/renderer (ffmpeg nếu có),
-               desk/gate, runner/eval ghi-phát lại, orchestrator end-to-end (gate, rework, sửa cảnh, resume SQLite, injection)
+               desk/gate, runner/eval ghi-phát lại, tool web + vòng lặp tool, orchestrator end-to-end (gate, rework, sửa cảnh, resume SQLite, injection)
 ```
 
 ## Chạy
@@ -61,6 +61,8 @@ make lint
 #   NHIỀU gói cùng lúc (ADR-0006): `backends:` + `routing.prefer` trong llm.yaml — mẫu ở llm.example.yaml; agent có tier
 #   strong/standard/light, gói hết quota tự nghỉ. Bảng agent → tier: ../docs/DIEU-PHOI-MODEL.md
 #   STUDIO_MEDIA_TTS_PROVIDER=openai STUDIO_MEDIA_IMAGE_PROVIDER=openai STUDIO_MEDIA_VIDEO_PROVIDER=ffmpeg STUDIO_MEDIA_API_KEY=...
+#   Tool web cho trend-researcher / fact-checker (ADR-0007): STUDIO_SEARCH_URL=http://localhost:8080/search  (SearXNG JSON;
+#   không đặt thì web_search báo "chưa cấu hình", web_fetch vẫn chạy; provider claude-code dùng WebSearch/WebFetch của CLI)
 PYTHONPATH=src uv run python -m studio.orchestrator publish channel-briefs brief.json --actor human:owner
 PYTHONPATH=src uv run python -m studio.orchestrator run --watch 5      # hoặc: make watch ; một lượt: make run
 PYTHONPATH=src uv run python -m studio.gate_cli list                    # hoặc: make gate
@@ -91,12 +93,17 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
 ## Hiện trạng (2026-09-02)
 
 ### Đã có
-- Tài liệu: kiến trúc, tiêu chuẩn, ADR 0001–0005; 14 system prompt có version; 24 skill có version; 7 template; checklist 4 gate.
+- Tài liệu: kiến trúc, tiêu chuẩn, ADR 0001–0006; 14 system prompt có version; 24 skill có version; 7 template; checklist 4 gate.
 - 19 JSON Schema topic (sinh từ pydantic + 4 schema tay) + bảng owner 10 namespace.
 - Lõi xác định `src/studio/`: envelope/payload pydantic, bus validate schema + quyền namespace, bus SQLite (checkpoint/resume),
   registry nạp prompt + skill hai mức, human gate bền vững qua audit-log + CLI four-eyes.
 - **LLM trung lập provider** (`llm.py`): `anthropic`, `openai` (mọi server OpenAI-compatible: OpenAI, OpenRouter, Gemini
   OpenAI-compat, Kimi, GLM, Ollama, Groq, vLLM…), `fake`; structured output theo schema topic, prompt cache, token thật.
+- **Tool web chỉ đọc có ranh giới** (`tools.py`, ADR-0007): `web_fetch` (http/https công khai, chặn IP riêng kể cả qua
+  redirect, ≤ 20k ký tự, bóc HTML) và `web_search` (`STUDIO_SEARCH_URL`, SearXNG JSON) cho agent có `tools: [web]` —
+  trend-researcher, fact-checker. Tool-use trung lập provider (`tools`/`messages` trong `ModelClient`, adapter Anthropic,
+  OpenAI-compat, fake); provider `claude-code` uỷ quyền vòng tool cho CLI (`--tools WebFetch,WebSearch`). Vòng lặp tool
+  trong runner có trần lượt + ngân sách token, audit `tools_used`; eval phát lại bỏ qua lượt tool (CI offline).
 - **Media trung lập provider** (`media.py`, ADR-0003): TTS/ảnh qua endpoint OpenAI-compatible, ghép video bằng ffmpeg,
   `fake` offline sinh WAV/PNG/MP4 giả hợp lệ. **Renderer** biến scene manifest thành asset có checksum + provenance.
 - **Scene repair** (`renderer.apply_cutlist`, ADR-0004): sinh lại đúng cảnh, khoá cảnh, thay asset, đổi thứ tự, ≤ 3 vòng.
@@ -109,21 +116,21 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
   CLI `run | publish | status | report`.
 - **Supervisor**: ngân sách token theo video (80%/100%), lỗi review lặp ≥ 2, im lặng quá timeout, calibration estimate/actual theo format.
 - **Eval ghi/phát lại** + **client giả có kịch bản** (`fakes.py`) chạy được mọi ca eval và demo end-to-end offline.
-- Test: 104 ca pytest (golden 14 agent, bus, registry, preflight/analytics, media/renderer, desk/gate, runner/eval, orchestrator e2e); ruff sạch.
+- Test: 135 ca pytest (golden 14 agent, bus, registry, preflight/analytics, media/renderer, desk/gate, runner/eval, tool web + vòng tool, orchestrator e2e); ruff sạch.
 
 ### Chưa có
 - **Adapter nền tảng thật** (YouTube Data API: upload/schedule/playlist, Analytics API, Comments API): publisher hiện ghi ý định
   vào `publish-events`; số liệu và bình luận nạp qua CLI.
-- **Tool đọc web có ranh giới** cho trend-researcher (hiện dựa trên nguồn do người đưa / kiến thức model).
+- **Allowlist domain theo kênh** và cache trang đã đọc cho tool web; tool web chỉ có ở trend-researcher và fact-checker
+  (script-writer, community-manager cố ý không có).
 - **Provider media khác** (ElevenLabs, Stability, Runway…): interface có, adapter chưa; chuẩn hoá âm lượng -14 LUFS trong ffmpeg.
 - **Shorts repurposing** từ video dài đã duyệt (brief format=short đã hỗ trợ, cắt tự động từ long chưa).
-- **Giao diện web** cho gate và xem bản nháp; thông báo khi gate quá hạn; **bản ghi eval** (`evals/recordings/` trống tới khi chạy model thật).
+- **Giao diện web** cho gate và xem bản nháp; thông báo khi gate quá hạn.
 - Bus Redis/Kafka khi chạy nhiều máy (orchestrator hiện tuần tự một tiến trình).
 
 ### Bước tiếp theo
-1. Chạy `make eval-record AGENT=<id>` cho 14 agent với model thật, commit bản ghi để CI eval có răng.
-2. Adapter YouTube (upload private → scheduled; kéo analytics/comments theo lịch) đứng sau publisher/desk, giữ nguyên topic.
-3. Tool đọc web chỉ đọc cho trend-researcher và fact-checker (allowlist domain, ghi audit).
-4. Shorts từ video dài đã duyệt; chuẩn hoá loudness; giao diện web gate.
+1. Adapter YouTube (upload private → scheduled; kéo analytics/comments theo lịch) đứng sau publisher/desk, giữ nguyên topic.
+2. SearXNG tự host cho `STUDIO_SEARCH_URL` + allowlist domain theo kênh; ghi lại eval trend-researcher khi có search.
+3. Shorts từ video dài đã duyệt; chuẩn hoá loudness; giao diện web gate.
 
 Đọc `docs/architecture.md` trước, sau đó `docs/standards.md` và `docs/adr/`.

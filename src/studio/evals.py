@@ -7,6 +7,10 @@ Tiêu chí (`expect`): equals {field: value} · contains {field: substring} · m
 Ghi / phát lại: `--record` chạy model thật và lưu `evals/recordings/<agent>.json` khoá bằng hash(system + user);
 `--replay` chạy từ bản ghi, không cần model — CI dùng chế độ này. Sửa prompt/skill → hash đổi → CI đỏ cho tới khi
 ghi lại bằng model thật (cổng "đổi prompt phải chạy eval" được máy cưỡng chế).
+
+Agent có tool (ADR-0007): khoá vẫn là hash(system, user lượt đầu); `RecordingClient` chỉ lưu câu trả lời CUỐI (lượt
+không gọi tool), `ReplayClient` trả câu trả lời cuối ngay lượt đầu và bỏ qua `tools`/`messages` — phát lại không
+gọi tool, không gọi mạng.
 """
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ from .events import Envelope
 from .llm import Completion, LLMError, ModelClient
 from .registry import load_agents
 from .runner import AgentRunner, RunnerError, RunResult
+from .tools import ToolSpec
 
 EVALS_DIR = Path(__file__).resolve().parents[2] / "evals"
 RECORDINGS_DIR = EVALS_DIR / "recordings"
@@ -51,10 +56,13 @@ class RecordingClient:
         self.entries: dict[str, dict[str, Any]] = {}
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None) -> Completion:
-        c = self.inner.complete(system=system, user=user, schema=schema, model_tier=model_tier, cache_key=cache_key)
-        self.entries[prompt_key(system, user)] = {"text": c.text, "model": c.model, "input_tokens": c.input_tokens,
-                                                  "output_tokens": c.output_tokens}
+                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
+                 messages: list[dict[str, Any]] | None = None) -> Completion:
+        c = self.inner.complete(system=system, user=user, schema=schema, model_tier=model_tier, cache_key=cache_key,
+                                tools=tools, messages=messages)
+        if not c.tool_calls:  # chỉ lưu câu trả lời cuối; các lượt gọi tool không ghi (phát lại bỏ qua tool)
+            self.entries[prompt_key(system, user)] = {"text": c.text, "model": c.model, "input_tokens": c.input_tokens,
+                                                      "output_tokens": c.output_tokens}
         return c
 
     def save(self) -> Path:
@@ -75,7 +83,8 @@ class ReplayClient:
             raise LLMError(f"chưa có bản ghi eval cho {agent_id}: chạy `make eval-record AGENT={agent_id}` với model thật")
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None) -> Completion:
+                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
+                 messages: list[dict[str, Any]] | None = None) -> Completion:
         e = self.data["cases"].get(prompt_key(system, user))
         if e is None:
             raise LLMError(f"bản ghi eval của {self.agent_id} lệch prompt hiện tại: chạy `make eval-record AGENT={self.agent_id}` "
@@ -88,7 +97,8 @@ class _Probe:
     key: str | None = None
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None) -> Completion:
+                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
+                 messages: list[dict[str, Any]] | None = None) -> Completion:
         self.key = prompt_key(system, user)
         raise LLMError("probe")
 

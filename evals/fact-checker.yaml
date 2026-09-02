@@ -17,6 +17,7 @@ cases:
       min_len: {findings: 1}
       one_of: {findings.0.level: [block]}
 
+  # Nguồn phải là trang thật, ổn định: fact-checker MỞ nguồn bằng tool web (ADR-0007), URL giữ chỗ sẽ bị block đúng luật.
   - name: claim-co-nguon-khop-phai-pass
     topic_out: review-results
     input:
@@ -26,8 +27,8 @@ cases:
       payload:
         video_id: CH1-V2
         working_title: t
-        hook: "Một video 8 phút mất bạn 6 giờ?"
-        sections: [{heading: "Vấn đề", narration: "Theo báo cáo ngành 2026, 42% người mới bỏ cuộc sau ba video.", claim_ids: [C1]}]
-        claims: [{claim_id: C1, text: "42% người mới bỏ cuộc sau 3 video", source: "https://example.org/report#p14 (41.8%, n=2400, 2025)", needs_verification: true}]
+        hook: "Bạn còn dùng bản Python cũ?"
+        sections: [{heading: "Bối cảnh", narration: "Python 3.11 được phát hành chính thức ngày 24 tháng 10 năm 2022.", claim_ids: [C1]}]
+        claims: [{claim_id: C1, text: "Python 3.11 phát hành chính thức ngày 24/10/2022", source: "https://www.python.org/downloads/release/python-3110/ (mục Release Date)", needs_verification: true}]
     expect:
       equals: {video_id: CH1-V2, source: fact, verdict: pass}

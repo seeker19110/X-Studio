@@ -16,6 +16,7 @@
       "retention-storytelling"
     ],
     "timeout_minutes": 30,
+    "tools": [],
     "version": 1,
     "writes": [
       "analytics-reports"
@@ -40,6 +41,7 @@
       "youtube-analytics"
     ],
     "timeout_minutes": 60,
+    "tools": [],
     "version": 1,
     "writes": [
       "video-briefs"
@@ -61,6 +63,7 @@
       "content-policy"
     ],
     "timeout_minutes": 30,
+    "tools": [],
     "version": 1,
     "writes": [
       "reply-drafts"
@@ -83,6 +86,7 @@
       "visual-direction"
     ],
     "timeout_minutes": 30,
+    "tools": [],
     "version": 1,
     "writes": [
       "cut-lists"
@@ -105,7 +109,10 @@
       "content-policy"
     ],
     "timeout_minutes": 45,
-    "version": 1,
+    "tools": [
+      "web"
+    ],
+    "version": 2,
     "writes": [
       "review-results"
     ]
@@ -128,6 +135,7 @@
       "media-rights"
     ],
     "timeout_minutes": 45,
+    "tools": [],
     "version": 1,
     "writes": [
       "scene-manifests"
@@ -150,6 +158,7 @@
       "discoverability-preflight"
     ],
     "timeout_minutes": 30,
+    "tools": [],
     "version": 1,
     "writes": [
       "publish-events"
@@ -172,6 +181,7 @@
       "content-policy"
     ],
     "timeout_minutes": 45,
+    "tools": [],
     "version": 1,
     "writes": [
       "review-results"
@@ -193,6 +203,7 @@
       "content-policy"
     ],
     "timeout_minutes": 45,
+    "tools": [],
     "version": 1,
     "writes": [
       "review-results"
@@ -217,6 +228,7 @@
       "fact-checking"
     ],
     "timeout_minutes": 60,
+    "tools": [],
     "version": 1,
     "writes": [
       "scripts"
@@ -240,6 +252,7 @@
       "content-policy"
     ],
     "timeout_minutes": 30,
+    "tools": [],
     "version": 1,
     "writes": [
       "metadata-packages"
@@ -264,6 +277,7 @@
       "cost-estimation"
     ],
     "timeout_minutes": 15,
+    "tools": [],
     "version": 1,
     "writes": [
       "supervisor-actions",
@@ -287,6 +301,7 @@
       "media-rights"
     ],
     "timeout_minutes": 30,
+    "tools": [],
     "version": 1,
     "writes": [
       "thumbnail-specs"
@@ -310,7 +325,10 @@
       "content-policy"
     ],
     "timeout_minutes": 60,
-    "version": 1,
+    "tools": [
+      "web"
+    ],
+    "version": 2,
     "writes": [
       "trend-reports",
       "research-dossiers"

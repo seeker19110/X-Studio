@@ -2,13 +2,16 @@
 `ModelClient` → ép JSON theo schema topic → publish lên bus (bus validate lần nữa) → ghi audit-log với token thật.
 
 Mọi lỗi (JSON hỏng, schema sai, model từ chối) ghi audit-log rồi ném ra; runner không tự retry — retry là việc của
-desk (hint) và supervisor (hạn mức). Không có tool-use: agent chỉ quyết định, code hành động (ADR-0003).
+desk (hint) và supervisor (hạn mức). Agent chỉ quyết định, code hành động (ADR-0003); ngoại lệ duy nhất là tool CHỈ ĐỌC
+web (ADR-0007) cho agent có `tools: [web]` trong front matter: runner chạy vòng lặp model ↔ tool (`_tool_loop`) với trần
+lượt và ngân sách token, ghi audit `tools_used`; provider `claude-code` tự chạy vòng đó trong CLI.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,10 +21,18 @@ from .bus import SCHEMA_DIR, BusError, InMemoryBus
 from .events import AuditLog, Envelope
 from .llm import Completion, LLMError, ModelClient
 from .registry import AgentSpec, load_agents
+from .tools import ToolBox, ToolError, default_toolbox, tools_prompt
 
 INJECTION_NEEDLES = ("ignore previous instructions", "ignore all prior", "you are now", "system prompt:",
                      "bỏ qua hướng dẫn trước")
 CONTEXT_ONLY = "shared-context"  # topic_out đặc biệt: agent chỉ ghi blackboard, không publish topic
+MAX_TOOL_TURNS = 10  # trần lượt model ↔ tool mỗi lần generate (ADR-0007)
+ToolboxFactory = Callable[[AgentSpec], ToolBox | None]
+
+
+def spec_toolbox(spec: AgentSpec) -> ToolBox | None:
+    """Toolbox mặc định theo front matter `tools:` (web → WebTools đọc STUDIO_SEARCH_URL); không khai → None."""
+    return default_toolbox(spec.tools)
 
 
 class RunnerError(Exception): ...
@@ -93,31 +104,72 @@ class Generated:
     model: str
     context_writes: list[dict[str, Any]] = field(default_factory=list)
     cache_hit_ratio: float = 0.0
+    turns: int = 1
+    tool_calls: dict[str, int] = field(default_factory=dict)
 
 
 class AgentRunner:
     def __init__(self, bus: InMemoryBus, client: ModelClient, agents: dict[str, AgentSpec] | None = None,
-                 blackboard: Blackboard | None = None):
+                 blackboard: Blackboard | None = None, toolbox_factory: ToolboxFactory = spec_toolbox):
         self.bus, self.client = bus, client
         self.agents = agents or load_agents()
         self.blackboard = blackboard
+        self.toolbox_factory = toolbox_factory  # test/orchestrator thay bằng toolbox giả hoặc tắt (lambda s: None)
 
     def _audit(self, spec: AgentSpec, action: str, inp: Envelope, evidence: str, tokens: int = 0) -> None:
         a = AuditLog(actor=spec.id, action=action, tokens=tokens, evidence=evidence,
                      video_id=inp.payload.get("video_id"), channel_id=inp.payload.get("channel_id"))
         self.bus.publish(Envelope(topic="audit-log", key=spec.id, actor=spec.id, payload=a.model_dump()))
 
-    def _complete(self, spec: AgentSpec, inp: Envelope, user: str, schema: dict[str, Any]) -> Completion:
+    def _complete(self, spec: AgentSpec, inp: Envelope, user: str, schema: dict[str, Any],
+                  tools: ToolBox | None = None, messages: list[dict[str, Any]] | None = None) -> Completion:
         try:
-            return self.client.complete(system=spec.system_prompt(), user=user, schema=schema,
-                                        model_tier=spec.model_tier, cache_key=spec.id)
+            return self.client.complete(system=spec.system_prompt(), user=user, schema=schema, model_tier=spec.model_tier,
+                                        cache_key=spec.id, tools=tools.specs() if tools else None, messages=messages)
         except LLMError as e:
             self._audit(spec, "llm_error", inp, evidence=str(e)[:500])
             raise
 
+    def _tool_loop(self, spec: AgentSpec, inp: Envelope, user: str, schema: dict[str, Any], tools: ToolBox,
+                   max_turns: int, budget: int | None) -> tuple[Completion, int, int]:
+        """model ↔ tool cho tới khi model trả lời cuối (không gọi tool). Trả về (completion cuối, tổng token, số lượt).
+        `user` giữ nguyên là message lượt đầu (khoá eval); mô tả tool ghép vào messages. Hết lượt hoặc lượt cuối rỗng →
+        ép chốt một lượt không tool. Vượt ngân sách → audit `budget_exhausted` rồi ném RunnerError.
+        Provider tự chạy tool (claude-code) trả lời cuối ngay lượt 1 với tool_calls rỗng → vòng kết thúc tự nhiên."""
+        msgs: list[dict[str, Any]] = [{"role": "user", "content": user + "\n\n" + tools_prompt(tools)}]
+        total, turn, c = 0, 0, None
+        while turn < max_turns:
+            turn += 1
+            c = self._complete(spec, inp, user, schema, tools=tools, messages=msgs); total += c.tokens
+            if budget is not None and total > budget:
+                self._audit(spec, "budget_exhausted", inp, tokens=total,
+                            evidence=f"{total} > {budget} token sau {turn} lượt; tool={json.dumps(tools.summary())}")
+                raise RunnerError(f"{spec.id}: vượt ngân sách {budget} token sau {turn} lượt tool")
+            if not c.tool_calls: break
+            msgs.append({"role": "assistant", "content": c.text,
+                         "tool_calls": [{"id": t.id, "name": t.name, "args": t.args} for t in c.tool_calls]})
+            for t in c.tool_calls:
+                try: out = tools.call(t)
+                except ToolError as e: out = f"lỗi: {e}"
+                msgs.append({"role": "tool", "tool_call_id": t.id, "content": out})
+        if c is None or c.tool_calls or not c.text.strip():
+            if c is not None and c.tool_calls:
+                msgs.append({"role": "assistant", "content": c.text,
+                             "tool_calls": [{"id": t.id, "name": t.name, "args": t.args} for t in c.tool_calls]})
+                for t in c.tool_calls:
+                    msgs.append({"role": "tool", "tool_call_id": t.id, "content": "lỗi: hết lượt tool, không chạy"})
+            msgs.append({"role": "user", "content": "Hết lượt tool. Trả về DUY NHẤT JSON cuối cùng ngay; nguồn chưa mở được thì ghi rõ."})
+            c = self._complete(spec, inp, user, schema, messages=msgs); total += c.tokens; turn += 1
+        evidence: dict[str, Any] = {"turns": turn, "calls": tools.summary()}
+        if tools.urls(): evidence["urls"] = tools.urls()
+        if getattr(self.client, "delegated_tools", False): evidence["delegated"] = "claude-code"
+        self._audit(spec, "tools_used", inp, evidence=json.dumps(evidence, ensure_ascii=False)[:2000], tokens=total)
+        return c, total, turn
+
     def generate(self, agent_id: str, inp: Envelope, topic_out: str, many: bool = False,
-                 extra: dict[str, Any] | None = None) -> Generated:
-        """Kiểm quyền reads/writes, chặn injection, gọi model, kiểm JSON theo schema topic. Không publish."""
+                 extra: dict[str, Any] | None = None, max_turns: int = MAX_TOOL_TURNS) -> Generated:
+        """Kiểm quyền reads/writes, chặn injection, gọi model, kiểm JSON theo schema topic. Không publish.
+        Agent có `tools` trong front matter → vòng lặp tool (≤ `max_turns` lượt, ≤ `budget_tokens_per_task` token)."""
         spec = self.agents[agent_id]
         context_only = topic_out == CONTEXT_ONLY
         if context_only:
@@ -135,7 +187,12 @@ class AgentRunner:
         schema = None if context_only else payload_schema(topic_out)
         context = {ns: sc.model_dump() for ns, sc in self.blackboard.snapshot().items()} if self.blackboard else {}
         user = build_user_message(spec, inp, topic_out, context, many=many, extra=extra)
-        c = self._complete(spec, inp, user, output_schema(schema, spec.namespaces_write, many))
+        out_schema = output_schema(schema, spec.namespaces_write, many)
+        tools = self.toolbox_factory(spec) if spec.tools else None
+        if tools is None:
+            c = self._complete(spec, inp, user, out_schema); total, turns = c.tokens, 1
+        else:
+            c, total, turns = self._tool_loop(spec, inp, user, out_schema, tools, max_turns, spec.budget_tokens_per_task)
         try:
             data = c.json()
             if not isinstance(data, dict): raise BusError("đầu ra phải là JSON object")
@@ -153,10 +210,10 @@ class AgentRunner:
             for p in payloads:
                 self.bus.validate(topic_out, p)
         except (LLMError, BusError, KeyError, TypeError) as e:
-            self._audit(spec, "invalid_output", inp, evidence=str(e)[:500], tokens=c.tokens)
+            self._audit(spec, "invalid_output", inp, evidence=str(e)[:500], tokens=total)
             raise RunnerError(f"{agent_id}: đầu ra không hợp lệ cho {topic_out}: {e}") from e
-        return Generated(payloads=payloads, tokens=c.tokens, model=c.model, context_writes=writes,
-                         cache_hit_ratio=c.cache_hit_ratio)
+        return Generated(payloads=payloads, tokens=total, model=c.model, context_writes=writes,
+                         cache_hit_ratio=c.cache_hit_ratio, turns=turns, tool_calls=tools.summary() if tools else {})
 
     def write_context(self, agent_id: str, inp: Envelope, writes: list[dict[str, Any]]) -> list[str]:
         spec = self.agents[agent_id]; done: list[str] = []
