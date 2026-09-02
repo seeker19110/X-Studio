@@ -117,6 +117,7 @@ class CaseResult:
     passed: bool
     failures: list[str] = field(default_factory=list)
     tokens: int = 0
+    error: bool = False  # không chạy được (bản ghi lệch/thiếu, model lỗi, đầu ra sai schema) — khác với chấm không đạt
 
 
 def _get(d: Any, dotted: str) -> Any:
@@ -174,7 +175,7 @@ def run_eval(agent_id: str, client: ModelClient, agents: dict | None = None) -> 
         try:
             r = _run_case(agent_id, case, client, agents, bb, bus)
         except (RunnerError, LLMError) as e:
-            results.append(CaseResult(case["name"], False, [str(e)])); continue
+            results.append(CaseResult(case["name"], False, [str(e)], error=True)); continue
         fails = check(r.output.payload, case.get("expect", {}))
         results.append(CaseResult(case["name"], not fails, fails, r.tokens))
     return results
@@ -209,7 +210,10 @@ def main(argv: list[str] | None = None) -> int:
             from .llm import make_client
             client = RecordingClient(make_client(), aid) if ns.record else make_client()
         res = run_eval(aid, client, agents)
-        ok = _print(aid, res) and ok
+        passed = _print(aid, res)
+        # --replay (CI): cổng là "bản ghi còn khớp prompt và đầu ra hợp lệ" — ca chấm không đạt là tín hiệu chất lượng
+        # cho vòng sau, không làm CI đỏ (đỏ khi bản ghi lệch/thiếu, hoặc --strict). Model thật: mọi ca phải đạt.
+        ok = ok and (passed if (ns.strict or not ns.replay) else not any(r.error for r in res))
         if ns.record and isinstance(client, RecordingClient):
             print(f"đã ghi {client.save()}")
     return 0 if ok else 1
