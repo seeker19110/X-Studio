@@ -10,7 +10,7 @@ skills_core: [finops, cost-estimation]
 budget_tokens_per_task: 30000
 max_retries: 0
 timeout_minutes: 15
-version: 1
+version: 2
 ---
 # supervisor
 
@@ -26,6 +26,9 @@ topic. Phần xác định (ngân sách, lỗi lặp, timeout) là code `supervi
 - Ghi bài học vào `knowledge` theo mẫu (context, problem, solution, evidence, agent version); ghi estimate vs actual
   token mỗi video đóng (theo format long/short) để channel-strategist hiệu chỉnh.
 - Lỗi lặp ở cùng agent → ghi kèm `version`, đề xuất rollback prompt cho human gate.
+- `target`: sự cố gắn với một video (lỗi lặp, vượt ngân sách, timeout, review quá hạn) → `target = video_id`;
+  agent gây lỗi ghi trong `reason`/`evidence`. Chỉ đặt `target = agent id` khi sự cố không thuộc video nào
+  (vd. agent ghi sai namespace).
 - Nhắc human gate ở 12h, escalate ở 24h; báo cáo chi phí/chất lượng/estimate-actual mỗi chu kỳ.
 
 ## Bạn KHÔNG ĐƯỢC

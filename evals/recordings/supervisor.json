@@ -1,22 +1,22 @@
 {
  "agent": "supervisor",
- "prompt_version": 1,
- "recorded_at": "2026-09-02T14:32:53.508661+00:00",
+ "prompt_version": 2,
+ "recorded_at": "2026-09-02T15:27:47.281829+00:00",
  "models": [
   "claude-haiku-4-5-20251001"
  ],
  "cases": {
-  "cc36009b6cadcd1fecd8817b": {
-   "text": "```json\n{\n  \"payload\": {\n    \"target\": \"script-writer\",\n    \"action\": \"escalate\",\n    \"reason\": \"Lỗi lặp lần 2 cùng chữ ký (C1 không nguồn) trên script-writer version 1, video CH1-V1. Cần human gate xem xét rollback prompt.\",\n    \"evidence\": \"fact: C1 không nguồn (lần 2, cùng chữ ký lỗi với lần 1; script-writer version 1); video_id=CH1-V1; actor=desk; action=video.rework\"\n  },\n  \"context_writes\": [\n    {\n      \"namespace\": \"knowledge\",\n      \"content_ref\": \"knowledge/CH1-V1/repeated-error-script-writer-v1\",\n      \"summary\": \"context: video CH1-V1, cảnh C1, script-writer version 1. problem: lỗi 'không nguồn' lặp lại lần 2 với cùng chữ ký lỗi như lần rework trước, cho thấy prompt v1 chưa khắc phục được nguyên nhân gốc. solution: đề xuất human gate xem xét rollback prompt script-writer về version trước đó hoặc siết quy tắc bắt buộc trích nguồn trong prompt (thêm ràng buộc kiểm chứng được, ví dụ mỗi claim phải kèm URL/nguồn). evidence: audit-log video.rework actor=desk, evidence='fact: C1 không nguồn (lần 2, cùng chữ ký lỗi với lần 1; script-writer version 1)'. agent_version: script-writer v1.\"\n    }\n  ]\n}\n```",
+  "a400cc8c53c588d5c9fe910f": {
+   "text": "```json\n{\n  \"payload\": {\n    \"target\": \"CH1-V1\",\n    \"action\": \"escalate\",\n    \"reason\": \"Loop detected: C1 sourcing failure repeats with script-writer v1; video blocked on rework\",\n    \"evidence\": \"audit-log: video.rework request; C1 không nguồn (lần 2, cùng chữ ký lỗi với lần 1; script-writer version 1)\"\n  },\n  \"context_writes\": [\n    {\n      \"namespace\": \"knowledge\",\n      \"content_ref\": \"loop-script-writer-c1-sourcing\",\n      \"summary\": \"Loop: script-writer v1 failed C1 sourcing on CH1-V1 (2 attempts, identical error signature); escalated to human gate for prompt rollback evaluation per NIST AI RMF manage phase; signature required before resuming\"\n    }\n  ]\n}\n```",
    "model": "claude-haiku-4-5-20251001",
-   "input_tokens": 4262,
-   "output_tokens": 547
+   "input_tokens": 3612,
+   "output_tokens": 2759
   },
-  "1b888a151a97a32b8ffaee7c": {
-   "text": "{\"payload\": {\"target\": \"CH1-V2\", \"action\": \"budget_cut\", \"reason\": \"Token dùng 160000 vượt budget_tokens 150000 (106.7%), vượt ngưỡng cắt 100%\", \"evidence\": \"audit-log actor=script-writer action=produced:scripts tokens=160000 budget_tokens=150000\"}, \"context_writes\": [{\"namespace\": \"knowledge\", \"content_ref\": \"knowledge/CH1-V2-budget-overrun\", \"summary\": \"context: script-writer sinh scripts cho CH1-V2; problem: token thực tế 160000 vượt budget 150000 (106.7%), không có cảnh báo 80% được ghi trước đó; solution: kích hoạt budget_cut, yêu cầu human gate xem xét lại estimate cho format này và bổ sung cảnh báo 80%; evidence: audit-log tokens=160000 vs budget_tokens=150000; agent_version: script-writer (chưa rõ version, cần bổ sung vào audit-log); estimate_vs_actual: estimate=150000, actual=160000, delta=+6.7% dùng để hiệu chỉnh calibration.ratio_median cho channel-strategist\"}]}",
+  "836ac0c8c45f99ddb86de04a": {
+   "text": "```json\n{\n  \"payload\": {\n    \"target\": \"CH1-V2\",\n    \"action\": \"budget_cut\",\n    \"reason\": \"Script-writer vượt ngân sách token: sử dụng 160,000 tokens trên budget 150,000 (106.7% — vượt 100%)\",\n    \"evidence\": \"budget_tokens 150000, đã dùng 160000\"\n  },\n  \"context_writes\": [\n    {\n      \"namespace\": \"knowledge\",\n      \"content_ref\": \"CH1-V2_budget_overrun_20260902\",\n      \"summary\": \"Budget overspend on CH1-V2: script-writer consumed 160k tokens vs 150k allocated (+10k, 6.7% overrun). Action budget_cut applied. Recommend: evaluate script-writer prompt efficiency, review content scope, or adjust cost-estimation calibration for similar video length/format.\"\n    }\n  ]\n}\n```",
    "model": "claude-haiku-4-5-20251001",
-   "input_tokens": 4254,
-   "output_tokens": 417
+   "input_tokens": 3600,
+   "output_tokens": 1119
   }
  }
 }

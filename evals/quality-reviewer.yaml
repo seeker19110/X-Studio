@@ -1,20 +1,56 @@
 # Eval cho quality-reviewer. Chạy: python -m studio.evals quality-reviewer
 cases:
   - name: goi-dat-phai-pass
+    # Gói hoàn chỉnh, thực tế: narration thật, mốc thời gian được đo trong video chứng minh tiêu đề/thumbnail,
+    # hook 5s, không cảnh > 20s, tổng 120s = estimated_minutes 2, có CTA, preflight sạch.
     topic_out: review-results
     extra:
       package:
-        script: {video_id: CH1-V1, hook: "Một video 8 phút mất bạn 6 giờ?", sections: [{heading: a, narration: n}]}
-        manifest: {video_id: CH1-V1, scenes: [{scene_id: S1, order: 0, narration: n, visual_prompt: p, duration_s: 5}, {scene_id: S2, order: 1, narration: n, visual_prompt: p, duration_s: 6}]}
-        metadata: {title: "AI dựng video cho người mới: 6 giờ xuống 30 phút", description: d}
-        thumbnails: [{variant_id: A, path: a.png}]
-        final_video: {path: final.mp4, duration_s: 11}
+        script:
+          video_id: CH1-V1
+          version: 1
+          working_title: "AI dựng video cho người mới: 6 giờ xuống 30 phút"
+          hook: "Một video 8 phút mất bạn 6 giờ? Mình vừa bấm giờ lại quy trình mới: 30 phút. Đây là từng bước."
+          sections:
+            - {heading: "Quy trình cũ: 6 giờ đi đâu", narration: "Mình bấm giờ quy trình cũ cho video 8 phút gần nhất: viết kịch bản 2 giờ, thu âm 1 giờ, dựng và tìm hình 3 giờ. Tổng 6 giờ, và đó là ngày suôn sẻ."}
+            - {heading: "Bước 1: kịch bản 10 phút", narration: "Bước một, mình đưa dàn ý 5 gạch đầu dòng vào trợ lý AI, yêu cầu kịch bản 8 phút có hook và CTA. Sửa lại giọng văn hai lượt. Đồng hồ: 10 phút."}
+            - {heading: "Bước 2: giọng đọc 5 phút", narration: "Bước hai, kịch bản chuyển thành giọng đọc bằng TTS, nghe lại một lượt, sửa hai chỗ ngắt câu. Đồng hồ: 5 phút."}
+            - {heading: "Bước 3: hình và dựng 15 phút", narration: "Bước ba, mỗi đoạn kịch bản sinh một ảnh minh hoạ từ prompt, ghép tự động theo thời lượng giọng đọc, mình chỉ đổi hai ảnh chưa ưng. Đồng hồ: 15 phút. Cộng lại đúng 30 phút."}
+            - {heading: "Cái giá phải trả", narration: "Không phải phép màu: video 30 phút này nhìn đơn giản hơn bản 6 giờ, và bạn vẫn phải tự kiểm số liệu trước khi đăng."}
+          cta: "Nếu bạn muốn mình chia sẻ file prompt của cả 3 bước, bình luận từ 'quy trình' bên dưới."
+          claims: []
+          word_count: 260
+          estimated_minutes: 2
+        manifest:
+          video_id: CH1-V1
+          version: 1
+          script_version: 1
+          aspect: "16:9"
+          scenes:
+            - {scene_id: S1, order: 0, narration: "Một video 8 phút mất bạn 6 giờ? Mình vừa bấm giờ lại quy trình mới: 30 phút. Đây là từng bước.", visual_prompt: "Đồng hồ bấm giờ đặt cạnh laptop đang mở timeline dựng video, ánh sáng bàn làm việc buổi tối", duration_s: 5}
+            - {scene_id: S2, order: 1, narration: "Mình bấm giờ quy trình cũ cho video 8 phút gần nhất: viết kịch bản 2 giờ, thu âm 1 giờ, dựng và tìm hình 3 giờ. Tổng 6 giờ, và đó là ngày suôn sẻ.", visual_prompt: "Bảng trắng vẽ ba khối thời gian 2h, 1h, 3h xếp thành một thanh dài, phong cách minh hoạ phẳng", duration_s: 19}
+            - {scene_id: S3, order: 2, narration: "Bước một, mình đưa dàn ý 5 gạch đầu dòng vào trợ lý AI, yêu cầu kịch bản 8 phút có hook và CTA. Sửa lại giọng văn hai lượt. Đồng hồ: 10 phút.", visual_prompt: "Màn hình soạn thảo với dàn ý 5 dòng bên trái và kịch bản hoàn chỉnh bên phải, đồng hồ góc màn hình chỉ 10:00", duration_s: 20}
+            - {scene_id: S4, order: 3, narration: "Bước hai, kịch bản chuyển thành giọng đọc bằng TTS, nghe lại một lượt, sửa hai chỗ ngắt câu. Đồng hồ: 5 phút.", visual_prompt: "Dạng sóng âm thanh trên màn hình, tai nghe đặt cạnh bàn phím, đồng hồ chỉ 05:00", duration_s: 18}
+            - {scene_id: S5, order: 4, narration: "Bước ba, mỗi đoạn kịch bản sinh một ảnh minh hoạ từ prompt, ghép tự động theo thời lượng giọng đọc, mình chỉ đổi hai ảnh chưa ưng. Đồng hồ: 15 phút. Cộng lại đúng 30 phút.", visual_prompt: "Lưới sáu ảnh minh hoạ xếp thành timeline video, hai ảnh được đánh dấu thay thế, đồng hồ chỉ 15:00", duration_s: 20}
+            - {scene_id: S6, order: 5, narration: "Không phải phép màu: video 30 phút này nhìn đơn giản hơn bản 6 giờ, và bạn vẫn phải tự kiểm số liệu trước khi đăng.", visual_prompt: "Hai khung hình video đặt cạnh nhau, một bản chỉn chu một bản đơn giản, tấm biển nhỏ ghi kiểm tra số liệu", duration_s: 19}
+            - {scene_id: S7, order: 6, narration: "Nếu bạn muốn mình chia sẻ file prompt của cả 3 bước, bình luận từ 'quy trình' bên dưới.", visual_prompt: "Ô bình luận YouTube với chữ quy trình đang được gõ, nền tối đơn giản", duration_s: 19}
+        metadata:
+          video_id: CH1-V1
+          title: "AI dựng video cho người mới: 6 giờ xuống 30 phút"
+          description: "Bấm giờ thật quy trình dựng video 8 phút bằng AI: kịch bản 10 phút, giọng đọc 5 phút, hình và dựng 15 phút. Có cả phần cái giá phải trả."
+          tags: [ai dựng video, quy trình làm video, người mới]
+          chapters: [{time: "00:00", label: "6 giờ đi đâu"}, {time: "00:24", label: "Kịch bản 10 phút"}, {time: "00:44", label: "Giọng đọc 5 phút"}, {time: "01:02", label: "Hình và dựng 15 phút"}, {time: "01:22", label: "Cái giá phải trả"}]
+          primary_keyword: "ai dựng video"
+        thumbnails:
+          - {variant_id: A, path: thumb-A.png, overlay_text: "6 GIỜ → 30 PHÚT"}
+          - {variant_id: B, path: thumb-B.png, overlay_text: "30 PHÚT / 1 VIDEO"}
+        final_video: {path: final.mp4, duration_s: 120, manifest_version: 1}
         preflight: []
     input:
       topic: media-assets
       key: CH1-V1
       actor: renderer
-      payload: {video_id: CH1-V1, kind: final_video, path: final.mp4, provenance: {generated_by: "fake:video"}}
+      payload: {video_id: CH1-V1, kind: final_video, path: final.mp4, duration_s: 120, provenance: {generated_by: "fake:video", prompt_ref: "manifest:v1", license: generated}}
     expect:
       equals: {video_id: CH1-V1, source: quality, verdict: pass}
 

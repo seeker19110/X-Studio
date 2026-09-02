@@ -3,14 +3,15 @@ cases:
   - name: asset-ai-sinh-co-provenance-phai-pass
     topic_out: review-results
     extra:
-      assets: [{kind: scene_image, scene_id: S1, path: a.png, provenance: {generated_by: "openai:gpt-image-1", prompt_ref: "S1:visual_prompt", license: generated}}, {kind: scene_audio, scene_id: S1, path: a.wav, provenance: {generated_by: "openai:gpt-4o-mini-tts", license: generated}}]
+      # provenance đúng như renderer phát: provider:model + prompt_ref + license=generated cho cả asset cảnh lẫn final_video
+      assets: [{kind: scene_image, scene_id: S1, path: a.png, provenance: {generated_by: "openai:gpt-image-1", prompt_ref: "S1:visual_prompt", license: generated}}, {kind: scene_audio, scene_id: S1, path: a.wav, provenance: {generated_by: "openai:gpt-4o-mini-tts", prompt_ref: "S1:narration", license: generated}}, {kind: final_video, scene_id: null, path: final.mp4, provenance: {generated_by: "ffmpeg:libx264", prompt_ref: "manifest:v1", license: generated}}]
       claims: [{claim_id: C1, text: "42%", source: "https://example.org/report"}]
       brief: {video_id: CH1-V1, risk_tags: []}
     input:
       topic: media-assets
       key: CH1-V1
       actor: renderer
-      payload: {video_id: CH1-V1, kind: final_video, path: final.mp4, provenance: {generated_by: "ffmpeg:libx264"}}
+      payload: {video_id: CH1-V1, kind: final_video, path: final.mp4, provenance: {generated_by: "ffmpeg:libx264", prompt_ref: "manifest:v1", license: generated}}
     expect:
       equals: {video_id: CH1-V1, source: rights, verdict: pass}
 

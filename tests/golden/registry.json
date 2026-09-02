@@ -278,7 +278,7 @@
     ],
     "timeout_minutes": 15,
     "tools": [],
-    "version": 1,
+    "version": 2,
     "writes": [
       "supervisor-actions",
       "knowledge-base"
