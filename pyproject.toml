@@ -1,0 +1,34 @@
+[project]
+name = "gateway"
+version = "0.1.0"
+description = "Proxy OpenAI-compatible xoay vòng tài khoản Google Antigravity (OAuth) cho các công ty AI trong X-Agents"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.10,<4",
+    "httpx>=0.27,<1",
+    "pyyaml>=6,<7",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "RUF"]
+ignore = ["E701", "E702", "RUF001", "RUF002", "RUF003"]
