@@ -6,9 +6,11 @@
 provider: openai
 
 # model theo tier trong front matter agent
+# strong = sáng tác/review cần suy luận; standard = việc có cấu trúc; light = việc cơ học, ngắn (thiếu light → standard)
 models:
   strong: gpt-5            # ví dụ; hoặc claude-opus-5, gemini-2.5-pro, qwen3:32b (Ollama)...
   standard: gpt-5-mini
+  light: gpt-5-nano
 
 # chỉ provider openai: base URL của server. Ollama: http://localhost:11434/v1 ; OpenRouter: https://openrouter.ai/api/v1
 base_url: https://api.openai.com/v1
@@ -20,6 +22,32 @@ max_tokens: 16000
 effort:
   strong: high
   standard: medium
+  light: low
 
 # tham số provider-specific truyền thẳng vào request (vd. temperature)
 extra: {}
+
+# --- ADR-0006: nhiều gói tài khoản subscription thay vì API trả theo token ---
+# Khai `backends:` thì provider/models/base_url ở trên KHÔNG dùng nữa. Mỗi backend = một gói đang đăng nhập trên máy,
+# có model riêng theo tier; thiếu tier nào thì backend đó dùng standard → strong. Thứ tự khai báo = thứ tự ưu tiên;
+# `routing.prefer` ghi đè theo tier để tối ưu chi phí. Hết quota → backend nghỉ `cooldown_s` (hoặc đúng Retry-After),
+# lượt đó đi backend kế; lỗi mạng/5xx → nghỉ `transient_cooldown_s`. STUDIO_LLM_BACKENDS=a,b lọc/sắp lại khi chạy.
+# Bảng agent → tier và lý do: ../docs/DIEU-PHOI-MODEL.md
+#
+# backends:
+#   - name: claude-sub                 # Claude Pro/Max qua CLI `claude -p`
+#     provider: claude-code
+#     models: {strong: claude-opus-5, standard: claude-sonnet-5, light: claude-haiku-4-5}
+#   - name: antigravity                # ../gateway xoay vòng tài khoản Google (make login && make start)
+#     provider: openai
+#     base_url: http://127.0.0.1:8100/v1
+#     api_key: gateway-local           # chuỗi bất kỳ; hoặc api_key_env: TEN_BIEN
+#     models: {strong: claude-sonnet-4-6, standard: gemini-3.7-flash, light: gemini-3.7-flash-low}
+#   - name: local                      # Ollama: không bao giờ hết quota, làm lưới đỡ cuối
+#     provider: openai
+#     base_url: http://localhost:11434/v1
+#     models: {strong: qwen3:32b, standard: qwen3:8b}
+# routing:
+#   cooldown_s: 3600
+#   transient_cooldown_s: 60
+#   prefer: {light: antigravity, standard: antigravity, strong: claude-sub}

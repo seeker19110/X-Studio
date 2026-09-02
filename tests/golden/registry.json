@@ -50,7 +50,7 @@
     "budget_tokens_per_task": 30000,
     "context_namespace_write": "community",
     "max_retries": 0,
-    "model_tier": "standard",
+    "model_tier": "light",
     "reads": [
       "audience-comments"
     ],
@@ -138,7 +138,7 @@
     "budget_tokens_per_task": 20000,
     "context_namespace_write": null,
     "max_retries": 0,
-    "model_tier": "standard",
+    "model_tier": "light",
     "reads": [
       "metadata-packages",
       "reply-drafts"
@@ -250,7 +250,7 @@
     "budget_tokens_per_task": 30000,
     "context_namespace_write": "knowledge",
     "max_retries": 0,
-    "model_tier": "standard",
+    "model_tier": "light",
     "reads": [
       "audit-log",
       "*"
@@ -275,7 +275,7 @@
     "budget_tokens_per_task": 30000,
     "context_namespace_write": "brand",
     "max_retries": 0,
-    "model_tier": "standard",
+    "model_tier": "light",
     "reads": [
       "scene-manifests"
     ],

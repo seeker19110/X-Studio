@@ -1,7 +1,7 @@
 ---
 id: publisher
 block: distribution
-model_tier: standard
+model_tier: light
 reads: [metadata-packages, reply-drafts]
 writes: [publish-events]
 context_namespace_write: null

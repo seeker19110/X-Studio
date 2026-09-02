@@ -1,7 +1,7 @@
 ---
 id: thumbnail-designer
 block: production
-model_tier: standard
+model_tier: light
 reads: [scene-manifests]
 writes: [thumbnail-specs]
 context_namespace_write: brand

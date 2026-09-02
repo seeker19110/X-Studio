@@ -7,8 +7,14 @@ Cấu hình (ưu tiên: biến môi trường > llm.yaml > mặc định):
                             Groq, vLLM, LM Studio, Kimi, GLM...; claude-code = CLI `claude -p` đã đăng nhập trên máy)
     STUDIO_MODEL_STRONG    model cho tier `strong`
     STUDIO_MODEL_STANDARD  model cho tier `standard`
+    STUDIO_MODEL_LIGHT     model cho tier `light` (rẻ/nhanh; thiếu thì dùng standard)
     STUDIO_LLM_BASE_URL    base URL cho provider openai
     STUDIO_LLM_API_KEY     key cho provider openai (Anthropic dùng ANTHROPIC_API_KEY)
+    STUDIO_LLM_BACKENDS    lọc/sắp thứ tự backend của `backends:` trong llm.yaml (vd. "claude-sub,antigravity")
+
+ADR-0006 — nhiều tài khoản subscription thay vì API: `backends:` trong llm.yaml khai báo từng gói (Claude Max qua
+claude-code, Antigravity qua gateway, model local...) với model theo tier; `routing.py` gộp thành một client, chọn backend
+theo tier và tự chuyển khi một gói hết quota. Không có `backends:` thì `provider`/`models` là một backend duy nhất.
 
 Token trả về là số thật từ `usage` của provider, để runner ghi vào `audit-log.tokens` và supervisor cộng dồn.
 Phòng ban video không cần tool-use trong vòng lặp model: mọi hành động có tác dụng phụ (TTS, ảnh, ghép video, đăng)
@@ -29,7 +35,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT / "llm.yaml"
-TIERS = ("strong", "standard")
+TIERS = ("strong", "standard", "light")   # light: việc cơ học/ngắn (publisher, supervisor...) — model rẻ nhất
 
 
 class LLMError(Exception): ...
@@ -79,18 +85,47 @@ class ModelClient(Protocol):
 @dataclass
 class LLMConfig:
     provider: str = "fake"
-    models: dict[str, str] = field(default_factory=lambda: {"strong": "", "standard": ""})
+    models: dict[str, str] = field(default_factory=lambda: {"strong": "", "standard": "", "light": ""})
     base_url: str | None = None
     api_key: str | None = None
     max_tokens: int = 16_000
-    effort: dict[str, str] = field(default_factory=lambda: {"strong": "high", "standard": "medium"})
+    effort: dict[str, str] = field(default_factory=lambda: {"strong": "high", "standard": "medium", "light": "low"})
     extra: dict[str, Any] = field(default_factory=dict)
+    name: str = "default"            # tên backend (ADR-0006), hiện trong ghi chú audit khi xoay
+    backends: list[dict[str, Any]] = field(default_factory=list)   # mỗi phần tử = một backend, cùng khoá như cấp trên
+    routing: dict[str, Any] = field(default_factory=dict)          # cooldown_s, transient_cooldown_s, prefer{tier: backend}
 
     def model_for(self, tier: str) -> str:
-        m = self.models.get(tier) or self.models.get("standard") or ""
+        """light → standard → strong: backend không có model rẻ thì dùng model tầm trung, không bao giờ lùi lên tier cao
+        hơn yêu cầu trừ khi đó là model duy nhất."""
+        m = self.models.get(tier) or self.models.get("standard") or self.models.get("strong") or ""
         if not m:
             raise LLMError(f"chưa cấu hình model cho tier `{tier}` (STUDIO_MODEL_{tier.upper()} hoặc llm.yaml)")
         return m
+
+    def tiers_configured(self) -> frozenset[str]:
+        return frozenset(t for t in TIERS if self.models.get(t))
+
+    def backend_config(self, data: dict[str, Any]) -> LLMConfig:
+        """Cấu hình cho một phần tử `backends:`: thừa kế khoá dùng chung từ cấp trên, ghi đè provider / models /
+        base_url / api_key / effort / extra / max_tokens theo phần tử."""
+        cfg = LLMConfig(**{k: v for k, v in self.__dict__.items() if k not in {"backends", "routing"}})
+        cfg.models = dict(self.models) if data.get("inherit_models") else {t: "" for t in TIERS}
+        cfg.effort, cfg.extra = dict(self.effort), dict(self.extra)
+        _apply_yaml(cfg, data)
+        cfg.name = str(data.get("name") or cfg.provider)
+        if data.get("api_key"): cfg.api_key = str(data["api_key"])
+        if data.get("api_key_env"): cfg.api_key = os.environ.get(str(data["api_key_env"]), cfg.api_key)
+        return cfg
+
+
+def _apply_yaml(cfg: LLMConfig, data: dict[str, Any]) -> None:
+    cfg.provider = data.get("provider", cfg.provider)
+    cfg.models.update({k: str(v) for k, v in (data.get("models") or {}).items()})
+    cfg.effort.update(data.get("effort") or {})
+    cfg.base_url = data.get("base_url", cfg.base_url)
+    cfg.max_tokens = int(data.get("max_tokens", cfg.max_tokens))
+    if "extra" in data: cfg.extra = dict(data.get("extra") or {})
 
 
 def load_config(path: Path | None = None) -> LLMConfig:
@@ -98,28 +133,46 @@ def load_config(path: Path | None = None) -> LLMConfig:
     p = path or CONFIG_FILE
     if p.exists():
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        cfg.provider = data.get("provider", cfg.provider)
-        cfg.models.update({k: str(v) for k, v in (data.get("models") or {}).items()})
-        cfg.effort.update(data.get("effort") or {})
-        cfg.base_url = data.get("base_url", cfg.base_url)
-        cfg.max_tokens = int(data.get("max_tokens", cfg.max_tokens))
-        cfg.extra = dict(data.get("extra") or {})
+        _apply_yaml(cfg, data)
+        cfg.backends = [dict(b) for b in (data.get("backends") or []) if isinstance(b, dict)]
+        cfg.routing = dict(data.get("routing") or {})
     env = os.environ
     cfg.provider = env.get("STUDIO_LLM_PROVIDER", cfg.provider)
     for t in TIERS:
         if env.get(f"STUDIO_MODEL_{t.upper()}"): cfg.models[t] = env[f"STUDIO_MODEL_{t.upper()}"]
     cfg.base_url = env.get("STUDIO_LLM_BASE_URL", cfg.base_url)
     cfg.api_key = env.get("STUDIO_LLM_API_KEY", cfg.api_key)
+    if env.get("STUDIO_LLM_BACKENDS"):
+        wanted = [s.strip() for s in env["STUDIO_LLM_BACKENDS"].split(",") if s.strip()]
+        by_name = {str(b.get("name") or b.get("provider")): b for b in cfg.backends}
+        missing = [w for w in wanted if w not in by_name]
+        if missing: raise LLMError(f"STUDIO_LLM_BACKENDS nhắc backend không có trong llm.yaml: {missing}")
+        cfg.backends = [by_name[w] for w in wanted]
     return cfg
 
 
-def make_client(cfg: LLMConfig | None = None) -> ModelClient:
-    cfg = cfg or load_config()
+def _single_client(cfg: LLMConfig) -> ModelClient:
     if cfg.provider == "anthropic": return AnthropicClient(cfg)
     if cfg.provider == "openai": return OpenAICompatClient(cfg)
     if cfg.provider == "claude-code": return ClaudeCodeClient(cfg)
     if cfg.provider == "fake": return FakeClient()
     raise LLMError(f"provider lạ: {cfg.provider} (anthropic | openai | claude-code | fake)")
+
+
+def make_client(cfg: LLMConfig | None = None) -> ModelClient:
+    """Client theo cấu hình. Có `backends:` → `RoutingClient` gộp nhiều gói tài khoản (ADR-0006)."""
+    cfg = cfg or load_config()
+    if not cfg.backends:
+        return _single_client(cfg)
+    from .routing import Backend, RoutingClient
+    bs = []
+    for data in cfg.backends:
+        bc = cfg.backend_config(data)
+        bs.append(Backend(name=bc.name, client=_single_client(bc), tiers=bc.tiers_configured()))
+    r = cfg.routing
+    return RoutingClient(bs, cooldown_s=float(r.get("cooldown_s", 3600)),
+                         transient_cooldown_s=float(r.get("transient_cooldown_s", 60)),
+                         prefer={str(k): str(v) for k, v in (r.get("prefer") or {}).items()})
 
 
 def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:

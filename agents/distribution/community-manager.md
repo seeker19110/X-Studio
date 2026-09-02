@@ -1,7 +1,7 @@
 ---
 id: community-manager
 block: distribution
-model_tier: standard
+model_tier: light
 reads: [audience-comments]
 writes: [reply-drafts]
 context_namespace_write: community

@@ -1,7 +1,7 @@
 ---
 id: supervisor
 block: supervision
-model_tier: standard
+model_tier: light
 reads: [audit-log, "*"]
 writes: [supervisor-actions, knowledge-base]
 context_namespace_write: knowledge

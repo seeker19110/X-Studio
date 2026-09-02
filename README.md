@@ -30,13 +30,14 @@ Thành phần code: **renderer** (media), **desk** (vòng đời video, gom revi
 ## Cấu trúc
 
 ```
-docs/          kiến trúc, tiêu chuẩn, ADR 0001–0005
+docs/          kiến trúc, tiêu chuẩn, ADR 0001–0006
 agents/        14 system prompt có version, nhóm theo khối
 skills/        24 skill có version: tiêu chuẩn + quy trình + quy tắc + checklist; nạp đầy đủ / rút gọn
 gates/         checklist 4 human gate
 templates/     brief, kịch bản, scene manifest, metadata, gói đăng, postmortem, ADR
 topics/        19 JSON Schema topic + bảng owner 10 namespace
-src/studio/    events, bus, sqlite_bus, blackboard, registry, gates, gate_cli, llm (text), media (TTS/ảnh/video),
+src/studio/    events, bus, sqlite_bus, blackboard, registry, gates, gate_cli, llm (text), routing (nhiều gói tài khoản,
+               chọn theo tier, xoay khi hết quota — ADR-0006), media (TTS/ảnh/video),
                renderer, preflight, analytics, desk, supervisor, runner, orchestrator, evals, fakes, demo
 evals/         ca eval theo agent (YAML) — 14 agent, mỗi agent 2 ca; recordings/ = phản hồi model đã ghi
 tests/         pytest: bus, registry, golden 14 agent, preflight/analytics, media/renderer (ffmpeg nếu có),
@@ -57,6 +58,8 @@ make lint
 #   STUDIO_LLM_PROVIDER=anthropic STUDIO_MODEL_STRONG=claude-opus-5   (uv sync --extra anthropic)
 #   Qua gateway xoay vòng tài khoản Google Antigravity (../gateway, xem README ở đó):
 #   STUDIO_LLM_PROVIDER=openai STUDIO_LLM_BASE_URL=http://127.0.0.1:8100/v1 STUDIO_LLM_API_KEY=gateway-local STUDIO_MODEL_STRONG=claude-sonnet-4-6
+#   NHIỀU gói cùng lúc (ADR-0006): `backends:` + `routing.prefer` trong llm.yaml — mẫu ở llm.example.yaml; agent có tier
+#   strong/standard/light, gói hết quota tự nghỉ. Bảng agent → tier: ../docs/DIEU-PHOI-MODEL.md
 #   STUDIO_MEDIA_TTS_PROVIDER=openai STUDIO_MEDIA_IMAGE_PROVIDER=openai STUDIO_MEDIA_VIDEO_PROVIDER=ffmpeg STUDIO_MEDIA_API_KEY=...
 PYTHONPATH=src uv run python -m studio.orchestrator publish channel-briefs brief.json --actor human:owner
 PYTHONPATH=src uv run python -m studio.orchestrator run --watch 5      # hoặc: make watch ; một lượt: make run

@@ -24,7 +24,7 @@ UPDATE = os.environ.get("UPDATE_GOLDEN") == "1"
 TOPICS = set(get_args(Topic))
 NON_TOPIC_CHANNELS = {"*", "knowledge-base"}
 BLOCKS = {"strategy", "creative", "production", "distribution", "quality", "analytics", "supervision"}
-MODEL_TIERS = {"standard", "strong"}
+MODEL_TIERS = {"standard", "strong", "light"}
 REQUIRED_SECTIONS = ["## Vai trò", "## Bạn PHẢI", "## Bạn KHÔNG ĐƯỢC", "## Đầu vào", "## Đầu ra", "## Definition of done"]
 _HEADER = re.compile(r"^<!-- golden agent=(?P<id>[\w-]+) version=(?P<version>\d+) -->\n", re.MULTILINE)
 
