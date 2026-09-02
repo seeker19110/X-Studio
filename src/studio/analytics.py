@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from itertools import pairwise
 
-from .events import Experiment, PerformanceSnapshot, RetentionDrop, RetentionPoint, SceneManifest
+from .events import Experiment, ExperimentKind, PerformanceSnapshot, RetentionDrop, RetentionPoint, SceneManifest
 
 DROP_THRESHOLD_PCT = 5.0  # sụt ≥ 5 điểm % giữa hai mốc liên tiếp = một điểm rơi đáng chú ý
 CONFIDENCE_MIN = 0.95
@@ -41,7 +41,7 @@ def _confidence(z: float) -> float:
     return 0.5 * (1 + math.erf(abs(z) / math.sqrt(2)))
 
 
-def judge_experiment(experiment_id: str, kind: str, control: PerformanceSnapshot, variant: PerformanceSnapshot,
+def judge_experiment(experiment_id: str, kind: ExperimentKind, control: PerformanceSnapshot, variant: PerformanceSnapshot,
                      retention_tolerance_s: float = 0.0) -> Experiment:
     """Kết luận A/B CTR: biến thể chỉ thắng khi độ tin cậy ≥ 0.95 VÀ thời lượng xem trung bình không giảm quá
     `retention_tolerance_s` (guard: CTR cao nhưng khán giả bỏ đi sớm là clickbait)."""

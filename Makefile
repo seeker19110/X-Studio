@@ -1,10 +1,15 @@
-.PHONY: test demo lint fix golden gate eval eval-record eval-replay run watch status
+.PHONY: test cov types demo lint fix golden gate eval eval-record eval-replay run watch status
 test:
 	uv run pytest -q
+cov:
+	uv run pytest -q --cov
+types:
+	uv run mypy src/studio --ignore-missing-imports
 demo:
 	PYTHONPATH=src uv run python -m studio.demo
 lint:
 	uv run ruff check src tests
+	uv run mypy src/studio --ignore-missing-imports
 fix:
 	uv run ruff check --fix src tests
 golden:
@@ -16,7 +21,7 @@ eval:
 eval-record:   # chạy model thật, lưu evals/recordings/$(AGENT).json — bắt buộc sau khi đổi prompt/skill
 	PYTHONPATH=src uv run python -m studio.evals $(AGENT) --record
 eval-replay:   # như CI: phát lại từ bản ghi, không gọi model
-	PYTHONPATH=src uv run python -m studio.evals all --replay
+	PYTHONPATH=src uv run python -m studio.evals all --replay --strict
 run:
 	PYTHONPATH=src uv run python -m studio.orchestrator run
 watch:

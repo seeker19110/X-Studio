@@ -5,9 +5,10 @@ import statistics
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from .bus import InMemoryBus
-from .events import NAMESPACE_OWNERS, AuditLog, Envelope, SupervisorAction, VideoBrief
+from .events import NAMESPACE_OWNERS, AuditLog, Envelope, SupervisorAction, SupervisorActionKind, VideoBrief
 
 
 @dataclass
@@ -31,7 +32,7 @@ class Supervisor:
         self.replaying = False
         bus.subscribe("*", self._on)
 
-    def _act(self, target: str, action: str, reason: str, evidence: str | None = None) -> None:
+    def _act(self, target: str, action: SupervisorActionKind, reason: str, evidence: str | None = None) -> None:
         a = SupervisorAction(target=target, action=action, reason=reason, evidence=evidence)
         self.actions.append(a)
         if not self.replaying:
@@ -54,9 +55,9 @@ class Supervisor:
         elif env.topic == "audit-log":
             a = AuditLog.model_validate(env.payload)
             if a.video_id and a.video_id in self.budgets:
-                b = self.budgets[a.video_id]; b.used += a.tokens
-                if b.ratio >= self.CUT_AT: self._act(a.video_id, "budget_cut", f"dùng {b.used}/{b.limit} token")
-                elif b.ratio >= self.WARN_AT: self._act(a.video_id, "warn", f"đã dùng {b.ratio:.0%} ngân sách")
+                bud = self.budgets[a.video_id]; bud.used += a.tokens
+                if bud.ratio >= self.CUT_AT: self._act(a.video_id, "budget_cut", f"dùng {bud.used}/{bud.limit} token")
+                elif bud.ratio >= self.WARN_AT: self._act(a.video_id, "warn", f"đã dùng {bud.ratio:.0%} ngân sách")
         elif env.topic == "review-results" and env.payload.get("verdict") in {"fail", "block"}:
             sig = env.payload.get("root_cause") or " | ".join(f["text"] for f in env.payload.get("findings", []))
             sigs = self.error_signatures[env.key]; sigs.append(sig)
@@ -99,14 +100,14 @@ class Supervisor:
         return {k: {"ratio_median": round(statistics.median(v), 2), "samples": len(v)} for k, v in sorted(by.items())}
 
     def report(self) -> dict:
-        videos = {}
+        videos: dict[str, dict[str, Any]] = {}
         for env in self.bus.replay(topic="video-briefs"):
             b = VideoBrief.model_validate(env.payload)
             videos[b.video_id] = {"estimate_tokens": b.estimate_tokens, "budget_tokens": b.budget_tokens, "retry": b.retry,
                                   "format": b.format, "actual_tokens": self.budgets[b.video_id].used if b.video_id in self.budgets else 0}
         for row in videos.values():
             est = row["estimate_tokens"]; row["ratio"] = round(row["actual_tokens"] / est, 2) if est else None
-        actions = defaultdict(int)
+        actions: defaultdict[str, int] = defaultdict(int)
         for a in self.actions: actions[a.action] += 1
         reviews = [e.payload for e in self.bus.replay(topic="review-results")]
         caught = sum(1 for r in reviews if r.get("verdict") != "pass")

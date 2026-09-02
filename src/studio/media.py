@@ -225,9 +225,10 @@ class OpenAIImage:
 
 class FFmpegAssembler:
     def __init__(self, binary: str = "ffmpeg"):
-        self.binary = shutil.which(binary)
-        if not self.binary:
+        found = shutil.which(binary)
+        if not found:
             raise MediaError("không tìm thấy ffmpeg trên PATH (đổi video.provider=fake để chạy offline)")
+        self.binary = found
 
     def _run(self, args: list[str]) -> None:
         r = subprocess.run([self.binary, "-y", "-loglevel", "error", *args], capture_output=True, text=True)

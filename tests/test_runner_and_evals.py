@@ -100,9 +100,12 @@ def test_record_and_replay_roundtrip(tmp_path, monkeypatch):
 
 
 def test_replay_exit_code_ignores_grading_but_not_stale_recordings(tmp_path, monkeypatch):
-    """CI phát lại: ca chấm không đạt không làm đỏ; bản ghi lệch prompt (LLMError) thì đỏ; --strict đòi mọi ca đạt."""
+    """CI phát lại: ca chấm không đạt là tín hiệu chất lượng, không làm đỏ — kể cả với --strict.
+    Đỏ khi bản ghi lệch prompt (LLMError), hoặc khi --strict + agent có tên trong REQUIRED.txt mà bản ghi
+    thiếu / ghi ở phiên bản prompt cũ."""
     from studio import evals as ev
     monkeypatch.setattr(ev, "RECORDINGS_DIR", tmp_path)
+    version = ev.load_agents()["publisher"].version
     # bản ghi khớp prompt cho MỌI ca, nhưng payload không đạt tiêu chí chấm của ca đầu (đòi scheduled)
     cases = {}
     for case in ev.load_cases("publisher"):
@@ -111,9 +114,25 @@ def test_replay_exit_code_ignores_grading_but_not_stale_recordings(tmp_path, mon
         except (ev.RunnerError, ev.LLMError): pass
         bad = {"video_id": case["input"]["payload"].get("video_id", "V1"), "kind": "video", "status": "failed", "evidence": "x"}
         cases[probe.key] = {"text": json.dumps(bad), "model": "m"}
-    (tmp_path / "publisher.json").write_text(json.dumps({"agent": "publisher", "cases": cases}), encoding="utf-8")
+    rec = {"agent": "publisher", "prompt_version": version, "cases": cases}
+    (tmp_path / "publisher.json").write_text(json.dumps(rec), encoding="utf-8")
+    assert ev.main(["publisher", "--replay"]) == 0
+    assert ev.main(["publisher", "--replay", "--strict"]) == 0   # chấm không đạt không làm đỏ CI
+
+    # có tên trong REQUIRED.txt: bản ghi ghi ở phiên bản prompt cũ → đỏ
+    (tmp_path / ev.REQUIRED_NAME).write_text("# ghi chú" + chr(10) + "publisher" + chr(10), encoding="utf-8")
+    assert ev.required_agents() == ["publisher"]
+    (tmp_path / "publisher.json").write_text(json.dumps({**rec, "prompt_version": version - 1}), encoding="utf-8")
+    assert ev.outdated_versions(["publisher"]) != {}
+    assert ev.main(["publisher", "--replay", "--strict"]) == 1
+
+    # có tên trong REQUIRED.txt mà mất bản ghi → đỏ với --strict, chỉ SKIP nếu không --strict
+    (tmp_path / "publisher.json").unlink()
     assert ev.main(["publisher", "--replay"]) == 0
     assert ev.main(["publisher", "--replay", "--strict"]) == 1
+
     # bản ghi lệch: khoá không khớp → LLMError → đỏ kể cả không --strict
-    (tmp_path / "publisher.json").write_text(json.dumps({"agent": "publisher", "cases": {"khac": {"text": "{}", "model": "m"}}}), encoding="utf-8")
+    (tmp_path / ev.REQUIRED_NAME).unlink()
+    (tmp_path / "publisher.json").write_text(
+        json.dumps({"agent": "publisher", "prompt_version": version, "cases": {"khac": {"text": "{}", "model": "m"}}}), encoding="utf-8")
     assert ev.main(["publisher", "--replay"]) == 1

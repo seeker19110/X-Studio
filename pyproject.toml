@@ -13,7 +13,9 @@ anthropic = ["anthropic>=1.0"]   # provider anthropic cho text; provider openai-
 
 [dependency-groups]
 dev = [
+    "mypy>=2.3.1",
     "pytest>=8",
+    "pytest-cov>=7.1.0",
     "ruff>=0.5",
 ]
 
@@ -23,6 +25,15 @@ package = false
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src/studio"]
+
+[tool.coverage.report]
+# Ngưỡng đặt ở mức đang đạt được (đo 85%): nó chặn tụt lùi, không phải mục tiêu để phấn đấu tới.
+fail_under = 84
+show_missing = true
+skip_covered = true
 
 [tool.ruff]
 line-length = 120

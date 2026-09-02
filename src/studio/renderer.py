@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 from .bus import InMemoryBus
-from .events import AuditLog, CutList, Envelope, MediaAsset, Provenance, Scene, SceneManifest, ThumbnailSpec
+from .events import AssetKind, AuditLog, CutList, Envelope, MediaAsset, Provenance, Scene, SceneManifest, ThumbnailSpec
 from .media import MediaResult, MediaSuite, make_media
 
 ACTOR = "renderer"
@@ -37,7 +37,7 @@ class Renderer:
     def _dir(self, video_id: str) -> Path:
         d = self.out_dir / video_id; d.mkdir(parents=True, exist_ok=True); return d
 
-    def _asset(self, video_id: str, kind: str, r: MediaResult, manifest_version: int, scene_id: str | None = None,
+    def _asset(self, video_id: str, kind: AssetKind, r: MediaResult, manifest_version: int, scene_id: str | None = None,
                prompt_ref: str | None = None, variant_id: str | None = None, license: str = "generated") -> MediaAsset:
         return MediaAsset(video_id=video_id, kind=kind, path=str(r.path), scene_id=scene_id, manifest_version=manifest_version,
                           provider=r.provider, checksum=checksum(r.path), duration_s=r.duration_s, variant_id=variant_id,
@@ -122,9 +122,9 @@ class Renderer:
             if s.scene_id in regen:
                 a, i = regen[s.scene_id]; assets += self.render_scene(new, s, audio=a, image=i)
         v = self.media.cfg.video
-        r = self.media.video.assemble(self._segments(new), self._dir(new.video_id) / f"draft_v{new.version}.mp4",
+        vr = self.media.video.assemble(self._segments(new), self._dir(new.video_id) / f"draft_v{new.version}.mp4",
                                       int(v.get("fps", 30)), str(v.get("resolution", "1920x1080")))
-        assets.append(self._asset(new.video_id, "draft_video", r, new.version, prompt_ref=f"manifest:v{new.version}"))
+        assets.append(self._asset(new.video_id, "draft_video", vr, new.version, prompt_ref=f"manifest:v{new.version}"))
         self.bus.publish(Envelope(topic="scene-manifests", key=new.video_id, actor=ACTOR, payload=new.model_dump()))
         self._publish(assets, f"render.repair:{','.join(sorted(touched)) or 'none'}")
         return new

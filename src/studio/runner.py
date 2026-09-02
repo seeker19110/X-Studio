@@ -14,11 +14,11 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .blackboard import Blackboard
 from .bus import SCHEMA_DIR, BusError, InMemoryBus
-from .events import AuditLog, Envelope
+from .events import AuditLog, Envelope, Topic
 from .llm import Completion, LLMError, ModelClient
 from .registry import AgentSpec, load_agents
 from .tools import ToolBox, ToolError, default_toolbox, tools_prompt
@@ -233,7 +233,7 @@ class AgentRunner:
                 cache_hit_ratio: float = 0.0) -> Envelope:
         spec = self.agents[agent_id]
         try:
-            out = self.bus.publish(Envelope(topic=topic_out, key=key or inp.key, actor=spec.id, payload=payload))
+            out = self.bus.publish(Envelope(topic=cast(Topic, topic_out), key=key or inp.key, actor=spec.id, payload=payload))
         except BusError as e:
             self._audit(spec, "invalid_output", inp, evidence=str(e)[:500], tokens=tokens)
             raise RunnerError(f"{agent_id}: đầu ra không hợp lệ cho {topic_out}: {e}") from e

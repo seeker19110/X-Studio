@@ -1,0 +1,21 @@
+# Agent BẮT BUỘC có bản ghi eval tươi. CI chạy `evals all --replay --strict`:
+# agent có tên ở đây mà thiếu bản ghi, hoặc bản ghi ghi ở phiên bản prompt cũ, thì CI đỏ.
+#
+# Cách dùng: chạy `make eval-record AGENT=<id>` bằng model thật, commit
+# `evals/recordings/<id>.json`, rồi thêm <id> vào danh sách dưới đây. Từ lúc đó mọi
+# thay đổi prompt/skill của agent ấy buộc phải chạy lại eval mới merge được.
+#
+analytics-analyst
+channel-strategist
+community-manager
+editor
+fact-checker
+production-manager
+publisher
+quality-reviewer
+rights-checker
+script-writer
+seo-optimizer
+supervisor
+thumbnail-designer
+trend-researcher

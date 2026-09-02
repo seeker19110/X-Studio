@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .bus import InMemoryBus
-from .events import Envelope, SharedContext
+from .events import Envelope, Namespace, SharedContext
 
 
 class Blackboard:
@@ -17,7 +17,7 @@ class Blackboard:
         if cur is None or sc.version > cur.version:
             self._latest[sc.namespace] = sc
 
-    def write(self, actor: str, namespace: str, content_ref: str, summary: str = "") -> SharedContext:
+    def write(self, actor: str, namespace: Namespace, content_ref: str, summary: str = "") -> SharedContext:
         v = (self._latest[namespace].version + 1) if namespace in self._latest else 1
         sc = SharedContext(namespace=namespace, version=v, content_ref=content_ref, summary=summary)
         self.bus.publish(Envelope(topic="shared-context", key=namespace, actor=actor, payload=sc.model_dump()))

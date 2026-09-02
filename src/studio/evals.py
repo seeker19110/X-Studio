@@ -35,6 +35,7 @@ from .tools import ToolSpec
 
 EVALS_DIR = Path(__file__).resolve().parents[2] / "evals"
 RECORDINGS_DIR = EVALS_DIR / "recordings"
+REQUIRED_NAME = "REQUIRED.txt"  # agent BẮT BUỘC có bản ghi tươi; thiếu hoặc lệch phiên bản prompt → CI đỏ
 
 
 def prompt_key(system: str, user: str) -> str:
@@ -78,9 +79,10 @@ class RecordingClient:
 class ReplayClient:
     def __init__(self, agent_id: str):
         self.agent_id = agent_id
-        self.data = load_recording(agent_id)
-        if self.data is None:
+        data = load_recording(agent_id)
+        if data is None:
             raise LLMError(f"chưa có bản ghi eval cho {agent_id}: chạy `make eval-record AGENT={agent_id}` với model thật")
+        self.data = data
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
@@ -101,6 +103,27 @@ class _Probe:
                  messages: list[dict[str, Any]] | None = None) -> Completion:
         self.key = prompt_key(system, user)
         raise LLMError("probe")
+
+
+def required_agents() -> list[str]:
+    """Agent phải có bản ghi eval tươi. Thêm id vào `evals/recordings/REQUIRED.txt` ngay khi commit bản ghi đầu tiên
+    của agent đó; từ lúc ấy CI đỏ nếu bản ghi biến mất hoặc lệch phiên bản prompt."""
+    p = RECORDINGS_DIR / REQUIRED_NAME
+    if not p.exists(): return []
+    return [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+def outdated_versions(agent_ids: list[str] | None = None) -> dict[str, str]:
+    """Bản ghi ghi bằng phiên bản prompt cũ hơn phiên bản hiện tại → {agent: "ghi v3, hiện v5"}.
+    Kiểm offline, không gọi model: đây là răng của "đổi prompt thì phải chạy lại eval"."""
+    agents = load_agents(); out: dict[str, str] = {}
+    for aid in agent_ids or sorted(agents):
+        rec = load_recording(aid)
+        if rec is None: continue
+        got, want = int(rec.get("prompt_version", 0)), agents[aid].version
+        if got != want: out[aid] = f"bản ghi ở prompt v{got}, agent hiện v{want}"
+    return out
 
 
 def stale_recordings(agent_ids: list[str] | None = None) -> dict[str, list[str]]:
@@ -204,26 +227,34 @@ def main(argv: list[str] | None = None) -> int:
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--record", action="store_true")
     mode.add_argument("--replay", action="store_true")
-    ap.add_argument("--strict", action="store_true", help="với --replay: agent chưa có bản ghi cũng tính là fail")
+    ap.add_argument("--strict", action="store_true",
+                    help="với --replay: agent trong evals/recordings/REQUIRED.txt mà thiếu bản ghi hoặc bản ghi lệch "
+                         "phiên bản prompt thì tính là fail")
     ns = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"): sys.stdout.reconfigure(encoding="utf-8")
     agents = load_agents()
     ids = sorted(agents) if ns.agent == "all" else [ns.agent]
     ok = True
+    required = set(required_agents()) if ns.strict else set()
+    if ns.strict:
+        for aid, why in outdated_versions(ids).items():
+            print(f"FAIL {aid}: {why} — chạy `make eval-record AGENT={aid}` rồi commit lại"); ok = False
     for aid in ids:
         if not load_cases(aid): continue
         if ns.replay:
             try: client: ModelClient = ReplayClient(aid)
             except LLMError as e:
-                print(f"SKIP {aid}: {e}"); ok = ok and not ns.strict; continue
+                print(f"{'FAIL' if aid in required else 'SKIP'} {aid}: {e}")
+                ok = ok and aid not in required
+                continue
         else:
             from .llm import make_client
             client = RecordingClient(make_client(), aid) if ns.record else make_client()
         res = run_eval(aid, client, agents)
         passed = _print(aid, res)
         # --replay (CI): cổng là "bản ghi còn khớp prompt và đầu ra hợp lệ" — ca chấm không đạt là tín hiệu chất lượng
-        # cho vòng sau, không làm CI đỏ (đỏ khi bản ghi lệch/thiếu, hoặc --strict). Model thật: mọi ca phải đạt.
-        ok = ok and (passed if (ns.strict or not ns.replay) else not any(r.error for r in res))
+        # cho vòng sau, không làm CI đỏ (đỏ khi bản ghi lệch/thiếu prompt, hoặc --strict + REQUIRED.txt). Model thật: mọi ca phải đạt.
+        ok = ok and (passed if not ns.replay else not any(r.error for r in res))
         if ns.record and isinstance(client, RecordingClient):
             print(f"đã ghi {client.save()}")
     return 0 if ok else 1

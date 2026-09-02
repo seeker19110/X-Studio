@@ -17,6 +17,8 @@ Namespace = Literal["strategy", "research", "voice", "production", "brand", "seo
 ReviewSource = Literal["fact", "rights", "quality"]
 AssetKind = Literal["scene_audio", "scene_image", "draft_video", "final_video", "thumbnail"]
 VideoFormat = Literal["long", "short"]
+SupervisorActionKind = Literal["pause", "resume", "escalate", "budget_cut", "warn"]
+ExperimentKind = Literal["title", "thumbnail"]
 
 NAMESPACE_OWNERS: dict[str, set[str]] = {
     "strategy": {"channel-strategist"}, "research": {"trend-researcher"}, "voice": {"script-writer"},
@@ -236,7 +238,7 @@ class RetentionDrop(BaseModel):
 
 class Experiment(BaseModel):
     experiment_id: str
-    kind: Literal["title", "thumbnail"]
+    kind: ExperimentKind
     variants: list[str]
     winner: str | None = None
     ctr_lift: float | None = None
@@ -280,7 +282,7 @@ class AuditLog(BaseModel):
 
 class SupervisorAction(BaseModel):
     target: str
-    action: Literal["pause", "resume", "escalate", "budget_cut", "warn"]
+    action: SupervisorActionKind
     reason: str
     evidence: str | None = None
 
