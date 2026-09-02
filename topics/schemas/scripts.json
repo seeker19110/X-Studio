@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/scripts",
+  "title": "scripts",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "scripts"
+    },
+    "key": {
+      "type": "string",
+      "description": "= video_id"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "properties": {
+        "video_id": {
+          "type": "string"
+        },
+        "version": {
+          "default": 1,
+          "type": "integer"
+        },
+        "working_title": {
+          "type": "string"
+        },
+        "hook": {
+          "type": "string"
+        },
+        "sections": {
+          "items": {
+            "properties": {
+              "heading": {
+                "type": "string"
+              },
+              "narration": {
+                "type": "string"
+              },
+              "visual_notes": {
+                "default": "",
+                "type": "string"
+              },
+              "claim_ids": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "heading",
+              "narration"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "cta": {
+          "default": "",
+          "type": "string"
+        },
+        "claims": {
+          "default": [],
+          "items": {
+            "properties": {
+              "claim_id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "needs_verification": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "claim_id",
+              "text"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "word_count": {
+          "default": 0,
+          "type": "integer"
+        },
+        "estimated_minutes": {
+          "default": 0.0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "video_id",
+        "working_title",
+        "hook",
+        "sections"
+      ],
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

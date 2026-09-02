@@ -1,0 +1,34 @@
+# Eval cho script-writer. Chạy: python -m studio.evals script-writer
+cases:
+  - name: ho-so-co-nguon-phai-ra-kich-ban-co-claim-dan-nguon
+    topic_out: scripts
+    extra:
+      brief: {video_id: CH1-V1, channel_id: CH1, working_title: "AI dựng video cho người mới", pillar: "hướng dẫn", angle: "đo thời gian thật", audience: "người mới", format: long, target_minutes: 6, key_points: ["vấn đề", "giải pháp"], boundaries: ["không hứa thu nhập"]}
+    input:
+      topic: research-dossiers
+      key: CH1-V1
+      actor: trend-researcher
+      payload:
+        video_id: CH1-V1
+        sources: [{title: "Báo cáo ngành 2026", url: "https://example.org/report", type: report, accessed: "2026-09-02"}]
+        evidence: ["42% người mới bỏ cuộc sau 3 video (report, trang 14)"]
+        competitor_videos: [{title: "Video đối thủ", url: "https://youtube.com/watch?v=x", views: 120000}]
+        gaps: ["chưa ai đo thời gian thật"]
+    expect:
+      equals: {video_id: CH1-V1, version: 1}
+      min_len: {hook: 5, sections: 1, claims: 1}
+      contains: {claims.0.source: "example.org"}
+
+  - name: lam-lai-theo-hint-phai-tang-version
+    topic_out: scripts
+    extra:
+      dossier: {video_id: CH1-V1, sources: [{title: "Báo cáo", url: "https://example.org/report"}], evidence: ["42% (report)"]}
+      previous_script: {video_id: CH1-V1, version: 1, working_title: t, hook: "Xin chào các bạn, hôm nay mình sẽ nói về AI", sections: [{heading: a, narration: n}]}
+    input:
+      topic: video-briefs
+      key: CH1-V1
+      actor: desk
+      payload: {video_id: CH1-V1, channel_id: CH1, working_title: "AI dựng video", pillar: "hướng dẫn", angle: a, audience: u, retry: 1, hint: "[script] fact: hook dài và mở bằng chào hỏi; C1 không có nguồn", estimate_tokens: 60000, budget_tokens: 100000}
+    expect:
+      equals: {video_id: CH1-V1, version: 2}
+      min_len: {sections: 1}

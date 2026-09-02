@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/shared-context",
+  "title": "shared-context",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "shared-context"
+    },
+    "key": {
+      "type": "string",
+      "description": "= namespace"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "properties": {
+        "namespace": {
+          "enum": [
+            "strategy",
+            "research",
+            "voice",
+            "production",
+            "brand",
+            "seo",
+            "rights",
+            "insights",
+            "community",
+            "knowledge"
+          ],
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "content_ref": {
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "namespace",
+        "version",
+        "content_ref"
+      ],
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

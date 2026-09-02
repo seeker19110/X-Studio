@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/thumbnail-specs",
+  "title": "thumbnail-specs",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "thumbnail-specs"
+    },
+    "key": {
+      "type": "string",
+      "description": "= video_id"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "properties": {
+        "video_id": {
+          "type": "string"
+        },
+        "variants": {
+          "items": {
+            "properties": {
+              "variant_id": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "overlay_text": {
+                "type": "string"
+              },
+              "style": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "variant_id",
+              "prompt",
+              "overlay_text"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "chosen": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "video_id",
+        "variants"
+      ],
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

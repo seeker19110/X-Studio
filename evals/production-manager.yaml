@@ -1,0 +1,30 @@
+# Eval cho production-manager. Chạy: python -m studio.evals production-manager
+cases:
+  - name: kich-ban-pass-fact-phai-ra-manifest-canh-ngan
+    topic_out: scene-manifests
+    extra:
+      script: {video_id: CH1-V1, version: 1, working_title: t, hook: "Bạn mất 6 giờ cho một video?", sections: [{heading: "Vấn đề", narration: "Hầu hết người mới mất nhiều giờ dựng video. Họ bỏ cuộc sau vài lần.", visual_notes: "bàn làm việc"}, {heading: "Giải pháp", narration: "Một pipeline tự động rút xuống còn 30 phút.", visual_notes: "sơ đồ"}], cta: "Đăng ký"}
+      brief: {video_id: CH1-V1, format: long, target_minutes: 1}
+    input:
+      topic: review-results
+      key: CH1-V1
+      actor: fact-checker
+      payload: {video_id: CH1-V1, source: fact, verdict: pass}
+    expect:
+      equals: {video_id: CH1-V1, aspect: "16:9"}
+      min_len: {scenes: 2}
+
+  - name: short-phai-doc-9-16
+    topic_out: scene-manifests
+    extra:
+      script: {video_id: CH1-V3, version: 1, working_title: t, hook: "Ba mẹo trong 30 giây", sections: [{heading: "Mẹo", narration: "Mẹo một. Mẹo hai. Mẹo ba.", visual_notes: "ba icon"}]}
+      brief: {video_id: CH1-V3, format: short, target_minutes: 0.5}
+    input:
+      topic: review-results
+      key: CH1-V3
+      actor: fact-checker
+      payload: {video_id: CH1-V3, source: fact, verdict: pass}
+    expect:
+      equals: {video_id: CH1-V3}
+      min_len: {scenes: 1}
+      max_len: {scenes: 8}

@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/metadata-packages",
+  "title": "metadata-packages",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "metadata-packages"
+    },
+    "key": {
+      "type": "string",
+      "description": "= video_id"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "properties": {
+        "video_id": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "tags": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "chapters": {
+          "default": [],
+          "items": {
+            "properties": {
+              "time": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "time",
+              "label"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "primary_keyword": {
+          "default": "",
+          "type": "string"
+        },
+        "language": {
+          "default": "vi",
+          "type": "string"
+        },
+        "category": {
+          "default": "",
+          "type": "string"
+        },
+        "alt_titles": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "video_id",
+        "title",
+        "description"
+      ],
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/cut-lists",
+  "title": "cut-lists",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "cut-lists"
+    },
+    "key": {
+      "type": "string",
+      "description": "= video_id"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "description": "Quyết định dựng của editor trên bản nháp: chốt, hoặc danh sách sửa cảnh (giới hạn MAX_REPAIR_ROUNDS).",
+      "properties": {
+        "video_id": {
+          "type": "string"
+        },
+        "manifest_version": {
+          "type": "integer"
+        },
+        "decision": {
+          "enum": [
+            "approve",
+            "repair"
+          ],
+          "type": "string"
+        },
+        "repairs": {
+          "default": [],
+          "items": {
+            "properties": {
+              "scene_id": {
+                "type": "string"
+              },
+              "action": {
+                "enum": [
+                  "regenerate_audio",
+                  "regenerate_image",
+                  "regenerate_both",
+                  "replace_asset",
+                  "lock"
+                ],
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "new_visual_prompt": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "new_narration": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "replacement_path": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "scene_id",
+              "action",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "order": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "notes": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "video_id",
+        "manifest_version",
+        "decision"
+      ],
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,33 @@
+# Eval cho fact-checker. Chạy: python -m studio.evals fact-checker
+cases:
+  - name: claim-khong-nguon-phai-block
+    topic_out: review-results
+    input:
+      topic: scripts
+      key: CH1-V1
+      actor: script-writer
+      payload:
+        video_id: CH1-V1
+        working_title: t
+        hook: "Bạn mất 6 giờ cho một video?"
+        sections: [{heading: "Vấn đề", narration: "90% kênh mới chết trong năm đầu.", claim_ids: [C1]}]
+        claims: [{claim_id: C1, text: "90% kênh mới chết trong năm đầu", source: null, needs_verification: true}]
+    expect:
+      equals: {video_id: CH1-V1, source: fact, verdict: block}
+      min_len: {findings: 1}
+      one_of: {findings.0.level: [block]}
+
+  - name: claim-co-nguon-khop-phai-pass
+    topic_out: review-results
+    input:
+      topic: scripts
+      key: CH1-V2
+      actor: script-writer
+      payload:
+        video_id: CH1-V2
+        working_title: t
+        hook: "Một video 8 phút mất bạn 6 giờ?"
+        sections: [{heading: "Vấn đề", narration: "Theo báo cáo ngành 2026, 42% người mới bỏ cuộc sau ba video.", claim_ids: [C1]}]
+        claims: [{claim_id: C1, text: "42% người mới bỏ cuộc sau 3 video", source: "https://example.org/report#p14 (41.8%, n=2400, 2025)", needs_verification: true}]
+    expect:
+      equals: {video_id: CH1-V2, source: fact, verdict: pass}

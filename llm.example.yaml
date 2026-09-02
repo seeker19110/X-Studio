@@ -1,0 +1,24 @@
+# Cấu hình model TEXT cho runner/eval. Sao chép thành `llm.yaml` (bị gitignore) hoặc dùng biến môi trường STUDIO_*.
+# Phòng ban trung lập provider: đổi model/provider ở đây, không đổi code hay prompt.
+
+# anthropic | openai (mọi server OpenAI-compatible: OpenAI, OpenRouter, Gemini OpenAI-compat, Ollama, Groq, vLLM...) | fake
+provider: openai
+
+# model theo tier trong front matter agent
+models:
+  strong: gpt-5            # ví dụ; hoặc claude-opus-5, gemini-2.5-pro, qwen3:32b (Ollama)...
+  standard: gpt-5-mini
+
+# chỉ provider openai: base URL của server. Ollama: http://localhost:11434/v1 ; OpenRouter: https://openrouter.ai/api/v1
+base_url: https://api.openai.com/v1
+# api key đặt qua biến môi trường STUDIO_LLM_API_KEY (không ghi vào file)
+
+max_tokens: 16000
+
+# chỉ provider anthropic: mức nỗ lực theo tier (low | medium | high | xhigh | max)
+effort:
+  strong: high
+  standard: medium
+
+# tham số provider-specific truyền thẳng vào request (vd. temperature)
+extra: {}

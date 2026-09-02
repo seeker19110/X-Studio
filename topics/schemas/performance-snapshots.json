@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/performance-snapshots",
+  "title": "performance-snapshots",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "performance-snapshots"
+    },
+    "key": {
+      "type": "string",
+      "description": "= video_id"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "description": "Số liệu thật từ nền tảng (người/adapter nạp vào). Agent không tự bịa số.",
+      "properties": {
+        "video_id": {
+          "type": "string"
+        },
+        "channel_id": {
+          "type": "string"
+        },
+        "window_days": {
+          "default": 7,
+          "type": "integer"
+        },
+        "views": {
+          "default": 0,
+          "type": "integer"
+        },
+        "impressions": {
+          "default": 0,
+          "type": "integer"
+        },
+        "ctr": {
+          "default": 0.0,
+          "type": "number"
+        },
+        "avg_view_duration_s": {
+          "default": 0.0,
+          "type": "number"
+        },
+        "retention_curve": {
+          "default": [],
+          "items": {
+            "properties": {
+              "t": {
+                "type": "number"
+              },
+              "pct": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "t",
+              "pct"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "likes": {
+          "default": 0,
+          "type": "integer"
+        },
+        "comments": {
+          "default": 0,
+          "type": "integer"
+        },
+        "variant_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "video_id",
+        "channel_id"
+      ],
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

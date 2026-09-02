@@ -1,0 +1,23 @@
+# Cấu hình lớp MEDIA (ADR-0003): giọng đọc (TTS), ảnh cảnh, ghép video. Sao chép thành `media.yaml` (bị gitignore)
+# hoặc dùng biến môi trường STUDIO_MEDIA_*. Mỗi kênh chọn provider độc lập; `fake` sinh file giữ chỗ để chạy offline.
+
+tts:
+  provider: openai          # openai (POST {base_url}/audio/speech, mọi server tương thích) | fake
+  base_url: https://api.openai.com/v1
+  model: gpt-4o-mini-tts
+  voice: alloy
+
+image:
+  provider: openai          # openai (POST {base_url}/images/generations) | fake
+  base_url: https://api.openai.com/v1
+  model: gpt-image-1
+  size: 1792x1024
+
+video:
+  provider: ffmpeg          # ffmpeg (ghép ảnh + audio thành MP4, cần ffmpeg trên PATH) | fake
+  fps: 30
+  resolution: 1920x1080
+
+# thư mục đặt asset sinh ra (bị gitignore)
+output_dir: output
+# api key cho tts/image đặt qua STUDIO_MEDIA_API_KEY (hoặc STUDIO_LLM_API_KEY nếu cùng nhà cung cấp)

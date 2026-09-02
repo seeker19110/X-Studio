@@ -1,0 +1,24 @@
+# Eval cho trend-researcher. Chạy: python -m studio.evals trend-researcher
+cases:
+  - name: brief-kenh-phai-ra-trend-co-nguon
+    topic_out: trend-reports
+    input:
+      topic: channel-briefs
+      key: CH1
+      actor: human
+      payload: {channel_id: CH1, goals: ["1000 sub"], audience: "người mới làm YouTube", pillars: ["hướng dẫn", "so sánh"], cadence: "2/tuần"}
+    expect:
+      equals: {channel_id: CH1}
+      min_len: {trends: 1, sources: 1}
+      one_of: {trends.0.momentum: [rising, stable, falling]}
+
+  - name: brief-video-phai-ra-ho-so-co-bang-chung-va-doi-thu
+    topic_out: research-dossiers
+    input:
+      topic: video-briefs
+      key: CH1-V1
+      actor: channel-strategist
+      payload: {video_id: CH1-V1, channel_id: CH1, working_title: "AI dựng video cho người mới", pillar: "hướng dẫn", angle: "đo thời gian thật", audience: "người mới", estimate_tokens: 60000, budget_tokens: 100000}
+    expect:
+      equals: {video_id: CH1-V1}
+      min_len: {sources: 1, evidence: 1, competitor_videos: 1}

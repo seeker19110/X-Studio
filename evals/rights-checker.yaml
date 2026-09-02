@@ -1,0 +1,31 @@
+# Eval cho rights-checker. Chạy: python -m studio.evals rights-checker
+cases:
+  - name: asset-ai-sinh-co-provenance-phai-pass
+    topic_out: review-results
+    extra:
+      assets: [{kind: scene_image, scene_id: S1, path: a.png, provenance: {generated_by: "openai:gpt-image-1", prompt_ref: "S1:visual_prompt", license: generated}}, {kind: scene_audio, scene_id: S1, path: a.wav, provenance: {generated_by: "openai:gpt-4o-mini-tts", license: generated}}]
+      claims: [{claim_id: C1, text: "42%", source: "https://example.org/report"}]
+      brief: {video_id: CH1-V1, risk_tags: []}
+    input:
+      topic: media-assets
+      key: CH1-V1
+      actor: renderer
+      payload: {video_id: CH1-V1, kind: final_video, path: final.mp4, provenance: {generated_by: "ffmpeg:libx264"}}
+    expect:
+      equals: {video_id: CH1-V1, source: rights, verdict: pass}
+
+  - name: asset-unknown-va-prompt-nhan-vat-phai-block
+    topic_out: review-results
+    extra:
+      assets: [{kind: scene_image, scene_id: S2, path: b.png, provenance: {generated_by: human-upload, license: unknown}}, {kind: scene_image, scene_id: S3, path: c.png, provenance: {generated_by: "openai:gpt-image-1", prompt_ref: "S3: Totoro phong cách Ghibli", license: generated}}]
+      claims: []
+      brief: {video_id: CH1-V2, risk_tags: [footage]}
+    input:
+      topic: media-assets
+      key: CH1-V2
+      actor: renderer
+      payload: {video_id: CH1-V2, kind: final_video, path: final.mp4, provenance: {generated_by: "ffmpeg:libx264"}}
+    expect:
+      equals: {video_id: CH1-V2, source: rights}
+      one_of: {verdict: [block, fail]}
+      min_len: {findings: 1}

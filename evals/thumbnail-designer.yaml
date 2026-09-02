@@ -1,0 +1,30 @@
+# Eval cho thumbnail-designer. Chạy: python -m studio.evals thumbnail-designer
+cases:
+  - name: manifest-phai-ra-2-3-bien-the
+    topic_out: thumbnail-specs
+    extra:
+      script: {video_id: CH1-V1, working_title: "AI dựng video cho người mới", hook: "6 giờ xuống 30 phút"}
+      brief: {video_id: CH1-V1, format: long}
+    input:
+      topic: scene-manifests
+      key: CH1-V1
+      actor: production-manager
+      payload: {video_id: CH1-V1, version: 1, scenes: [{scene_id: S1, order: 0, narration: a, visual_prompt: "bàn làm việc"}]}
+    expect:
+      equals: {video_id: CH1-V1}
+      min_len: {variants: 2, chosen: 1}
+      max_len: {variants: 3}
+
+  - name: short-van-phai-co-bien-the
+    topic_out: thumbnail-specs
+    extra:
+      script: {video_id: CH1-V2, working_title: "So sánh 3 công cụ AI", hook: "Công cụ nào nhanh nhất?"}
+      brief: {video_id: CH1-V2, format: short}
+    input:
+      topic: scene-manifests
+      key: CH1-V2
+      actor: production-manager
+      payload: {video_id: CH1-V2, version: 1, aspect: "9:16", scenes: [{scene_id: S1, order: 0, narration: a, visual_prompt: "ba icon"}]}
+    expect:
+      equals: {video_id: CH1-V2}
+      min_len: {variants: 2}

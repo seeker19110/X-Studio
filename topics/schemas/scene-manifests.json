@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/scene-manifests",
+  "title": "scene-manifests",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "scene-manifests"
+    },
+    "key": {
+      "type": "string",
+      "description": "= video_id"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "description": "Bản ghi bền vững của một sản xuất (ADR-0004): sửa một cảnh không phải làm lại cả video.",
+      "properties": {
+        "video_id": {
+          "type": "string"
+        },
+        "version": {
+          "default": 1,
+          "type": "integer"
+        },
+        "script_version": {
+          "default": 1,
+          "type": "integer"
+        },
+        "scenes": {
+          "items": {
+            "properties": {
+              "scene_id": {
+                "type": "string"
+              },
+              "order": {
+                "type": "integer"
+              },
+              "narration": {
+                "type": "string"
+              },
+              "visual_prompt": {
+                "type": "string"
+              },
+              "duration_s": {
+                "default": 6.0,
+                "type": "number"
+              },
+              "locked": {
+                "default": false,
+                "type": "boolean"
+              },
+              "asset_refs": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "default": {},
+                "type": "object"
+              }
+            },
+            "required": [
+              "scene_id",
+              "order",
+              "narration",
+              "visual_prompt"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "voice": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        },
+        "aspect": {
+          "default": "16:9",
+          "enum": [
+            "16:9",
+            "9:16"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "video_id",
+        "scenes"
+      ],
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

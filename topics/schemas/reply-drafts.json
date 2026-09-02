@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/reply-drafts",
+  "title": "reply-drafts",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "reply-drafts"
+    },
+    "key": {
+      "type": "string",
+      "description": "= video_id"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "properties": {
+        "comment_id": {
+          "type": "string"
+        },
+        "video_id": {
+          "type": "string"
+        },
+        "reply": {
+          "type": "string"
+        },
+        "theme": {
+          "default": "",
+          "type": "string"
+        },
+        "sentiment": {
+          "default": "neutral",
+          "enum": [
+            "positive",
+            "neutral",
+            "negative",
+            "question"
+          ],
+          "type": "string"
+        },
+        "requires_human": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "comment_id",
+        "video_id",
+        "reply"
+      ],
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

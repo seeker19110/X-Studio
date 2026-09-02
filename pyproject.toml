@@ -1,0 +1,35 @@
+[project]
+name = "video-creators"
+version = "0.1.0"
+description = "Phòng ban sáng tạo video đa agent, event-driven, approval-first (7 khối, 14 agent + human gate)"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=1.0"]   # provider anthropic cho text; provider openai-compatible (text/TTS/ảnh) không cần SDK
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "RUF"]
+# E701/E702: cố ý viết gọn nhiều lệnh một dòng như software-company. RUF001-003: ký tự Unicode tiếng Việt trong comment.
+ignore = ["E701", "E702", "RUF001", "RUF002", "RUF003"]

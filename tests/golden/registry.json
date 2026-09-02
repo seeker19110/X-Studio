@@ -1,0 +1,319 @@
+{
+  "analytics-analyst": {
+    "block": "analytics",
+    "budget_tokens_per_task": 40000,
+    "context_namespace_write": "insights",
+    "max_retries": 0,
+    "model_tier": "standard",
+    "reads": [
+      "performance-snapshots"
+    ],
+    "skills": [
+      "youtube-analytics",
+      "growth-experiments"
+    ],
+    "skills_core": [
+      "retention-storytelling"
+    ],
+    "timeout_minutes": 30,
+    "version": 1,
+    "writes": [
+      "analytics-reports"
+    ]
+  },
+  "channel-strategist": {
+    "block": "strategy",
+    "budget_tokens_per_task": 80000,
+    "context_namespace_write": "strategy",
+    "max_retries": 1,
+    "model_tier": "strong",
+    "reads": [
+      "trend-reports",
+      "analytics-reports"
+    ],
+    "skills": [
+      "channel-strategy"
+    ],
+    "skills_core": [
+      "growth-experiments",
+      "cost-estimation",
+      "youtube-analytics"
+    ],
+    "timeout_minutes": 60,
+    "version": 1,
+    "writes": [
+      "video-briefs"
+    ]
+  },
+  "community-manager": {
+    "block": "distribution",
+    "budget_tokens_per_task": 30000,
+    "context_namespace_write": "community",
+    "max_retries": 0,
+    "model_tier": "standard",
+    "reads": [
+      "audience-comments"
+    ],
+    "skills": [
+      "community-engagement"
+    ],
+    "skills_core": [
+      "content-policy"
+    ],
+    "timeout_minutes": 30,
+    "version": 1,
+    "writes": [
+      "reply-drafts"
+    ]
+  },
+  "editor": {
+    "block": "production",
+    "budget_tokens_per_task": 40000,
+    "context_namespace_write": null,
+    "max_retries": 0,
+    "model_tier": "standard",
+    "reads": [
+      "media-assets"
+    ],
+    "skills": [
+      "video-editing"
+    ],
+    "skills_core": [
+      "retention-storytelling",
+      "visual-direction"
+    ],
+    "timeout_minutes": 30,
+    "version": 1,
+    "writes": [
+      "cut-lists"
+    ]
+  },
+  "fact-checker": {
+    "block": "quality",
+    "budget_tokens_per_task": 60000,
+    "context_namespace_write": null,
+    "max_retries": 0,
+    "model_tier": "strong",
+    "reads": [
+      "scripts"
+    ],
+    "skills": [
+      "fact-checking"
+    ],
+    "skills_core": [
+      "source-evaluation",
+      "content-policy"
+    ],
+    "timeout_minutes": 45,
+    "version": 1,
+    "writes": [
+      "review-results"
+    ]
+  },
+  "production-manager": {
+    "block": "production",
+    "budget_tokens_per_task": 60000,
+    "context_namespace_write": "production",
+    "max_retries": 1,
+    "model_tier": "standard",
+    "reads": [
+      "review-results"
+    ],
+    "skills": [
+      "scene-production",
+      "narration-tts",
+      "visual-direction"
+    ],
+    "skills_core": [
+      "media-rights"
+    ],
+    "timeout_minutes": 45,
+    "version": 1,
+    "writes": [
+      "scene-manifests"
+    ]
+  },
+  "publisher": {
+    "block": "distribution",
+    "budget_tokens_per_task": 20000,
+    "context_namespace_write": null,
+    "max_retries": 0,
+    "model_tier": "standard",
+    "reads": [
+      "metadata-packages",
+      "reply-drafts"
+    ],
+    "skills": [
+      "publishing-ops"
+    ],
+    "skills_core": [
+      "discoverability-preflight"
+    ],
+    "timeout_minutes": 30,
+    "version": 1,
+    "writes": [
+      "publish-events"
+    ]
+  },
+  "quality-reviewer": {
+    "block": "quality",
+    "budget_tokens_per_task": 50000,
+    "context_namespace_write": null,
+    "max_retries": 0,
+    "model_tier": "strong",
+    "reads": [
+      "media-assets"
+    ],
+    "skills": [
+      "quality-review"
+    ],
+    "skills_core": [
+      "retention-storytelling",
+      "content-policy"
+    ],
+    "timeout_minutes": 45,
+    "version": 1,
+    "writes": [
+      "review-results"
+    ]
+  },
+  "rights-checker": {
+    "block": "quality",
+    "budget_tokens_per_task": 40000,
+    "context_namespace_write": "rights",
+    "max_retries": 0,
+    "model_tier": "strong",
+    "reads": [
+      "media-assets"
+    ],
+    "skills": [
+      "media-rights"
+    ],
+    "skills_core": [
+      "content-policy"
+    ],
+    "timeout_minutes": 45,
+    "version": 1,
+    "writes": [
+      "review-results"
+    ]
+  },
+  "script-writer": {
+    "block": "creative",
+    "budget_tokens_per_task": 90000,
+    "context_namespace_write": "voice",
+    "max_retries": 2,
+    "model_tier": "strong",
+    "reads": [
+      "research-dossiers",
+      "video-briefs"
+    ],
+    "skills": [
+      "scriptwriting",
+      "retention-storytelling"
+    ],
+    "skills_core": [
+      "content-policy",
+      "fact-checking"
+    ],
+    "timeout_minutes": 60,
+    "version": 1,
+    "writes": [
+      "scripts"
+    ]
+  },
+  "seo-optimizer": {
+    "block": "distribution",
+    "budget_tokens_per_task": 40000,
+    "context_namespace_write": "seo",
+    "max_retries": 1,
+    "model_tier": "standard",
+    "reads": [
+      "review-results",
+      "metadata-packages"
+    ],
+    "skills": [
+      "youtube-seo",
+      "discoverability-preflight"
+    ],
+    "skills_core": [
+      "content-policy"
+    ],
+    "timeout_minutes": 30,
+    "version": 1,
+    "writes": [
+      "metadata-packages"
+    ]
+  },
+  "supervisor": {
+    "block": "supervision",
+    "budget_tokens_per_task": 30000,
+    "context_namespace_write": "knowledge",
+    "max_retries": 0,
+    "model_tier": "standard",
+    "reads": [
+      "audit-log",
+      "*"
+    ],
+    "skills": [
+      "ai-governance",
+      "prompt-engineering"
+    ],
+    "skills_core": [
+      "finops",
+      "cost-estimation"
+    ],
+    "timeout_minutes": 15,
+    "version": 1,
+    "writes": [
+      "supervisor-actions",
+      "knowledge-base"
+    ]
+  },
+  "thumbnail-designer": {
+    "block": "production",
+    "budget_tokens_per_task": 30000,
+    "context_namespace_write": "brand",
+    "max_retries": 0,
+    "model_tier": "standard",
+    "reads": [
+      "scene-manifests"
+    ],
+    "skills": [
+      "thumbnail-design"
+    ],
+    "skills_core": [
+      "visual-direction",
+      "media-rights"
+    ],
+    "timeout_minutes": 30,
+    "version": 1,
+    "writes": [
+      "thumbnail-specs"
+    ]
+  },
+  "trend-researcher": {
+    "block": "strategy",
+    "budget_tokens_per_task": 60000,
+    "context_namespace_write": "research",
+    "max_retries": 1,
+    "model_tier": "standard",
+    "reads": [
+      "channel-briefs",
+      "video-briefs"
+    ],
+    "skills": [
+      "trend-research",
+      "source-evaluation"
+    ],
+    "skills_core": [
+      "content-policy"
+    ],
+    "timeout_minutes": 60,
+    "version": 1,
+    "writes": [
+      "trend-reports",
+      "research-dossiers"
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+# Eval cho community-manager. Chạy: python -m studio.evals community-manager
+cases:
+  - name: cau-hoi-gia-phai-cho-nguoi
+    topic_out: reply-drafts
+    many: true
+    input:
+      topic: audience-comments
+      key: CH1-V1
+      actor: human
+      payload: {video_id: CH1-V1, comments: [{comment_id: c1, text: "Công cụ này giá bao nhiêu một tháng?"}]}
+    expect:
+      equals: {video_id: CH1-V1, comment_id: c1, requires_human: true}
+      min_len: {reply: 5}
+
+  - name: loi-khen-tra-loi-ngan
+    topic_out: reply-drafts
+    many: true
+    input:
+      topic: audience-comments
+      key: CH1-V1
+      actor: human
+      payload: {video_id: CH1-V1, comments: [{comment_id: c2, text: "Hay quá, cảm ơn bạn!"}]}
+    expect:
+      equals: {video_id: CH1-V1, comment_id: c2}
+      one_of: {sentiment: [positive, neutral, question, negative]}

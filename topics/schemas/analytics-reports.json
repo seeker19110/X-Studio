@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/analytics-reports",
+  "title": "analytics-reports",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "analytics-reports"
+    },
+    "key": {
+      "type": "string",
+      "description": "= video_id hoặc channel_id"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "properties": {
+        "channel_id": {
+          "type": "string"
+        },
+        "video_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "insights": {
+          "default": [],
+          "items": {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "evidence": {
+                "type": "string"
+              },
+              "action": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "evidence"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "retention_drops": {
+          "default": [],
+          "items": {
+            "properties": {
+              "scene_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "t": {
+                "type": "number"
+              },
+              "drop_pct": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "t",
+              "drop_pct"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "experiments": {
+          "default": [],
+          "items": {
+            "properties": {
+              "experiment_id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "title",
+                  "thumbnail"
+                ],
+                "type": "string"
+              },
+              "variants": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "winner": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "ctr_lift": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "confidence": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "retention_guard_ok": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "experiment_id",
+              "kind",
+              "variants"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "recommendations": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "channel_id"
+      ],
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

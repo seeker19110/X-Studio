@@ -1,0 +1,31 @@
+# Eval cho seo-optimizer. Chạy: python -m studio.evals seo-optimizer
+cases:
+  - name: kich-ban-phai-ra-metadata-dung-gioi-han
+    topic_out: metadata-packages
+    extra:
+      script: {video_id: CH1-V1, working_title: "AI dựng video cho người mới", hook: "6 giờ xuống 30 phút", sections: [{heading: "Vấn đề", narration: n}, {heading: "Giải pháp", narration: n}, {heading: "Kết", narration: n}]}
+      brief: {video_id: CH1-V1, format: long, pillar: "hướng dẫn"}
+    input:
+      topic: review-results
+      key: CH1-V1
+      actor: fact-checker
+      payload: {video_id: CH1-V1, source: fact, verdict: pass}
+    expect:
+      equals: {video_id: CH1-V1}
+      min_len: {tags: 3, description: 200, primary_keyword: 3, chapters: 3}
+      max_len: {title: 100}
+
+  - name: preflight-block-phai-sua-tieu-de
+    topic_out: metadata-packages
+    extra:
+      preflight_findings: [{level: block, text: "tiêu đề 120 ký tự > 100", location: title}]
+      instruction: "sửa các finding mức block, giữ nguyên phần đã tốt"
+    input:
+      topic: metadata-packages
+      key: CH1-V1
+      actor: seo-optimizer
+      payload: {video_id: CH1-V1, title: "AI dựng video cho người mới hướng dẫn từ A đến Z cực kỳ chi tiết dành cho tất cả mọi người muốn bắt đầu làm YouTube năm 2026", description: "AI dựng video giúp người mới rút thời gian. Mô tả chi tiết các bước, công cụ, thời gian đo được và kết luận cho người mới bắt đầu làm YouTube với ngân sách thấp.", tags: ["ai dựng video"], primary_keyword: "AI dựng video", chapters: [{time: "00:00", label: a}, {time: "00:15", label: b}, {time: "00:30", label: c}]}
+    expect:
+      equals: {video_id: CH1-V1}
+      max_len: {title: 100}
+      contains: {title: "AI dựng video"}

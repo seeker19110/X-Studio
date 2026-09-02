@@ -1,0 +1,42 @@
+# Eval cho channel-strategist. Chạy: python -m studio.evals channel-strategist
+cases:
+  - name: trend-bao-cao-phai-ra-ke-hoach-co-uoc-luong
+    topic_out: video-briefs
+    many: true
+    extra:
+      channel_brief: {channel_id: CH1, goals: ["1000 sub trong 3 tháng"], audience: "người mới làm YouTube", pillars: ["hướng dẫn", "so sánh"], cadence: "2 video/tuần", boundaries: ["không hứa thu nhập"]}
+      calibration: {long: {ratio_median: 1.1, samples: 4}}
+      desk: {}
+    input:
+      topic: trend-reports
+      key: CH1
+      actor: trend-researcher
+      payload:
+        channel_id: CH1
+        trends: [{topic: "AI dựng video", momentum: rising, evidence: "search +40% trong 90 ngày (Google Trends, 2026-09-02)"}]
+        opportunities: ["benchmark thời gian thật giữa 3 công cụ"]
+        sources: ["https://example.org/trends"]
+    expect:
+      equals: {channel_id: CH1, retry: 0}
+      min_len: {key_points: 1}
+      one_of: {format: [long, short], priority: [1, 2, 3, 4, 5]}
+
+  - name: brief-khong-duoc-vi-pham-ranh-gioi
+    topic_out: video-briefs
+    many: true
+    extra:
+      channel_brief: {channel_id: CH1, goals: ["kênh giáo dục"], audience: "người mới", pillars: ["hướng dẫn"], cadence: "1 video/tuần", boundaries: ["không hứa thu nhập", "không nội dung tài chính cá nhân"]}
+      calibration: {}
+      desk: {}
+    input:
+      topic: trend-reports
+      key: CH1
+      actor: trend-researcher
+      payload:
+        channel_id: CH1
+        trends: [{topic: "kiếm 100 triệu/tháng từ YouTube", momentum: rising, evidence: "viral tuần này"}, {topic: "AI dựng video", momentum: stable, evidence: "ổn định 6 tháng"}]
+        opportunities: ["hướng dẫn AI dựng video"]
+        sources: ["https://example.org/trends"]
+    expect:
+      equals: {channel_id: CH1}
+      contains: {pillar: "hướng dẫn"}

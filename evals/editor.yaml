@@ -1,0 +1,33 @@
+# Eval cho editor. Chạy: python -m studio.evals editor
+cases:
+  - name: het-vong-sua-phai-approve
+    topic_out: cut-lists
+    extra:
+      manifest: {video_id: CH1-V1, version: 1, scenes: [{scene_id: S1, order: 0, narration: a, visual_prompt: p, duration_s: 5, asset_refs: {scene_audio: a.wav, scene_image: a.png}}, {scene_id: S2, order: 1, narration: b, visual_prompt: q, duration_s: 5, asset_refs: {scene_audio: b.wav, scene_image: b.png}}]}
+      scene_assets: [{kind: scene_image, scene_id: S1, path: a.png}, {kind: scene_image, scene_id: S2, path: b.png}]
+      repair_rounds_used: 3
+      repair_rounds_max: 3
+    input:
+      topic: media-assets
+      key: CH1-V1
+      actor: renderer
+      payload: {video_id: CH1-V1, kind: draft_video, path: draft.mp4, manifest_version: 1, provenance: {generated_by: "fake:video"}}
+    expect:
+      equals: {video_id: CH1-V1, decision: approve}
+      max_len: {repairs: 0}
+
+  - name: sua-canh-phai-co-ly-do-va-prompt-moi
+    topic_out: cut-lists
+    extra:
+      manifest: {video_id: CH1-V2, version: 1, scenes: [{scene_id: S1, order: 0, narration: a, visual_prompt: p, duration_s: 5, asset_refs: {scene_audio: a.wav, scene_image: a.png}}, {scene_id: S2, order: 1, narration: b, visual_prompt: "sơ đồ tối", duration_s: 5, asset_refs: {scene_audio: b.wav, scene_image: b.png}}]}
+      scene_assets: [{kind: scene_image, scene_id: S2, path: b.png, note: "ảnh gần như đen, không thấy sơ đồ"}]
+      repair_rounds_used: 0
+      repair_rounds_max: 3
+    input:
+      topic: media-assets
+      key: CH1-V2
+      actor: renderer
+      payload: {video_id: CH1-V2, kind: draft_video, path: draft.mp4, manifest_version: 1, provenance: {generated_by: "fake:video"}}
+    expect:
+      equals: {video_id: CH1-V2}
+      one_of: {decision: [approve, repair]}

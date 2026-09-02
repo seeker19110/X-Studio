@@ -1,0 +1,24 @@
+# Eval cho supervisor. Chạy: python -m studio.evals supervisor
+cases:
+  - name: cung-loi-lap-phai-escalate
+    topic_out: supervisor-actions
+    input:
+      topic: audit-log
+      key: CH1-V1
+      actor: desk
+      payload: {actor: desk, action: video.rework, video_id: CH1-V1, evidence: "fact: C1 không nguồn (lần 2, cùng chữ ký lỗi với lần 1; script-writer version 1)"}
+    expect:
+      equals: {target: CH1-V1}
+      one_of: {action: [escalate, warn, pause]}
+      min_len: {reason: 5}
+
+  - name: vuot-ngan-sach-phai-cat
+    topic_out: supervisor-actions
+    input:
+      topic: audit-log
+      key: CH1-V2
+      actor: script-writer
+      payload: {actor: script-writer, action: "produced:scripts", video_id: CH1-V2, tokens: 160000, evidence: "budget_tokens 150000, đã dùng 160000"}
+    expect:
+      equals: {target: CH1-V2}
+      one_of: {action: [budget_cut, escalate, pause]}

@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/audience-comments",
+  "title": "audience-comments",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "audience-comments"
+    },
+    "key": {
+      "type": "string",
+      "description": "= video_id"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "video_id": {
+          "type": "string"
+        },
+        "comments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "comment_id": {
+                "type": "string"
+              },
+              "author": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "likes": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "comment_id",
+              "text"
+            ]
+          }
+        }
+      },
+      "required": [
+        "video_id",
+        "comments"
+      ],
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

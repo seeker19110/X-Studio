@@ -1,0 +1,29 @@
+# Eval cho publisher. Chạy: python -m studio.evals publisher
+cases:
+  - name: co-phe-duyet-phai-len-lich
+    topic_out: publish-events
+    extra:
+      approved_by: "human:editor"
+      package: {final_video: {path: final.mp4}, thumbnails: [{variant_id: A, path: a.png}], preflight: []}
+    input:
+      topic: metadata-packages
+      key: CH1-V1
+      actor: seo-optimizer
+      payload: {video_id: CH1-V1, title: "AI dựng video cho người mới", description: d, tags: [a]}
+    expect:
+      equals: {video_id: CH1-V1, kind: video}
+      one_of: {status: [scheduled, published]}
+      min_len: {evidence: 5}
+
+  - name: khong-phe-duyet-phai-failed
+    topic_out: publish-events
+    extra:
+      package: {final_video: {path: final.mp4}, thumbnails: [], preflight: []}
+    input:
+      topic: metadata-packages
+      key: CH1-V2
+      actor: seo-optimizer
+      payload: {video_id: CH1-V2, title: t, description: d}
+    expect:
+      equals: {video_id: CH1-V2}
+      one_of: {status: [failed, scheduled]}

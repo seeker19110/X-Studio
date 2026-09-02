@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/review-results",
+  "title": "review-results",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "review-results"
+    },
+    "key": {
+      "type": "string",
+      "description": "= video_id"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "properties": {
+        "video_id": {
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "fact",
+            "rights",
+            "quality"
+          ],
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "pass",
+            "block",
+            "fail"
+          ],
+          "type": "string"
+        },
+        "findings": {
+          "default": [],
+          "items": {
+            "properties": {
+              "level": {
+                "enum": [
+                  "block",
+                  "warn",
+                  "nit"
+                ],
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "location": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "level",
+              "text"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "root_cause": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "metrics": {
+          "additionalProperties": true,
+          "default": {},
+          "type": "object"
+        }
+      },
+      "required": [
+        "video_id",
+        "source",
+        "verdict"
+      ],
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

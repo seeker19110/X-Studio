@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "studio-creators/topics/video-briefs",
+  "title": "video-briefs",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "topic": {
+      "const": "video-briefs"
+    },
+    "key": {
+      "type": "string",
+      "description": "= video_id"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "description": "Một video trong kế hoạch biên tập (channel-strategist tạo, human gate `plan` duyệt rồi code dispatch).",
+      "properties": {
+        "video_id": {
+          "type": "string"
+        },
+        "channel_id": {
+          "type": "string"
+        },
+        "working_title": {
+          "type": "string"
+        },
+        "pillar": {
+          "type": "string"
+        },
+        "angle": {
+          "type": "string"
+        },
+        "audience": {
+          "type": "string"
+        },
+        "format": {
+          "default": "long",
+          "enum": [
+            "long",
+            "short"
+          ],
+          "type": "string"
+        },
+        "target_minutes": {
+          "default": 8.0,
+          "type": "number"
+        },
+        "key_points": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "boundaries": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "risk_tags": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "priority": {
+          "default": 3,
+          "type": "integer"
+        },
+        "estimate_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "budget_tokens": {
+          "default": 150000,
+          "type": "integer"
+        },
+        "retry": {
+          "default": 0,
+          "type": "integer"
+        },
+        "hint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "video_id",
+        "channel_id",
+        "working_title",
+        "pillar",
+        "angle",
+        "audience"
+      ],
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "event_id",
+    "topic",
+    "key",
+    "actor",
+    "ts",
+    "payload"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,39 @@
+# Eval cho quality-reviewer. Chạy: python -m studio.evals quality-reviewer
+cases:
+  - name: goi-dat-phai-pass
+    topic_out: review-results
+    extra:
+      package:
+        script: {video_id: CH1-V1, hook: "Một video 8 phút mất bạn 6 giờ?", sections: [{heading: a, narration: n}]}
+        manifest: {video_id: CH1-V1, scenes: [{scene_id: S1, order: 0, narration: n, visual_prompt: p, duration_s: 5}, {scene_id: S2, order: 1, narration: n, visual_prompt: p, duration_s: 6}]}
+        metadata: {title: "AI dựng video cho người mới: 6 giờ xuống 30 phút", description: d}
+        thumbnails: [{variant_id: A, path: a.png}]
+        final_video: {path: final.mp4, duration_s: 11}
+        preflight: []
+    input:
+      topic: media-assets
+      key: CH1-V1
+      actor: renderer
+      payload: {video_id: CH1-V1, kind: final_video, path: final.mp4, provenance: {generated_by: "fake:video"}}
+    expect:
+      equals: {video_id: CH1-V1, source: quality, verdict: pass}
+
+  - name: thumbnail-hua-dieu-video-khong-co-phai-block
+    topic_out: review-results
+    extra:
+      package:
+        script: {video_id: CH1-V2, hook: "Hôm nay mình giới thiệu công cụ", sections: [{heading: a, narration: "giới thiệu tính năng"}]}
+        manifest: {video_id: CH1-V2, scenes: [{scene_id: S1, order: 0, narration: n, visual_prompt: p, duration_s: 40}]}
+        metadata: {title: "BÍ MẬT X10 VIEW TRONG 1 ĐÊM", description: d}
+        thumbnails: [{variant_id: A, path: a.png, overlay_text: "X10 VIEW 1 ĐÊM"}]
+        final_video: {path: final.mp4, duration_s: 40}
+        preflight: [{level: block, text: "cụm bị cấm", location: title}]
+    input:
+      topic: media-assets
+      key: CH1-V2
+      actor: renderer
+      payload: {video_id: CH1-V2, kind: final_video, path: final.mp4, provenance: {generated_by: "fake:video"}}
+    expect:
+      equals: {video_id: CH1-V2, source: quality}
+      one_of: {verdict: [block, fail]}
+      min_len: {findings: 1}

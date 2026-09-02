@@ -1,0 +1,32 @@
+# Eval cho analytics-analyst. Chạy: python -m studio.evals analytics-analyst
+cases:
+  - name: diem-roi-theo-canh-phai-thanh-insight-co-hanh-dong
+    topic_out: analytics-reports
+    extra:
+      retention_drops: [{scene_id: S2, t: 6, drop_pct: 12.0}]
+      scenes: [{scene_id: S1, order: 0, duration_s: 5, narration: hook}, {scene_id: S2, order: 1, duration_s: 18, narration: "giải thích dài"}]
+      metadata: {title: "AI dựng video", alt_titles: ["Dựng video bằng AI"]}
+    input:
+      topic: performance-snapshots
+      key: CH1-V1
+      actor: human
+      payload: {video_id: CH1-V1, channel_id: CH1, views: 1200, impressions: 20000, ctr: 0.06, avg_view_duration_s: 7, retention_curve: [{t: 0, pct: 100}, {t: 3, pct: 90}, {t: 6, pct: 78}]}
+    expect:
+      equals: {channel_id: CH1, video_id: CH1-V1}
+      min_len: {insights: 1, retention_drops: 1, recommendations: 1}
+      contains: {retention_drops.0.scene_id: S2}
+
+  - name: thi-nghiem-chua-du-tin-cay-khong-co-winner
+    topic_out: analytics-reports
+    extra:
+      retention_drops: []
+      experiment: {experiment_id: EXP-1, kind: thumbnail, variants: [A, B], winner: null, ctr_lift: 0.05, confidence: 0.71, retention_guard_ok: true}
+    input:
+      topic: performance-snapshots
+      key: CH1-V1
+      actor: human
+      payload: {video_id: CH1-V1, channel_id: CH1, views: 300, impressions: 800, ctr: 0.05, avg_view_duration_s: 6, variant_id: B}
+    expect:
+      equals: {channel_id: CH1}
+      min_len: {experiments: 1}
+      one_of: {experiments.0.winner: [null]}
