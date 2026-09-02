@@ -1,0 +1,22 @@
+{
+ "agent": "seo-optimizer",
+ "prompt_version": 1,
+ "recorded_at": "2026-09-02T14:32:32.789626+00:00",
+ "models": [
+  "claude-haiku-4-5-20251001"
+ ],
+ "cases": {
+  "019a7470c6b89c649a08f124": {
+   "text": "```json\n{\n  \"payload\": {\n    \"video_id\": \"CH1-V1\",\n    \"title\": \"AI dựng video cho người mới: 6 giờ xuống 30 phút\",\n    \"description\": \"AI dựng video giúp người mới rút thời gian dựng từ 6 giờ xuống chỉ còn 30 phút bằng quy trình đơn giản trong video này. Nếu bạn đang mất quá nhiều thời gian cho việc dựng video, đây là hướng dẫn dành cho bạn. Video chia làm 3 phần: đầu tiên là Vấn đề - vì sao dựng video thủ công tốn nhiều thời gian; tiếp theo là Giải pháp - cách dùng AI dựng video để rút ngắn quy trình; cuối cùng là Kết - tổng hợp lại các bước để bạn áp dụng ngay. Phù hợp cho người mới bắt đầu muốn làm video nhanh hơn mà vẫn giữ chất lượng.\",\n    \"tags\": [\n      \"AI dựng video\",\n      \"dựng video cho người mới\",\n      \"hướng dẫn dựng video\",\n      \"AI làm video nhanh\",\n      \"tiết kiệm thời gian dựng video\",\n      \"công cụ dựng video AI\",\n      \"video editing AI\",\n      \"quy trình dựng video\",\n      \"làm video nhanh hơn\",\n      \"hướng dẫn AI video\"\n    ],\n    \"chapters\": [\n      {\"time\": \"00:00\", \"label\": \"Vấn đề\"},\n      {\"time\": \"02:00\", \"label\": \"Giải pháp\"},\n      {\"time\": \"08:00\", \"label\": \"Kết\"}\n    ],\n    \"primary_keyword\": \"AI dựng video\",\n    \"language\": \"vi\",\n    \"category\": \"hướng dẫn\",\n    \"alt_titles\": [\n      \"Dựng video AI cho người mới: từ 6 giờ còn 30 phút\",\n      \"Cách AI giúp dựng video nhanh gấp 12 lần\"\n    ]\n  },\n  \"context_writes\": [\n    {\n      \"namespace\": \"seo\",\n      \"content_ref\": \"seo/CH1-V1-keywords\",\n      \"summary\": \"Từ khoá chính 'AI dựng video', biến thể liên quan đến người mới, tiết kiệm thời gian, hướng dẫn dựng video.\"\n    }\n  ]\n}\n```",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 4793,
+   "output_tokens": 802
+  },
+  "0276a97d24d220dc5deb38b2": {
+   "text": "{\"payload\": {\"video_id\": \"CH1-V1\", \"title\": \"AI dựng video cho người mới: hướng dẫn từ A đến Z (2026)\", \"description\": \"AI dựng video giúp người mới rút thời gian. Mô tả chi tiết các bước, công cụ, thời gian đo được và kết luận cho người mới bắt đầu làm YouTube với ngân sách thấp.\", \"tags\": [\"ai dựng video\"], \"chapters\": [{\"label\": \"a\", \"time\": \"00:00\"}, {\"label\": \"b\", \"time\": \"00:15\"}, {\"label\": \"c\", \"time\": \"00:30\"}], \"primary_keyword\": \"AI dựng video\", \"language\": \"vi\", \"category\": \"\", \"alt_titles\": []}, \"context_writes\": [{\"namespace\": \"seo\", \"content_ref\": \"seo/CH1-V1/title-fix\", \"summary\": \"Sửa tiêu đề CH1-V1 từ 120 ký tự xuống 58 ký tự để qua preflight block, giữ nguyên mô tả/tag/chapter chưa bị block.\"}]}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 4944,
+   "output_tokens": 844
+  }
+ }
+}

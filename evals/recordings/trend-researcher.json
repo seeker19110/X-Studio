@@ -1,0 +1,22 @@
+{
+ "agent": "trend-researcher",
+ "prompt_version": 1,
+ "recorded_at": "2026-09-02T14:34:00.590764+00:00",
+ "models": [
+  "claude-haiku-4-5-20251001"
+ ],
+ "cases": {
+  "20bda5060e8a71c9fc5076ab": {
+   "text": "{\"payload\": {\"channel_id\": \"CH1\", \"trends\": [], \"opportunities\": [], \"sources\": [], \"notes\": \"Không thể tiến hành nghiên cứu xu hướng: không có khả năng truy cập công cụ tìm kiếm/internet thực tế trong phiên này để lấy nguồn có URL và ngày truy cập xác thực. Theo quy tắc bắt buộc (không bịa số liệu/URL, mọi trend phải có bằng chứng có nguồn và ngày), không thể tạo trends/evidence hợp lệ. Cần: (1) quyền truy cập công cụ nghiên cứu (web search/trends API) hoặc (2) tài liệu nguồn do supervisor/human cung cấp trực tiếp cho channel_id=CH1 (chủ đề: hướng dẫn & so sánh cho người mới làm YouTube). Đề nghị supervisor escalate để cấp công cụ tra cứu hoặc bổ sung dữ liệu nguồn trước khi trend-researcher có thể sản xuất trend-reports đạt checklist (≥3 nguồn, primary, ngày truy cập, momentum có số).\"}, \"context_writes\": []}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 4569,
+   "output_tokens": 898
+  },
+  "a27e84cd7db56d651a279a4f": {
+   "text": "```json\n{\n  \"payload\": {\n    \"video_id\": \"CH1-V1\",\n    \"topic\": \"AI dựng video cho người mới - đo thời gian thật\",\n    \"sources\": [],\n    \"competitor_videos\": [],\n    \"evidence\": [],\n    \"gaps\": [\n      \"Không thể xác định khoảng trống nội dung vì chưa có nguồn/video đối thủ đã kiểm chứng — cần công cụ tìm kiếm/duyệt web thực để thu thập nguồn primary (báo cáo, dữ liệu công cụ xu hướng) và video đối thủ có URL/view thực trước khi kết luận.\"\n    ],\n    \"assumptions\": [\n      \"Giả định: chủ đề 'AI dựng video' đang được quan tâm bởi người mới bắt đầu, nhưng chưa có bằng chứng số liệu (search volume, view trend) để xác nhận momentum — cần xác minh.\",\n      \"Giả định: các video hiện có về AI dựng video tập trung liệt kê tính năng thay vì đo lường thời gian thực tế — cần xem trực tiếp ≥3-5 video đối thủ để xác nhận trước khi coi là gap thật.\"\n    ]\n  },\n  \"context_writes\": []\n}\n```\n\nGhi chú (không phải một phần payload chính thức, chỉ giải thích lý do): Tôi không có quyền truy cập công cụ tìm kiếm/duyệt web trong phiên này, nên không thể thu thập nguồn primary có URL thật, ngày truy cập thật, hay xem video đối thủ thực tế. Theo quy tắc \"KHÔNG ĐƯỢC bịa số liệu, bịa URL, hay tóm tắt video đối thủ mà không xem\", tôi để `sources`, `competitor_videos`, `evidence` trống thay vì bịa đặt, và đưa các nội dung chưa xác minh vào `assumptions`/`gaps`. Đây là điểm bế tắc cần supervisor cấp quyền truy cập công cụ nghiên cứu (search/browse) để hoàn thành dossier đạt checklist (≥3 nguồn đa dạng, ≥2 video đối thủ có URL, bằng chứng có số).",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 4711,
+   "output_tokens": 1108
+  }
+ }
+}

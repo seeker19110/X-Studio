@@ -1,0 +1,22 @@
+{
+ "agent": "fact-checker",
+ "prompt_version": 1,
+ "recorded_at": "2026-09-02T14:26:24.817898+00:00",
+ "models": [
+  "claude-haiku-4-5-20251001"
+ ],
+ "cases": {
+  "e8877b112413c6914e0d9ef6": {
+   "text": "{\"video_id\":\"CH1-V1\",\"source\":\"fact\",\"verdict\":\"block\",\"findings\":[{\"level\":\"block\",\"text\":\"Claim số liệu \\\"90% kênh mới chết trong năm đầu\\\" không có source (source=null), không đọc được nguồn nào để đối chiếu số, đơn vị, phạm vi (năm, nền tảng, mẫu). Cần nguồn primary (báo cáo nền tảng/nghiên cứu có n và năm) hoặc bỏ số, diễn đạt định tính.\",\"location\":\"C1\"},{\"level\":\"warn\",\"text\":\"Narration mục \\\"Vấn đề\\\" nhắc lại nguyên số 90% mà chưa có phạm vi (nền tảng nào, năm nào, \\\"chết\\\" định nghĩa thế nào) — kể cả khi tìm được nguồn, phải ghi rõ phạm vi để không suy rộng.\",\"location\":\"sections[0].narration\"},{\"level\":\"nit\",\"text\":\"Hook \\\"Bạn mất 6 giờ cho một video?\\\" chứa số 6 giờ nhưng chưa khai claim_id; nếu là số liệu thì phải khai claim và có nguồn, nếu là câu hỏi tu từ thì nên diễn đạt để không đọc như thống kê.\",\"location\":\"hook\"}],\"root_cause\":\"Dossier thiếu nguồn primary cho claim số liệu duy nhất (C1) nên không claim nào kiểm chứng được.\",\"metrics\":{\"claims_checked\":1,\"supported\":0,\"unsupported\":0,\"misleading\":0,\"no_source\":1,\"undeclared_numeric_statements\":1}}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 3729,
+   "output_tokens": 557
+  },
+  "e4bd8f666b52941809066f43": {
+   "text": "{\"video_id\":\"CH1-V2\",\"source\":\"fact\",\"verdict\":\"block\",\"findings\":[{\"level\":\"nit\",\"text\":\"C1 'Một video 8 phút mất bạn 6 giờ?' ở hook chứa số liệu (8 phút, 6 giờ) nhưng không khai claim và không có nguồn — cần khai claim hoặc diễn đạt phi số liệu.\",\"location\":\"hook\"},{\"level\":\"block\",\"text\":\"Narration nêu 'Theo báo cáo ngành 2026' trong khi nguồn duy nhất (example.org/report#p14) ghi dữ liệu năm 2025 (41.8%, n=2400). Gán sai năm cho số liệu là claim số không có nguồn đọc được cho phiên bản 2026 → phải sửa thành 2025 hoặc cung cấp nguồn 2026.\",\"location\":\"C1\"},{\"level\":\"warn\",\"text\":\"C1: số 42% là làm tròn từ 41.8% — chấp nhận được, nhưng nên ghi rõ phạm vi mẫu (n=2.400) và năm 2025 để không mở rộng quá phạm vi nguồn.\",\"location\":\"C1\"},{\"level\":\"warn\",\"text\":\"Nguồn C1 là URL example.org (placeholder), không xác định được tác giả/tổ chức/ngày truy cập; chưa kiểm chéo nguồn độc lập. Cần nguồn primary thật để giữ kết luận supported.\",\"location\":\"C1\"}],\"root_cause\":\"Dossier chỉ có một nguồn placeholder chưa xác minh và kịch bản gán sai năm (2026) cho số liệu 2025, khiến claim số duy nhất không tái lập được.\",\"metrics\":{\"claims_checked\":1,\"supported\":0,\"unsupported\":1,\"no_source\":0,\"undeclared_numeric_sentences\":1}}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 3779,
+   "output_tokens": 634
+  }
+ }
+}

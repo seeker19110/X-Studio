@@ -1,0 +1,22 @@
+{
+ "agent": "quality-reviewer",
+ "prompt_version": 1,
+ "recorded_at": "2026-09-02T14:30:17.290889+00:00",
+ "models": [
+  "claude-haiku-4-5-20251001"
+ ],
+ "cases": {
+  "8734b7264be09c6c29caf19e": {
+   "text": "{\"video_id\":\"CH1-V1\",\"source\":\"quality\",\"verdict\":\"block\",\"findings\":[{\"level\":\"block\",\"text\":\"Tiêu đề/thumbnail hứa '6 giờ xuống 30 phút' nhưng nội dung chỉ 2 cảnh, không có phần nào đo hay chứng minh mốc thời gian này.\",\"location\":\"metadata.title\"},{\"level\":\"block\",\"text\":\"Thời lượng cuối 11s so với kỳ vọng video nhiều phút (target_minutes không được đáp ứng, lệch > 30%); nội dung chỉ 1 section.\",\"location\":\"final_video.duration_s\"},{\"level\":\"block\",\"text\":\"Kịch bản chỉ có 1 section với narration rỗng nghĩa ('n'), manifest narration cũng là 'n' — không có nội dung thực để khán giả nhận giá trị.\",\"location\":\"S1,S2\"},{\"level\":\"warn\",\"text\":\"Không có CTA trong script hay metadata.\",\"location\":\"script.sections\"},{\"level\":\"warn\",\"text\":\"Chỉ 1 biến thể thumbnail, chưa kiểm chứng lời hứa hình ảnh so nội dung.\",\"location\":\"thumbnails[A]\"}],\"root_cause\":\"Kịch bản là bản khung placeholder (narration 'n', 1 section) nên video dựng ra không chứng minh được lời hứa tiêu đề — lỗi ở giai đoạn script.\",\"metrics\":{\"hook_seconds\":5,\"total_seconds\":11,\"scenes\":2,\"longest_scene_s\":6,\"findings_block\":3,\"findings_warn\":2,\"findings_nit\":0,\"preflight_blocks\":0}}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 3984,
+   "output_tokens": 568
+  },
+  "13ffdac2f7de519c20ce05ca": {
+   "text": "{\"video_id\":\"CH1-V2\",\"source\":\"quality\",\"verdict\":\"block\",\"findings\":[{\"level\":\"block\",\"text\":\"Tiêu đề và thumbnail hứa 'X10 view trong 1 đêm' nhưng nội dung chỉ giới thiệu tính năng, không có dữ liệu/chứng minh nào — khán giả bị lừa.\",\"location\":\"metadata.title\"},{\"level\":\"block\",\"text\":\"Thumbnail overlay 'X10 VIEW 1 ĐÊM' không được nội dung chứng minh.\",\"location\":\"thumbnails[A].overlay_text\"},{\"level\":\"block\",\"text\":\"Preflight block chưa được xử lý: cụm bị cấm trong tiêu đề vẫn tồn tại.\",\"location\":\"title\"},{\"level\":\"block\",\"text\":\"Hook 'Hôm nay mình giới thiệu công cụ' không có lời hứa/vòng mở; cảnh S1 kéo dài toàn bộ 40s nên hook không tới lời hứa trong 5s.\",\"location\":\"S1\"},{\"level\":\"block\",\"text\":\"Toàn video chỉ 1 cảnh 40s một hình duy nhất — vượt xa ngưỡng 20s, không có ngắt mẫu, không có chuyển cảnh.\",\"location\":\"S1\"},{\"level\":\"warn\",\"text\":\"Không có CTA trong kịch bản.\",\"location\":\"script.sections\"},{\"level\":\"warn\",\"text\":\"Narration cảnh S1 chỉ là 'n', không khớp nội dung kịch bản 'giới thiệu tính năng'.\",\"location\":\"S1.narration\"}],\"root_cause\":\"Kịch bản mỏng (một khối 40s, hook không có lời hứa) và metadata giật tít vượt xa nội dung — cần làm lại từ giai đoạn script.\",\"metrics\":{\"hook_seconds\":null,\"total_seconds\":40,\"scenes\":1,\"longest_scene_s\":40,\"preflight_blocks_open\":1,\"findings\":{\"block\":5,\"warn\":2,\"nit\":0}}}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 4001,
+   "output_tokens": 692
+  }
+ }
+}

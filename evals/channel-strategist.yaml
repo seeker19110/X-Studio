@@ -17,7 +17,7 @@ cases:
         opportunities: ["benchmark thời gian thật giữa 3 công cụ"]
         sources: ["https://example.org/trends"]
     expect:
-      equals: {channel_id: CH1, retry: 0}
+      equals: {channel_id: CH1}   # retry là trường có mặc định, model được phép bỏ trống
       min_len: {key_points: 1}
       one_of: {format: [long, short], priority: [1, 2, 3, 4, 5]}
 

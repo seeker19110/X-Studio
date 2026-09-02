@@ -1,0 +1,22 @@
+{
+ "agent": "rights-checker",
+ "prompt_version": 1,
+ "recorded_at": "2026-09-02T14:30:43.956312+00:00",
+ "models": [
+  "claude-haiku-4-5-20251001"
+ ],
+ "cases": {
+  "53578aed2e3e27a3387b8718": {
+   "text": "{\"payload\":{\"video_id\":\"CH1-V1\",\"source\":\"rights\",\"verdict\":\"block\",\"findings\":[{\"level\":\"block\",\"text\":\"Asset final_video thiếu trường license trong provenance (chỉ có generated_by=ffmpeg:libx264) → license unknown, không được qua gate publish.\",\"location\":\"final/final_video\"},{\"level\":\"warn\",\"text\":\"scene_audio S1 (openai:gpt-4o-mini-tts) không có prompt_ref/script_ref; nên bổ sung để sổ provenance đầy đủ.\",\"location\":\"S1/scene_audio\"},{\"level\":\"nit\",\"text\":\"Không phát hiện nhạc nền/footage bên thứ ba, logo, khuôn mặt người thật hay tên thương hiệu trong prompt; claim C1 dẫn nguồn https://example.org/report, không có trích dẫn nguyên văn >15 từ.\",\"location\":null}],\"root_cause\":\"Bước render không ghi license cho asset đầu ra final.mp4\",\"metrics\":{\"assets_checked\":3,\"assets_ok\":2,\"assets_unknown_license\":1,\"quotes_over_15_words\":0}},\"context_writes\":[{\"namespace\":\"rights\",\"content_ref\":\"rights/CH1-V1/provenance-ledger\",\"summary\":\"Sổ provenance CH1-V1: S1/scene_image openai:gpt-image-1 license=generated (prompt S1:visual_prompt, không tên riêng); S1/scene_audio openai:gpt-4o-mini-tts license=generated; final.mp4 ffmpeg:libx264 license THIẾU → block. Không asset bên thứ ba, không nhạc/footage/brand/person. Verdict: block cho tới khi final_video có license=generated (derived).\"}]}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 4049,
+   "output_tokens": 600
+  },
+  "6b61fe73459797a6bbdba761": {
+   "text": "{\"payload\":{\"video_id\":\"CH1-V2\",\"source\":\"rights\",\"verdict\":\"block\",\"findings\":[{\"level\":\"block\",\"text\":\"Asset human-upload có license=unknown và thiếu source_url → không đủ provenance để dùng.\",\"location\":\"S2/scene_image\"},{\"level\":\"block\",\"text\":\"Prompt sinh ảnh chứa tên nhân vật/tác phẩm có chủ sở hữu ('Totoro', 'phong cách Ghibli') → không được coi là generated tự do.\",\"location\":\"S3/scene_image\"},{\"level\":\"block\",\"text\":\"final_video chỉ có generated_by=ffmpeg:libx264, thiếu trường license → provenance không hợp lệ.\",\"location\":\"final.mp4\"},{\"level\":\"warn\",\"text\":\"brief.risk_tags có 'footage' nhưng không có asset footage nào kèm license ghi trong namespace rights; nếu bổ sung footage bên thứ ba phải có license trước khi publish.\",\"location\":\"brief/risk_tags\"}],\"root_cause\":\"Thiếu provenance/license hợp lệ cho asset tải lên và prompt vi phạm quyền nhân vật/thương hiệu.\",\"metrics\":{\"assets_checked\":3,\"assets_blocked\":3,\"assets_ok\":0}},\"context_writes\":[{\"namespace\":\"rights\",\"content_ref\":\"rights/CH1-V2/provenance-ledger-v1\",\"summary\":\"Sổ provenance CH1-V2: S2/b.png human-upload license=unknown thiếu source_url (BLOCK); S3/c.png openai:gpt-image-1 license=generated nhưng prompt chứa 'Totoro/Ghibli' (BLOCK); final.mp4 ffmpeg:libx264 thiếu license (BLOCK). Không có license nhạc/footage bên thứ ba được ghi nhận. Verdict: block.\"}]}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 4008,
+   "output_tokens": 643
+  }
+ }
+}

@@ -2,8 +2,9 @@
 hình bằng biến môi trường hoặc file `llm.yaml`, không hard-code vào code hay prompt của phòng ban.
 
 Cấu hình (ưu tiên: biến môi trường > llm.yaml > mặc định):
-    STUDIO_LLM_PROVIDER    anthropic | openai | fake   (openai = mọi server OpenAI-compatible: OpenAI, OpenRouter,
-                                                       Gemini OpenAI-compat, Ollama, Groq, vLLM, LM Studio, Kimi, GLM...)
+    STUDIO_LLM_PROVIDER    anthropic | openai | claude-code | fake
+                           (openai = mọi server OpenAI-compatible: OpenAI, OpenRouter, Gemini OpenAI-compat, Ollama,
+                            Groq, vLLM, LM Studio, Kimi, GLM...; claude-code = CLI `claude -p` đã đăng nhập trên máy)
     STUDIO_MODEL_STRONG    model cho tier `strong`
     STUDIO_MODEL_STANDARD  model cho tier `standard`
     STUDIO_LLM_BASE_URL    base URL cho provider openai
@@ -116,8 +117,9 @@ def make_client(cfg: LLMConfig | None = None) -> ModelClient:
     cfg = cfg or load_config()
     if cfg.provider == "anthropic": return AnthropicClient(cfg)
     if cfg.provider == "openai": return OpenAICompatClient(cfg)
+    if cfg.provider == "claude-code": return ClaudeCodeClient(cfg)
     if cfg.provider == "fake": return FakeClient()
-    raise LLMError(f"provider lạ: {cfg.provider} (anthropic | openai | fake)")
+    raise LLMError(f"provider lạ: {cfg.provider} (anthropic | openai | claude-code | fake)")
 
 
 def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -248,6 +250,60 @@ class OpenAICompatClient:
         return Completion(text=(choice.get("message") or {}).get("content") or "",
                           input_tokens=int(usage.get("prompt_tokens", 0)), output_tokens=int(usage.get("completion_tokens", 0)),
                           model=data.get("model", model), stop_reason=finish, cached_input_tokens=cached)
+
+
+# ---------- provider: Claude Code CLI (dùng đăng nhập sẵn có của máy, không cần API key) ----------
+
+class ClaudeCodeClient:
+    """Gọi `claude -p --output-format json` như một model backend: mỗi lượt là một tiến trình con, không tool,
+    system prompt truyền qua `--system-prompt`, schema nhúng vào user message (CLI không có structured output).
+    Token thật lấy từ `usage` trong JSON trả về (input + cache read + cache creation, cùng nghĩa với adapter Anthropic).
+    Dùng khi máy đã đăng nhập Claude Code mà không có ANTHROPIC_API_KEY (vd. ghi bản ghi eval tại chỗ)."""
+
+    def __init__(self, cfg: LLMConfig | None = None, binary: str = "claude", timeout: float = 900.0,
+                 runner: Callable[[list[str]], str] | None = None):
+        import shutil
+        self.cfg = cfg or load_config()
+        self.binary = shutil.which(binary) or binary
+        self.timeout = timeout
+        self._run = runner or self._subprocess  # test thay bằng hàm giả
+
+    def _subprocess(self, args: list[str]) -> str:
+        import subprocess
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               stdin=subprocess.DEVNULL, timeout=self.timeout)
+        except FileNotFoundError as e:
+            raise LLMError(f"không tìm thấy `{self.binary}` (cài Claude Code hoặc đổi provider)") from e
+        except subprocess.TimeoutExpired as e:
+            raise LLMError(f"claude -p quá {self.timeout}s") from e
+        if r.returncode != 0:
+            raise LLMError(f"claude -p thoát mã {r.returncode}: {(r.stderr or r.stdout)[-500:]}")
+        return r.stdout
+
+    def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
+                 cache_key: str | None = None) -> Completion:
+        model = self.cfg.model_for(model_tier)
+        hint = "\n\n# JSON Schema bắt buộc cho câu trả lời\n```json\n" + json.dumps(schema, ensure_ascii=False) + "\n```"
+        args = [self.binary, "-p", "--output-format", "json", "--model", model, "--tools", "", "--max-turns", "1",
+                "--system-prompt", system, user + hint]
+        out = self._run(args)
+        try:
+            data = json.loads(out[out.index("{"):]) if "{" in out else {}
+        except json.JSONDecodeError as e:
+            raise LLMError(f"claude -p trả về không phải JSON: {out[:300]}") from e
+        if not isinstance(data, dict) or "result" not in data:
+            raise LLMError(f"claude -p thiếu trường result: {out[:300]}")
+        if data.get("is_error"):
+            raise LLMError(f"claude -p lỗi: {str(data.get('result'))[:300]}")
+        if data.get("stop_reason") == "refusal":
+            raise Refused("model từ chối")
+        u = data.get("usage") or {}
+        read = int(u.get("cache_read_input_tokens", 0) or 0); write = int(u.get("cache_creation_input_tokens", 0) or 0)
+        used = next(iter((data.get("modelUsage") or {}).keys()), model)
+        return Completion(text=str(data["result"]), input_tokens=int(u.get("input_tokens", 0) or 0) + read + write,
+                          output_tokens=int(u.get("output_tokens", 0) or 0), model=used,
+                          stop_reason=str(data.get("stop_reason") or "end_turn"), cached_input_tokens=read)
 
 
 # ---------- provider: giả (test / eval offline) ----------

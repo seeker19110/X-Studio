@@ -1,0 +1,22 @@
+{
+ "agent": "community-manager",
+ "prompt_version": 1,
+ "recorded_at": "2026-09-02T14:28:53.342471+00:00",
+ "models": [
+  "claude-haiku-4-5-20251001"
+ ],
+ "cases": {
+  "373c6aa45ef80c5805fcb5f6": {
+   "text": "```json\n{\n  \"items\": [\n    {\n      \"comment_id\": \"c1\",\n      \"video_id\": \"CH1-V1\",\n      \"reply\": \"Cảm ơn bạn đã quan tâm! Về giá cụ thể mình sẽ nhờ đội ngũ phản hồi chính xác cho bạn nhé, vì thông tin giá có thể thay đổi theo thời điểm.\",\n      \"theme\": \"giá\",\n      \"sentiment\": \"question\",\n      \"requires_human\": true\n    }\n  ],\n  \"context_writes\": [\n    {\n      \"namespace\": \"community\",\n      \"content_ref\": \"CH1-V1/c1\",\n      \"summary\": \"Câu hỏi về giá công cụ - chủ đề nhạy cảm cần chủ kênh xác nhận trước khi trả lời, chưa đủ ≥3 lần lặp để đề xuất FAQ video.\"\n    }\n  ]\n}\n```",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 3394,
+   "output_tokens": 308
+  },
+  "17513c8be19a1993b0168196": {
+   "text": "```json\n{\"items\": [{\"comment_id\": \"c2\", \"video_id\": \"CH1-V1\", \"reply\": \"Cảm ơn bạn đã xem và ủng hộ nhé! Rất vui vì video hữu ích với bạn.\", \"theme\": \"khen ngợi\", \"sentiment\": \"positive\", \"requires_human\": false}], \"context_writes\": []}\n```",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 3390,
+   "output_tokens": 124
+  }
+ }
+}

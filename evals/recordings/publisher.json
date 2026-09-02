@@ -1,0 +1,22 @@
+{
+ "agent": "publisher",
+ "prompt_version": 1,
+ "recorded_at": "2026-09-02T14:29:49.549980+00:00",
+ "models": [
+  "claude-haiku-4-5-20251001"
+ ],
+ "cases": {
+  "54d88b03e6c4fabda28c3dec": {
+   "text": "```json\n{\n  \"video_id\": \"CH1-V1\",\n  \"kind\": \"video\",\n  \"status\": \"scheduled\",\n  \"scheduled_at\": \"2026-09-04T12:00:00Z\",\n  \"url\": null,\n  \"platform_ref\": null,\n  \"evidence\": \"approved_by human:editor; final_video final.mp4; thumbnail chosen A (a.png); preflight 0 block; không có khung giờ khán giả trong strategy nên dùng mặc định 48h sau phê duyệt, giờ tròn; title='AI dựng video cho người mới'; visibility=scheduled (private->scheduled)\"\n}\n```",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 3379,
+   "output_tokens": 213
+  },
+  "86586879589e8150078c162f": {
+   "text": "{\"video_id\": \"CH1-V2\", \"kind\": \"video\", \"status\": \"failed\", \"scheduled_at\": null, \"url\": null, \"platform_ref\": null, \"evidence\": \"Không có approved_by trong dữ liệu bổ sung; thiếu phê duyệt gate publish. Ngoài ra thumbnails rỗng (chưa có thumbnail 'chosen'). Không thể đăng.\"}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 3308,
+   "output_tokens": 138
+  }
+ }
+}

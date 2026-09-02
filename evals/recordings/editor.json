@@ -1,0 +1,22 @@
+{
+ "agent": "editor",
+ "prompt_version": 1,
+ "recorded_at": "2026-09-02T14:29:10.280207+00:00",
+ "models": [
+  "claude-haiku-4-5-20251001"
+ ],
+ "cases": {
+  "85a4ab663813c3e767bd429e": {
+   "text": "```json\n{\n  \"video_id\": \"CH1-V1\",\n  \"manifest_version\": 1,\n  \"decision\": \"approve\",\n  \"repairs\": [],\n  \"order\": [\"S1\", \"S2\"],\n  \"notes\": \"Đã dùng hết 3/3 vòng sửa (repair_rounds_used=3=repair_rounds_max) nên buộc phải approve theo quy định. Vấn đề chưa xác nhận được cho quality-reviewer: scene_assets chỉ liệt kê scene_image cho S1, S2 (a.png, b.png), không thấy scene_audio (a.wav, b.wav) trong danh sách scene_assets dù manifest.asset_refs có khai báo — cần quality-reviewer kiểm tra thực tế file audio có tồn tại và đúng thời lượng khớp target_minutes trước khi phát hành.\"\n}\n```",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 4293,
+   "output_tokens": 412
+  },
+  "6e30db83e2ad135710c1769e": {
+   "text": "```json\n{\n  \"video_id\": \"CH1-V2\",\n  \"manifest_version\": 1,\n  \"decision\": \"repair\",\n  \"repairs\": [\n    {\n      \"scene_id\": \"S1\",\n      \"action\": \"lock\",\n      \"reason\": \"Ảnh và narration khớp prompt, thời lượng đạt, không cần sửa\"\n    },\n    {\n      \"scene_id\": \"S2\",\n      \"action\": \"regenerate_image\",\n      \"reason\": \"Ảnh gần như đen, không thấy sơ đồ như prompt yêu cầu\",\n      \"new_visual_prompt\": \"sơ đồ pipeline nền trắng, nét đậm, ánh sáng đủ để thấy rõ các khối và mũi tên\"\n    }\n  ],\n  \"order\": [\"S1\", \"S2\"],\n  \"notes\": \"\"\n}\n```",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 4287,
+   "output_tokens": 278
+  }
+ }
+}

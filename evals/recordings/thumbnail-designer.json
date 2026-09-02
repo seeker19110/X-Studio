@@ -1,0 +1,22 @@
+{
+ "agent": "thumbnail-designer",
+ "prompt_version": 1,
+ "recorded_at": "2026-09-02T14:33:22.806202+00:00",
+ "models": [
+  "claude-haiku-4-5-20251001"
+ ],
+ "cases": {
+  "521b75050b1315ac4e694855": {
+   "text": "```json\n{\"payload\": {\"video_id\": \"CH1-V1\", \"variants\": [{\"variant_id\": \"A\", \"prompt\": \"một chiếc đồng hồ cát tương phản cao đặt trên bàn làm việc tối giản, ánh sáng kịch tính chiếu từ một phía, bố cục trung tâm, không chữ, không người, phong cách minh hoạ số hiện đại\", \"overlay_text\": \"30 PHÚT XONG VIDEO\", \"style\": \"giả thuyết lợi ích: nhấn mạnh tốc độ tiết kiệm thời gian\"}, {\"variant_id\": \"B\", \"prompt\": \"một bàn làm việc tối giản với màn hình phát sáng hiển thị sơ đồ trừu tượng không chữ, biểu tượng tia sáng năng lượng bay quanh, tương phản cao, phong cách minh hoạ số hiện đại\", \"overlay_text\": \"CÁCH LÀM KHÁC LẠ\", \"style\": \"giả thuyết tò mò: gợi mở phương pháp mới không tiết lộ hết\"}, {\"variant_id\": \"C\", \"prompt\": \"nhân vật minh hoạ (không phải người thật) đang ngạc nhiên nhìn màn hình laptop phát sáng trên bàn làm việc, biểu cảm phóng đại, tương phản cao, phong cách minh hoạ số hiện đại\", \"overlay_text\": \"KHÔNG THỂ TIN NỔI\", \"style\": \"giả thuyết cảm xúc: biểu cảm ngạc nhiên kích thích tò mò\"}], \"chosen\": \"A\"}, \"context_writes\": [{\"namespace\": \"brand\", \"content_ref\": \"brand/CH1-thumbnail-style-v1\", \"summary\": \"Kênh CH1: phong cách thumbnail minh hoạ số hiện đại, tương phản cao, một chủ thể trung tâm, không người thật/logo, overlay ≤4 từ viết hoa.\"}]}\n```",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 3864,
+   "output_tokens": 686
+  },
+  "c520193b1df8bd5930c19248": {
+   "text": "{\"payload\": {\"video_id\": \"CH1-V2\", \"variants\": [{\"variant_id\": \"A\", \"prompt\": \"Ba biểu tượng công cụ trừu tượng dạng hình khối phát sáng xếp cạnh nhau, một biểu tượng nổi bật vượt lên phía trước, nền tối tương phản cao, ánh sáng neon xanh-tím, bố cục dọc, phong cách minh hoạ số hiện đại, không chữ, không logo thật\", \"overlay_text\": \"CÁI NÀO NHANH NHẤT\", \"style\": \"giả thuyết tò mò - đặt câu hỏi trực tiếp\"}, {\"variant_id\": \"B\", \"prompt\": \"Ba biểu tượng công cụ trừu tượng dạng hình khối, một biểu tượng có tia tốc độ vụt qua thể hiện chuyển động nhanh, nền tối tương phản cao, ánh sáng neon xanh-tím, bố cục dọc, phong cách minh hoạ số hiện đại, không chữ, không logo thật\", \"overlay_text\": \"TỐC ĐỘ VƯỢT TRỘI\", \"style\": \"giả thuyết lợi ích - nhấn mạnh tốc độ\"}], \"chosen\": \"A\"}, \"context_writes\": [{\"namespace\": \"brand\", \"content_ref\": \"brand/CH1-palette-v1\", \"summary\": \"Bảng màu kênh CH1: nền tối, ánh sáng neon xanh-tím, phong cách minh hoạ số hiện đại, bố cục dọc 9:16, biểu tượng trừu tượng thay vì người thật/logo.\"}]}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 3877,
+   "output_tokens": 569
+  }
+ }
+}

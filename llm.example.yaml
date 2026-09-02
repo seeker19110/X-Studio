@@ -1,7 +1,8 @@
 # Cấu hình model TEXT cho runner/eval. Sao chép thành `llm.yaml` (bị gitignore) hoặc dùng biến môi trường STUDIO_*.
 # Phòng ban trung lập provider: đổi model/provider ở đây, không đổi code hay prompt.
 
-# anthropic | openai (mọi server OpenAI-compatible: OpenAI, OpenRouter, Gemini OpenAI-compat, Ollama, Groq, vLLM...) | fake
+# anthropic | openai (mọi server OpenAI-compatible: OpenAI, OpenRouter, Gemini OpenAI-compat, Ollama, Groq, vLLM...)
+# | claude-code (CLI `claude -p` đã đăng nhập trên máy, không cần key) | fake
 provider: openai
 
 # model theo tier trong front matter agent

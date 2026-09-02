@@ -1,0 +1,22 @@
+{
+ "agent": "production-manager",
+ "prompt_version": 1,
+ "recorded_at": "2026-09-02T14:29:36.119721+00:00",
+ "models": [
+  "claude-haiku-4-5-20251001"
+ ],
+ "cases": {
+  "af9a95970c1fc6ab73085970": {
+   "text": "```json\n{\n  \"payload\": {\n    \"video_id\": \"CH1-V1\",\n    \"version\": 1,\n    \"script_version\": 1,\n    \"scenes\": [\n      {\n        \"scene_id\": \"S1\",\n        \"order\": 0,\n        \"narration\": \"Hầu hết người mới mất nhiều giờ dựng video.\",\n        \"visual_prompt\": \"Bàn làm việc gỗ bừa bộn với giấy tờ và cốc cà phê, ánh sáng chiều tự nhiên qua cửa sổ, góc máy bốn mươi lăm độ, phong cách minh hoạ phẳng màu ấm, không chữ, không logo.\",\n        \"duration_s\": 3.2,\n        \"locked\": false,\n        \"asset_refs\": {}\n      },\n      {\n        \"scene_id\": \"S2\",\n        \"order\": 1,\n        \"narration\": \"Họ bỏ cuộc sau vài lần.\",\n        \"visual_prompt\": \"Người ngồi trước máy tính với tư thế mệt mỏi nhìn từ phía sau, ánh sáng dịu buổi tối, bố cục trung tâm, phong cách minh hoạ phẳng màu ấm nhất quán, không chữ, không khuôn mặt rõ.\",\n        \"duration_s\": 2.0,\n        \"locked\": false,\n        \"asset_refs\": {}\n      },\n      {\n        \"scene_id\": \"S3\",\n        \"order\": 2,\n        \"narration\": \"Một pipeline tự động rút xuống còn 30 phút.\",\n        \"visual_prompt\": \"Sơ đồ luồng công việc đơn giản với các hộp và mũi tên nối tiếp, nền sáng gọn gàng, ánh sáng đều, bố cục ngang, phong cách minh hoạ phẳng màu ấm, không chữ, không logo.\",\n        \"duration_s\": 3.6,\n        \"locked\": false,\n        \"asset_refs\": {}\n      }\n    ],\n    \"voice\": {\n      \"voice_id\": \"alloy\",\n      \"pace\": \"medium\",\n      \"language\": \"vi\"\n    },\n    \"aspect\": \"16:9\"\n  },\n  \"context_writes\": [\n    {\n      \"namespace\": \"production\",\n      \"content_ref\": \"scene-manifests/CH1-V1/v1\",\n      \"summary\": \"Tạo scene manifest 3 cảnh cho CH1-V1 từ kịch bản đã pass fact-check, voice alloy/medium/vi, aspect 16:9.\"\n    }\n  ]\n}\n```",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 5787,
+   "output_tokens": 838
+  },
+  "f4a68a40c7eca6bb0dbd8e94": {
+   "text": "```json\n{\n  \"payload\": {\n    \"video_id\": \"CH1-V3\",\n    \"version\": 1,\n    \"script_version\": 1,\n    \"scenes\": [\n      {\n        \"scene_id\": \"S1\",\n        \"order\": 0,\n        \"narration\": \"Ba mẹo trong ba mươi giây.\",\n        \"visual_prompt\": \"Nền màu sáng đơn giản, số ba lớn dạng biểu tượng hình học ở giữa khung, ánh sáng đều, bố cục căn giữa, phong cách minh hoạ phẳng, không chữ, không logo, không người thật.\",\n        \"duration_s\": 4.0,\n        \"locked\": false,\n        \"asset_refs\": {}\n      },\n      {\n        \"scene_id\": \"S2\",\n        \"order\": 1,\n        \"narration\": \"Mẹo một.\",\n        \"visual_prompt\": \"Một icon đơn giản hình số một cách điệu, đặt giữa khung, nền màu ấm phẳng, ánh sáng dịu, phong cách minh hoạ phẳng nhất quán, không chữ, không logo.\",\n        \"duration_s\": 4.0,\n        \"locked\": false,\n        \"asset_refs\": {}\n      },\n      {\n        \"scene_id\": \"S3\",\n        \"order\": 2,\n        \"narration\": \"Mẹo hai.\",\n        \"visual_prompt\": \"Một icon đơn giản hình số hai cách điệu, đặt giữa khung, nền màu ấm phẳng, ánh sáng dịu, phong cách minh hoạ phẳng nhất quán, không chữ, không logo.\",\n        \"duration_s\": 4.0,\n        \"locked\": false,\n        \"asset_refs\": {}\n      },\n      {\n        \"scene_id\": \"S4\",\n        \"order\": 3,\n        \"narration\": \"Mẹo ba.\",\n        \"visual_prompt\": \"Một icon đơn giản hình số ba cách điệu, đặt giữa khung, nền màu ấm phẳng, ánh sáng dịu, phong cách minh hoạ phẳng nhất quán, không chữ, không logo.\",\n        \"duration_s\": 4.0,\n        \"locked\": false,\n        \"asset_refs\": {}\n      }\n    ],\n    \"voice\": {\n      \"voice_id\": \"alloy\",\n      \"pace\": \"fast\",\n      \"language\": \"vi\"\n    },\n    \"aspect\": \"9:16\"\n  },\n  \"context_writes\": [\n    {\n      \"namespace\": \"production\",\n      \"content_ref\": \"scene-manifests:CH1-V3:v1\",\n      \"summary\": \"Manifest 4 cảnh cho short CH1-V3 (hook + 3 mẹo), 9:16, voice alloy/fast/vi, tổng ~16s.\"\n    }\n  ]\n}\n```",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 5683,
+   "output_tokens": 918
+  }
+ }
+}
