@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from studio.llm import TIERS, Completion, LLMConfig, LLMError, Refused, load_config, make_client
+from studio.llm import TIERS, ClaudeCodeClient, Completion, LLMConfig, LLMError, Refused, load_config, make_client
 from studio.routing import (
     Backend,
     RoutingClient,
@@ -120,3 +120,23 @@ def test_escaped_vietnamese_gateway_body_counts_as_missing_pool():
     a, b = _Client("a", [LLMError(body)]), _Client("b")
     r = _router(Backend("a", a), Backend("b", b), cooldown_s=1800, transient_cooldown_s=60)
     assert _call(r).model == "b-standard" and r.status()[0]["cooldown_remaining"] == 1800
+
+
+def test_claude_code_config_dir_isolates_login(tmp_path: Path, monkeypatch):
+    """Mỗi backend claude-code có thể trỏ CLAUDE_CONFIG_DIR riêng → tài khoản Claude khác trên cùng máy."""
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    cfg = LLMConfig(provider="claude-code", models={"standard": "m"}, config_dir=str(tmp_path / "acc2"))
+    c = ClaudeCodeClient(cfg, runner=lambda a: "{}")
+    assert c.env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "acc2")
+    assert "CLAUDE_CONFIG_DIR" not in ClaudeCodeClient(LLMConfig(provider="claude-code", models={"standard": "m"}), runner=lambda a: "{}").env
+    p = tmp_path / "llm.yaml"
+    p.write_text("provider: fake\nbackends:\n  - {name: a, provider: claude-code, models: {standard: m}}\n"
+                 "  - {name: b, provider: claude-code, config_dir: ~/.claude-acc2, models: {standard: m}}\n", encoding="utf-8")
+    monkeypatch.delenv("STUDIO_LLM_BACKENDS", raising=False); monkeypatch.delenv("STUDIO_LLM_PROVIDER", raising=False)
+    cfg = load_config(p)
+    assert cfg.backend_config(cfg.backends[0]).config_dir is None
+    assert cfg.backend_config(cfg.backends[1]).config_dir == "~/.claude-acc2"
+    client = make_client(cfg)
+    inner = client.backends[1].client
+    inner = getattr(inner, "inner", inner)   # RetryingClient bọc ngoài khi retries > 0
+    assert inner.env["CLAUDE_CONFIG_DIR"].endswith(".claude-acc2")

@@ -117,6 +117,7 @@ class LLMConfig:
     max_tokens: int = 16_000
     effort: dict[str, str] = field(default_factory=lambda: {"strong": "high", "standard": "medium", "light": "low"})
     extra: dict[str, Any] = field(default_factory=dict)
+    config_dir: str | None = None    # claude-code: CLAUDE_CONFIG_DIR riêng → một tài khoản Claude khác trên cùng máy
     name: str = "default"            # tên backend (ADR-0006), hiện trong ghi chú audit khi xoay
     backends: list[dict[str, Any]] = field(default_factory=list)   # mỗi phần tử = một backend, cùng khoá như cấp trên
     routing: dict[str, Any] = field(default_factory=dict)          # cooldown_s, transient_cooldown_s, prefer{tier: backend}
@@ -140,6 +141,7 @@ class LLMConfig:
         cfg.effort, cfg.extra = dict(self.effort), dict(self.extra)
         _apply_yaml(cfg, data)
         cfg.name = str(data.get("name") or cfg.provider)
+        cfg.config_dir = str(data["config_dir"]) if data.get("config_dir") else None
         if data.get("api_key"): cfg.api_key = str(data["api_key"])
         if data.get("api_key_env"): cfg.api_key = os.environ.get(str(data["api_key_env"]), cfg.api_key)
         return cfg
@@ -416,6 +418,9 @@ class ClaudeCodeClient:
         self.cfg = cfg or load_config()
         self.binary = shutil.which(binary) or binary
         self.timeout = timeout
+        self.env = dict(os.environ)
+        if self.cfg.config_dir:   # nhiều tài khoản Claude trên một máy: mỗi backend một thư mục đăng nhập riêng
+            self.env["CLAUDE_CONFIG_DIR"] = str(Path(self.cfg.config_dir).expanduser())
         self._run = runner or self._subprocess  # test thay bằng hàm giả
         self.delegated_tools = False  # lần gọi gần nhất có uỷ quyền vòng tool cho CLI không (runner ghi audit)
 
@@ -423,7 +428,7 @@ class ClaudeCodeClient:
         import subprocess
         try:
             r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               stdin=subprocess.DEVNULL, timeout=self.timeout)
+                               stdin=subprocess.DEVNULL, timeout=self.timeout, env=self.env)
         except FileNotFoundError as e:
             raise LLMError(f"không tìm thấy `{self.binary}` (cài Claude Code hoặc đổi provider)") from e
         except subprocess.TimeoutExpired as e:

@@ -41,8 +41,12 @@ extra: {}
 # Bảng agent → tier và lý do: ../docs/DIEU-PHOI-MODEL.md
 #
 # backends:
-#   - name: claude-sub                 # Claude Pro/Max qua CLI `claude -p`
+#   - name: claude-sub                 # Claude Pro/Max qua CLI `claude -p` (tài khoản đang đăng nhập mặc định)
 #     provider: claude-code
+#     models: {strong: claude-opus-5, standard: claude-sonnet-5, light: claude-haiku-4-5}
+#   - name: claude-sub-2               # tài khoản Claude THỨ HAI trên cùng máy: đăng nhập trước bằng
+#     provider: claude-code            #   CLAUDE_CONFIG_DIR=~/.claude-acc2 claude login
+#     config_dir: ~/.claude-acc2
 #     models: {strong: claude-opus-5, standard: claude-sonnet-5, light: claude-haiku-4-5}
 #   - name: antigravity                # ../gateway xoay vòng tài khoản Google (make login && make start)
 #     provider: openai
