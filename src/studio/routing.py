@@ -31,22 +31,31 @@ TRANSIENT_PATTERNS = re.compile(r"lỗi mạng|timeout|quá \d+s|HTTP 5\d\d|HTTP
 RETRY_AFTER_PATTERNS = (re.compile(r"retry.?after[:\s]+(\d+)", re.IGNORECASE),
                         re.compile(r"thử lại sau\s+(\d+)\s*s", re.IGNORECASE),
                         re.compile(r"resets? in\s+(\d+)\s*s", re.IGNORECASE))
-MISSING_PATTERNS = re.compile(r"không tìm thấy|not found|no such file|chưa cấu hình model", re.IGNORECASE)
+MISSING_PATTERNS = re.compile(r"không tìm thấy|not found|no such file|chưa cấu hình model|chưa có tài khoản|pool trống", re.IGNORECASE)
+
+
+def plain(message: str) -> str:
+    """Thân lỗi HTTP thường là JSON với tiếng Việt bị escape (`Ch\u01b0a c\u00f3`); giải mã để mẫu tiếng Việt khớp."""
+    return re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), message)
 
 
 def retry_after_seconds(message: str) -> float | None:
     for pat in RETRY_AFTER_PATTERNS:
-        if m := pat.search(message):
+        if m := pat.search(plain(message)):
             return float(m.group(1))
     return None
 
 
 def is_quota_error(e: BaseException) -> bool:
-    return bool(QUOTA_PATTERNS.search(str(e)))
+    return bool(QUOTA_PATTERNS.search(plain(str(e))))
+
+
+def is_missing_error(e: BaseException) -> bool:
+    return bool(MISSING_PATTERNS.search(plain(str(e))))
 
 
 def is_transient_error(e: BaseException) -> bool:
-    return bool(TRANSIENT_PATTERNS.search(str(e)))
+    return bool(TRANSIENT_PATTERNS.search(plain(str(e))))
 
 
 @dataclass
@@ -101,7 +110,7 @@ class RoutingClient:
         return out
 
     def _rest(self, b: Backend, e: BaseException, now: float) -> None:
-        msg = str(e)
+        msg = plain(str(e))
         if MISSING_PATTERNS.search(msg):
             secs = self.cooldown_s; kind = "thiếu"
         elif (ra := retry_after_seconds(msg)) is not None:
@@ -135,7 +144,7 @@ class RoutingClient:
             except Refused:
                 raise
             except LLMError as e:
-                if is_quota_error(e) or is_transient_error(e) or MISSING_PATTERNS.search(str(e)):
+                if is_quota_error(e) or is_transient_error(e) or is_missing_error(e):
                     self._rest(b, e, now); continue
                 raise    # lỗi nội dung: việc của agent/supervisor, không phải của backend
             if tried > 1 or b is not candidates[0]:

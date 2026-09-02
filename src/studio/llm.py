@@ -163,7 +163,8 @@ def load_config(path: Path | None = None) -> LLMConfig:
         cfg.backends = [dict(b) for b in (data.get("backends") or []) if isinstance(b, dict)]
         cfg.routing = dict(data.get("routing") or {})
     env = os.environ
-    cfg.provider = env.get("STUDIO_LLM_PROVIDER", cfg.provider)
+    if env.get("STUDIO_LLM_PROVIDER"):   # biến môi trường thắng file: một provider được chỉ đích danh → bỏ `backends:`
+        cfg.provider, cfg.backends = env["STUDIO_LLM_PROVIDER"], []
     for t in TIERS:
         if env.get(f"STUDIO_MODEL_{t.upper()}"): cfg.models[t] = env[f"STUDIO_MODEL_{t.upper()}"]
     cfg.base_url = env.get("STUDIO_LLM_BASE_URL", cfg.base_url)
@@ -382,6 +383,19 @@ class OpenAICompatClient:
                           model=data.get("model", model), stop_reason=finish, cached_input_tokens=cached, tool_calls=calls)
 
 
+
+def reported_model(model_usage: dict[str, Any], requested: str) -> str:
+    """`claude -p` liệt kê trong `modelUsage` cả model phụ mà CLI tự gọi (Haiku cho việc lặt vặt) — thường đứng TRƯỚC
+    model chính. Chọn khoá khớp tên model đã yêu cầu; không có thì khoá tiêu nhiều output token nhất; rỗng thì tên yêu cầu."""
+    if not model_usage: return requested
+    for k, v in model_usage.items():
+        canonical = str(v.get("canonicalModel", "")) if isinstance(v, dict) else ""
+        if k == requested or k.startswith(requested) or requested.startswith(k) or canonical.startswith(requested): return k
+    def out(k: str) -> int:
+        v = model_usage.get(k)
+        return int(v.get("outputTokens", 0) or 0) if isinstance(v, dict) else 0
+    return max(model_usage, key=out)
+
 # ---------- provider: Claude Code CLI (dùng đăng nhập sẵn có của máy, không cần API key) ----------
 
 CLI_WEB_TOOLS = "WebFetch,WebSearch"  # tool sẵn có của CLI, bản đồ 1-1 của web_fetch/web_search (ADR-0007)
@@ -442,11 +456,7 @@ class ClaudeCodeClient:
             raise Refused("model từ chối")
         u = data.get("usage") or {}
         read = int(u.get("cache_read_input_tokens", 0) or 0); write = int(u.get("cache_creation_input_tokens", 0) or 0)
-        # modelUsage có thể gồm cả model phụ CLI dùng cho tool (WebFetch tóm tắt bằng haiku): lấy model đã yêu cầu,
-        # không có thì model sinh nhiều output nhất.
-        mu = data.get("modelUsage") or {}
-        used = next((k for k in mu if k.startswith(model) or str(mu[k].get("canonicalModel", "")).startswith(model)),
-                    max(mu, key=lambda k: int(mu[k].get("outputTokens", 0) or 0), default=model))
+        used = reported_model(data.get("modelUsage") or {}, model)
         return Completion(text=str(data["result"]), input_tokens=int(u.get("input_tokens", 0) or 0) + read + write,
                           output_tokens=int(u.get("output_tokens", 0) or 0), model=used,
                           stop_reason=str(data.get("stop_reason") or "end_turn"), cached_input_tokens=read)

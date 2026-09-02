@@ -4,7 +4,14 @@ from pathlib import Path
 import pytest
 
 from studio.llm import TIERS, Completion, LLMConfig, LLMError, Refused, load_config, make_client
-from studio.routing import Backend, RoutingClient, is_quota_error, is_transient_error, retry_after_seconds
+from studio.routing import (
+    Backend,
+    RoutingClient,
+    is_missing_error,
+    is_quota_error,
+    is_transient_error,
+    retry_after_seconds,
+)
 
 
 class _Client:
@@ -103,3 +110,12 @@ routing: {cooldown_s: 1200, transient_cooldown_s: 15, prefer: {light: antigravit
     assert [b["name"] for b in load_config(p).backends] == ["antigravity"]
     monkeypatch.setenv("STUDIO_LLM_BACKENDS", "nope")
     with pytest.raises(LLMError, match="nope"): load_config(p)
+
+
+def test_escaped_vietnamese_gateway_body_counts_as_missing_pool():
+    """Gateway trả 503 với thân JSON escape tiếng Việt: pool trống phải nghỉ dài (cooldown_s), không phải 60s."""
+    body = r'HTTP 503: {"error": {"message": "Ch\u01b0a c\u00f3 t\u00e0i kho\u1ea3n Antigravity n\u00e0o."}}'
+    assert is_missing_error(LLMError(body))
+    a, b = _Client("a", [LLMError(body)]), _Client("b")
+    r = _router(Backend("a", a), Backend("b", b), cooldown_s=1800, transient_cooldown_s=60)
+    assert _call(r).model == "b-standard" and r.status()[0]["cooldown_remaining"] == 1800
