@@ -55,6 +55,8 @@ make lint
 # Model thật (provider bất kỳ): cp llm.example.yaml llm.yaml ; cp media.example.yaml media.yaml ; hoặc biến môi trường
 #   STUDIO_LLM_PROVIDER=openai STUDIO_LLM_BASE_URL=https://openrouter.ai/api/v1 STUDIO_MODEL_STRONG=... STUDIO_LLM_API_KEY=...
 #   STUDIO_LLM_PROVIDER=anthropic STUDIO_MODEL_STRONG=claude-opus-5   (uv sync --extra anthropic)
+#   Qua gateway xoay vòng tài khoản Google Antigravity (../gateway, xem README ở đó):
+#   STUDIO_LLM_PROVIDER=openai STUDIO_LLM_BASE_URL=http://127.0.0.1:8100/v1 STUDIO_LLM_API_KEY=gateway-local STUDIO_MODEL_STRONG=claude-sonnet-4-6
 #   STUDIO_MEDIA_TTS_PROVIDER=openai STUDIO_MEDIA_IMAGE_PROVIDER=openai STUDIO_MEDIA_VIDEO_PROVIDER=ffmpeg STUDIO_MEDIA_API_KEY=...
 PYTHONPATH=src uv run python -m studio.orchestrator publish channel-briefs brief.json --actor human:owner
 PYTHONPATH=src uv run python -m studio.orchestrator run --watch 5      # hoặc: make watch ; một lượt: make run
