@@ -99,9 +99,64 @@ def test_comments_go_through_replies_gate(tmp_path):
         {"comment_id": "c1", "text": "Công cụ này giá bao nhiêu?"}, {"comment_id": "c2", "text": "Hay quá!"}]}))
     o.run()
     assert "REP-V7-1" in o.gate.pending and not list(bus.replay("publish-events"))
+    assert o.platform.calls == []  # approval-first: chưa duyệt thì adapter chưa bị chạm
     o.gate.decide("REP-V7-1", "approve", by="human:owner"); o.run()
-    posted = [e.payload["platform_ref"] for e in bus.replay("publish-events", "V7")]
-    assert posted == ["reply:c2"]  # c1 chạm giá → requires_human, không tự đăng
+    ev = [e.payload for e in bus.replay("publish-events", "V7")]
+    assert [(e["kind"], e["status"], e["platform_ref"]) for e in ev] == [("reply", "published", "reply:fake-reply-c2")]  # c1 chạm giá → requires_human
+    # code gọi adapter với đúng comment_id và đúng văn bản draft đã qua gate; bằng chứng vào audit
+    assert o.platform.calls == [("reply", {"comment_id": "c2", "text": "Cảm ơn bạn! Hay quá!"})]
+    assert "platform.reply" in _audit_actions(bus, "orchestrator") and "fake-reply-c2" in ev[0]["evidence"]
+
+
+def test_reply_failure_is_reported_as_failed_event(tmp_path):
+    bus = InMemoryBus(); o = _orch(bus, tmp_path); o.platform.fail.add("reply")
+    bus.publish(Envelope(topic="audience-comments", key="V9", actor="human", payload={"video_id": "V9", "comments": [{"comment_id": "c2", "text": "Hay!"}]}))
+    o.run(); o.gate.decide("REP-V9-1", "approve", by="human:owner"); o.run()
+    ev = [e.payload for e in bus.replay("publish-events", "V9")]
+    assert [(e["status"], e["platform_ref"]) for e in ev] == [("failed", "reply:c2")] and "quota" in ev[0]["evidence"]
+    assert "platform.reply_failed" in _audit_actions(bus, "orchestrator")
+
+
+def _to_publish_gate(tmp_path, **opts):
+    bus = InMemoryBus(); o = _orch(bus, tmp_path, plan_size=1, **opts)
+    bus.publish(Envelope(topic="channel-briefs", key="CH1", actor="human", payload=CHANNEL)); o.run()
+    o.gate.decide("PLAN-CH1-1", "approve", by="human:owner"); o.run()
+    assert "PUB-CH1-V1" in o.gate.pending and o.platform.calls == []  # chưa duyệt → không upload
+    return bus, o
+
+
+def test_publish_gate_approve_uploads_once_with_real_file_thumbnail_and_schedule(tmp_path):
+    bus, o = _to_publish_gate(tmp_path)
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    ops = [c[0] for c in o.platform.calls]
+    assert ops == ["upload_video", "set_thumbnail", "schedule"]  # đúng một lần, đúng thứ tự
+    final = next(a for a in reversed([e.payload for e in bus.replay("media-assets", "CH1-V1")]) if a["kind"] == "final_video")
+    up = o.platform.calls[0][1]
+    assert up["path"] == final["path"] and up["title"].startswith("AI dựng video") and up["privacy"] == "private" and up["publish_at"] is None
+    assert o.platform.calls[1][1]["path"].endswith("A.png")  # thumbnail `chosen: A` của thumbnail-designer
+    assert o.platform.calls[2][1] == {"platform_ref": "fake-0001", "publish_at": "2026-09-05T12:00:00Z"}
+    ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")]
+    assert len(ev) == 1 and ev[0]["status"] == "scheduled" and ev[0]["platform_ref"] == "fake-0001"  # model khai yt:abc123 → code ghi đè
+    assert ev[0]["url"] == "https://fake.video/fake-0001" and "upload ok" in ev[0]["evidence"] and "code:" in ev[0]["evidence"] and final["checksum"] in ev[0]["evidence"]
+    assert o.desk.state["CH1-V1"] == "scheduled"
+    audit = next(json.loads(e.payload["evidence"]) for e in bus.replay("audit-log") if e.payload["action"] == "platform.upload")
+    assert audit["platform_ref"] == "fake-0001" and audit["approved_by"] == "human:editor" and audit["file"] == final["path"]
+    assert o.status()["platform"] == "fake"
+
+
+def test_publish_gate_upload_failure_becomes_failed_event(tmp_path):
+    bus, o = _to_publish_gate(tmp_path); o.platform.fail.add("upload_video")
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")]
+    assert len(ev) == 1 and ev[0]["status"] == "failed" and ev[0]["platform_ref"] is None and "quota" in ev[0]["evidence"]
+    assert [c[0] for c in o.platform.calls] == ["upload_video"] and "platform.upload_failed" in _audit_actions(bus, "orchestrator")
+    assert o.desk.state["CH1-V1"] == "approved"  # không scheduled; người quyết định đăng lại
+
+
+def test_publish_gate_reject_or_no_decision_never_touches_platform(tmp_path):
+    bus, o = _to_publish_gate(tmp_path)
+    o.gate.decide("PUB-CH1-V1", "reject", by="human:editor", reason="bỏ"); o.run()
+    assert o.platform.calls == [] and not list(bus.replay("publish-events")) and o.desk.state["CH1-V1"] == "closed"
 
 
 def test_injection_in_comments_is_blocked(tmp_path):

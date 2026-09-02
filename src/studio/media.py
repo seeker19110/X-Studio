@@ -59,6 +59,7 @@ class MediaConfig:
     tts: dict[str, Any] = field(default_factory=lambda: {"provider": "fake", "model": "fake-tts", "voice": "neutral"})
     image: dict[str, Any] = field(default_factory=lambda: {"provider": "fake", "model": "fake-image", "size": "1792x1024"})
     video: dict[str, Any] = field(default_factory=lambda: {"provider": "fake", "fps": 30, "resolution": "1920x1080"})
+    platform: dict[str, Any] = field(default_factory=lambda: {"provider": "fake"})  # adapter nền tảng (ADR-0008): fake | youtube
     output_dir: Path = field(default_factory=lambda: ROOT / "output")
     api_key: str | None = None
 
@@ -68,13 +69,14 @@ def load_media_config(path: Path | None = None) -> MediaConfig:
     p = path or CONFIG_FILE
     if p.exists():
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        for k in ("tts", "image", "video"):
+        for k in ("tts", "image", "video", "platform"):
             getattr(cfg, k).update(data.get(k) or {})
         if data.get("output_dir"): cfg.output_dir = ROOT / str(data["output_dir"])
     env = os.environ
     for k in ("tts", "image", "video"):
         v = env.get(f"STUDIO_MEDIA_{k.upper()}_PROVIDER")
         if v: getattr(cfg, k)["provider"] = v
+    if env.get("STUDIO_PLATFORM"): cfg.platform["provider"] = env["STUDIO_PLATFORM"]
     if env.get("STUDIO_MEDIA_BASE_URL"):
         cfg.tts["base_url"] = cfg.image["base_url"] = env["STUDIO_MEDIA_BASE_URL"]
     if env.get("STUDIO_MEDIA_OUTPUT_DIR"): cfg.output_dir = Path(env["STUDIO_MEDIA_OUTPUT_DIR"])

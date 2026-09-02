@@ -21,14 +21,17 @@ Kết quả: approve (desk dispatch) / request_changes / reject
 - [ ] Không vi phạm `boundaries` và content-policy (YMYL có miễn trừ)
 - [ ] Lịch đăng theo chiến lược (`strategy`) hoặc nêu trong reason
 - [ ] Người duyệt ≠ người tạo (desk)
-Kết quả: approve (publisher lên lịch) / request_changes(lý do → làm lại với hint) / hold / reject(đóng video)
+- [ ] Nếu `STUDIO_PLATFORM=youtube`: `python -m studio.youtube status` còn token; quota ngày còn đủ (~1 600 đơn vị/upload)
+Kết quả: approve (publisher quyết định lịch → CODE upload private + thumbnail chosen + publishAt qua adapter; `publish-events`
+mang id/url thật, lỗi adapter → `failed` có evidence) / request_changes(lý do → làm lại với hint) / hold / reject(đóng video)
 
 ## Gate `replies` — Duyệt lô trả lời bình luận (REP-\<video\>-\<n\>)
 - [ ] Mỗi reply đúng giọng kênh, ≤ 60 từ, trả lời thẳng
 - [ ] Reply `[cần người]` (giá, khiếu nại, pháp lý, sức khoẻ, dữ liệu cá nhân) đã được người soạn lại hoặc bỏ
 - [ ] Không hứa hẹn, không tranh cãi, không lộ thông tin nội bộ
 - [ ] Spam/độc hại không có trong lô (đã ghi `community`)
-Kết quả: approve (publisher đăng các reply không `requires_human`) / reject
+Kết quả: approve (CODE đăng đúng văn bản draft không `requires_human` qua adapter; mỗi reply một `publish-events kind=reply`
+có id thật hoặc `failed`) / reject
 
 ## Gate `escalation` — Video kẹt (ESC-\<video\>)
 Mở khi video `blocked` (retry > 3) hoặc supervisor `escalate` (lỗi lặp, im lặng quá timeout, vượt ngân sách).

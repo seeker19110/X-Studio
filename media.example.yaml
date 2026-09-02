@@ -18,6 +18,13 @@ video:
   fps: 30
   resolution: 1920x1080
 
+# Adapter nền tảng phân phối (ADR-0008): CODE gọi sau gate publish/replies và trong `python -m studio.youtube sync-*`.
+# fake (mặc định, offline) | youtube (Data API v3 + Analytics API v2; đăng nhập trước bằng
+# `python -m studio.youtube login --client-secrets client_secret.json`). Biến môi trường tương đương: STUDIO_PLATFORM=youtube
+platform:
+  provider: fake
+  # tokens: ~/.x-agents/auth/youtube_tokens.json   # hoặc STUDIO_YOUTUBE_TOKENS; không bao giờ commit
+
 # thư mục đặt asset sinh ra (bị gitignore)
 output_dir: output
 # api key cho tts/image đặt qua STUDIO_MEDIA_API_KEY (hoặc STUDIO_LLM_API_KEY nếu cùng nhà cung cấp)

@@ -3,7 +3,7 @@
 Phòng ban thứ hai trong hub X-Agents: vận hành một kênh video (YouTube) từ đầu tới cuối bằng hệ đa agent
 event-driven — 7 khối, 14 agent, human gate ở 4 điểm. Nguyên tắc: **approval-first** (không có gì lên lịch/đăng/trả lời
 công khai trước khi qua cổng duyệt: factual, bản quyền, chất lượng), **model quyết định – code hành động** (TTS, ảnh,
-ghép video, preflight, kiểm định A/B, đăng đều là code xác định), **sửa từng cảnh không dựng lại**, **số liệu thật quay
+ghép video, preflight, kiểm định A/B, upload/lên lịch/trả lời đều là code xác định), **sửa từng cảnh không dựng lại**, **số liệu thật quay
 lại nuôi chiến lược**, **self-hosted, resume được**, **trung lập provider** cho cả text lẫn media.
 
 ```
@@ -25,12 +25,13 @@ brief kênh → trend → KẾ HOẠCH (gate plan) → nghiên cứu → kịch 
 | 7 | Giám sát | supervisor | Watchdog, ngân sách token, lỗi lặp, bài học, calibration ước lượng |
 | — | Human gate | (con người) | `plan` · `publish` · `replies` · `escalation` |
 
-Thành phần code: **renderer** (media), **desk** (vòng đời video, gom review, rework có hint), **preflight**, **analytics**, **orchestrator**.
+Thành phần code: **renderer** (media), **desk** (vòng đời video, gom review, rework có hint), **preflight**, **analytics**,
+**platform** (adapter nền tảng: `fake` | `youtube` — upload, thumbnail, lên lịch, bình luận, số liệu; ADR-0008), **orchestrator**.
 
 ## Cấu trúc
 
 ```
-docs/          kiến trúc, tiêu chuẩn, ADR 0001–0006
+docs/          kiến trúc, tiêu chuẩn, ADR 0001–0008
 agents/        14 system prompt có version, nhóm theo khối
 skills/        24 skill có version: tiêu chuẩn + quy trình + quy tắc + checklist; nạp đầy đủ / rút gọn
 gates/         checklist 4 human gate
@@ -38,10 +39,12 @@ templates/     brief, kịch bản, scene manifest, metadata, gói đăng, postm
 topics/        19 JSON Schema topic + bảng owner 10 namespace
 src/studio/    events, bus, sqlite_bus, blackboard, registry, gates, gate_cli, llm (text), routing (nhiều gói tài khoản,
                chọn theo tier, xoay khi hết quota — ADR-0006), tools (web chỉ đọc — ADR-0007), media (TTS/ảnh/video),
-               renderer, preflight, analytics, desk, supervisor, runner, orchestrator, evals, fakes, demo
+               renderer, platform (adapter YouTube thật / fake — ADR-0008), youtube (CLI login/status/sync-*),
+               preflight, analytics, desk, supervisor, runner, orchestrator, evals, fakes, demo
 evals/         ca eval theo agent (YAML) — 14 agent, mỗi agent 2 ca; recordings/ = phản hồi model đã ghi
 tests/         pytest: bus, registry, golden 14 agent, preflight/analytics, media/renderer (ffmpeg nếu có),
-               desk/gate, runner/eval ghi-phát lại, tool web + vòng lặp tool, orchestrator end-to-end (gate, rework, sửa cảnh, resume SQLite, injection)
+               desk/gate, runner/eval ghi-phát lại, tool web + vòng lặp tool, platform (fake, YouTube với HTTP giả, CLI sync),
+               orchestrator end-to-end (gate, rework, sửa cảnh, upload sau gate, resume SQLite, injection)
 ```
 
 ## Chạy
@@ -68,9 +71,20 @@ PYTHONPATH=src uv run python -m studio.orchestrator run --watch 5      # hoặc:
 PYTHONPATH=src uv run python -m studio.gate_cli list                    # hoặc: make gate
 PYTHONPATH=src uv run python -m studio.gate_cli approve PLAN-CH1-1 --by human:owner
 PYTHONPATH=src uv run python -m studio.gate_cli approve PUB-CH1-V1 --by human:editor --reason "đăng 12:00 thứ 6"
-PYTHONPATH=src uv run python -m studio.orchestrator publish publish-events published.json      # nền tảng đã công khai
-PYTHONPATH=src uv run python -m studio.orchestrator publish performance-snapshots stats.json   # số liệu thật
-PYTHONPATH=src uv run python -m studio.orchestrator publish audience-comments comments.json
+PYTHONPATH=src uv run python -m studio.orchestrator publish publish-events published.json      # nền tảng đã công khai (tay)
+PYTHONPATH=src uv run python -m studio.orchestrator publish performance-snapshots stats.json   # số liệu thật (nạp tay)
+PYTHONPATH=src uv run python -m studio.orchestrator publish audience-comments comments.json    # bình luận (nạp tay)
+
+# YouTube THẬT (ADR-0008) — mặc định STUDIO_PLATFORM=fake (offline). Bật: `platform: {provider: youtube}` trong media.yaml
+# hoặc STUDIO_PLATFORM=youtube. Đăng nhập là việc của NGƯỜI DÙNG (OAuth Desktop app, loopback 127.0.0.1, mở trình duyệt);
+# token lưu ~/.x-agents/auth/youtube_tokens.json (0600, hoặc STUDIO_YOUTUBE_TOKENS), tự refresh; không bao giờ commit.
+#   Google Cloud Console → bật YouTube Data API v3 + YouTube Analytics API → OAuth client "Desktop app" → tải client_secret.json
+PYTHONPATH=src uv run python -m studio.youtube login --client-secrets client_secret.json
+PYTHONPATH=src uv run python -m studio.youtube status                                          # có token? hết hạn? scopes? (không in secret)
+#   Gate publish approve → publisher quyết định lịch, CODE upload private + thumbnail chosen + publishAt → publish-events có id thật.
+#   Gate replies approve → CODE đăng từng reply đã duyệt (comments.insert) → publish-events kind=reply có id thật.
+STUDIO_PLATFORM=youtube PYTHONPATH=src uv run python -m studio.youtube sync-comments CH1-V1 [--since 2026-09-01T00:00:00Z]  # → audience-comments
+STUDIO_PLATFORM=youtube PYTHONPATH=src uv run python -m studio.youtube sync-metrics CH1-V1 --window 7 [--variant A]         # → performance-snapshots
 PYTHONPATH=src uv run python -m studio.orchestrator status | report
 PYTHONPATH=src uv run python -m studio.evals script-writer            # make eval AGENT=... (model thật)
 PYTHONPATH=src uv run python -m studio.evals script-writer --record   # make eval-record — sau khi đổi prompt/skill
@@ -87,13 +101,14 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
 - Review fail/block → brief phát lại với `retry+1` và `hint`; retry > 3 → blocked → gate `escalation`.
 - Editor sửa cảnh tối đa 3 vòng; cảnh `locked` không bao giờ sinh lại; asset người tải lên phải có license.
 - Mọi asset có `provenance` (provider:model, prompt_ref, license); `unknown` bị rights-checker block.
-- `performance-snapshots`, `audience-comments`, `channel-briefs` do người/adapter nạp; agent không bịa số.
+- `performance-snapshots`, `audience-comments`, `channel-briefs` do người/adapter nạp; agent không bịa số. `platform_ref`/`url`
+  trong `publish-events` do CODE điền từ kết quả adapter (model không tự khai id); adapter thiếu quyền → số 0 + evidence nói rõ.
 - Sửa prompt/skill → tăng `version`, `make golden`, `make eval-record AGENT=<id>` bằng model thật, commit bản ghi; CI phát lại.
 
 ## Hiện trạng (2026-09-02)
 
 ### Đã có
-- Tài liệu: kiến trúc, tiêu chuẩn, ADR 0001–0006; 14 system prompt có version; 24 skill có version; 7 template; checklist 4 gate.
+- Tài liệu: kiến trúc, tiêu chuẩn, ADR 0001–0008; 14 system prompt có version; 24 skill có version; 7 template; checklist 4 gate.
 - 19 JSON Schema topic (sinh từ pydantic + 4 schema tay) + bảng owner 10 namespace.
 - Lõi xác định `src/studio/`: envelope/payload pydantic, bus validate schema + quyền namespace, bus SQLite (checkpoint/resume),
   registry nạp prompt + skill hai mức, human gate bền vững qua audit-log + CLI four-eyes.
@@ -115,12 +130,20 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
   render/cut-list/thumbnail/preflight bằng code; gate publish/replies/escalation; supervisor pause hoãn event; resume từ SQLite;
   CLI `run | publish | status | report`.
 - **Supervisor**: ngân sách token theo video (80%/100%), lỗi review lặp ≥ 2, im lặng quá timeout, calibration estimate/actual theo format.
+- **Adapter YouTube thật** (`platform.py`, `youtube.py`, ADR-0008): interface `Platform` trung lập nền tảng (`upload_video`,
+  `set_thumbnail`, `schedule`, `list_comments`, `reply`, `snapshot`); `fake` offline (mặc định); `youtube` bằng `urllib` thuần —
+  upload resumable 2 bước, `thumbnails/set`, `videos.update` (private + publishAt), `commentThreads.list`, `comments.insert`,
+  Analytics `reports.query` (views/phút xem/AVD/like/comment + retention `audienceWatchRatio`; impressions/CTR để 0 kèm evidence
+  khi API không cho). OAuth do người dùng chạy (`login`), token tự refresh (kể cả khi 401), quota 403 → `failed` có bằng chứng.
+  Orchestrator: gate publish approve → CODE upload + thumbnail chosen + lịch, ghi đè `platform_ref`/`url`/`evidence`; gate replies
+  approve → CODE đăng reply; không có approve thì adapter không bị chạm. CLI `sync-comments`/`sync-metrics` nạp số thật lên bus.
 - **Eval ghi/phát lại** + **client giả có kịch bản** (`fakes.py`) chạy được mọi ca eval và demo end-to-end offline.
-- Test: 135 ca pytest (golden 14 agent, bus, registry, preflight/analytics, media/renderer, desk/gate, runner/eval, tool web + vòng tool, orchestrator e2e); ruff sạch.
+- Test: 160 ca pytest (golden 14 agent, bus, registry, preflight/analytics, media/renderer, desk/gate, runner/eval, tool web + vòng tool,
+  platform fake/YouTube HTTP giả/CLI sync, orchestrator e2e kể cả approval-first với adapter); ruff sạch.
 
 ### Chưa có
-- **Adapter nền tảng thật** (YouTube Data API: upload/schedule/playlist, Analytics API, Comments API): publisher hiện ghi ý định
-  vào `publish-events`; số liệu và bình luận nạp qua CLI.
+- **YouTube phần còn lại**: playlist, Shorts flag, đổi lịch/gỡ video (rollback vẫn do người), kéo comments/metrics theo lịch tự động
+  (hiện gọi tay/cron `sync-*`), đo quota còn lại; adapter nền tảng khác (TikTok, Facebook) — interface `Platform` đã sẵn.
 - **Allowlist domain theo kênh** và cache trang đã đọc cho tool web; tool web chỉ có ở trend-researcher và fact-checker
   (script-writer, community-manager cố ý không có).
 - **Provider media khác** (ElevenLabs, Stability, Runway…): interface có, adapter chưa; chuẩn hoá âm lượng -14 LUFS trong ffmpeg.
@@ -129,7 +152,7 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
 - Bus Redis/Kafka khi chạy nhiều máy (orchestrator hiện tuần tự một tiến trình).
 
 ### Bước tiếp theo
-1. Adapter YouTube (upload private → scheduled; kéo analytics/comments theo lịch) đứng sau publisher/desk, giữ nguyên topic.
+1. Lịch tự động cho `sync-comments`/`sync-metrics` (tick của orchestrator hoặc cron) + playlist/Shorts trên YouTube.
 2. SearXNG tự host cho `STUDIO_SEARCH_URL` + allowlist domain theo kênh; ghi lại eval trend-researcher khi có search.
 3. Shorts từ video dài đã duyệt; chuẩn hoá loudness; giao diện web gate.
 

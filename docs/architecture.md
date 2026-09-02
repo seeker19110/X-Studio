@@ -12,17 +12,18 @@ lên lịch/đăng/trả lời công khai trước khi qua human gate.
 2. **Key = video_id** (cấp kênh: channel_id): mọi message của một video đi cùng partition, giữ thứ tự.
 3. **Blackboard có chủ**: `shared-context` chia namespace, mỗi namespace một agent ghi (`topics/README.md`).
 4. **Model quyết định, code hành động** (ADR-0003): TTS, sinh ảnh, ghép video, preflight, kiểm định A/B, map retention,
-   đăng — đều là code xác định. Model chỉ trả JSON có cấu trúc; ngoại lệ duy nhất là tool **chỉ đọc** web (ADR-0007) cho
+   upload/lên lịch/trả lời (adapter nền tảng, ADR-0008) — đều là code xác định. Model chỉ trả JSON có cấu trúc; ngoại lệ duy nhất là tool **chỉ đọc** web (ADR-0007) cho
    agent khai `tools: [web]` (trend-researcher, fact-checker) — không tool nào ghi/đăng.
 5. **Approval-first** (ADR-0002): ba review bắt buộc (factual, rights, quality) + preflight → gate `publish`; kế hoạch
    biên tập → gate `plan`; trả lời bình luận → gate `replies`; kẹt → gate `escalation`. Gate không bao giờ tự đi tiếp.
 6. **Sửa, không dựng lại** (ADR-0004): scene manifest có version; editor sửa từng cảnh, khoá cảnh đạt; renderer chỉ sinh
    lại phần bị chạm; tối đa 3 vòng.
-7. **Số liệu thật, không bịa**: `performance-snapshots`/`audience-comments` do người hoặc adapter nạp; agent phân tích
-   chỉ diễn giải số code đã tính.
+7. **Số liệu thật, không bịa**: `performance-snapshots`/`audience-comments` do người hoặc adapter YouTube nạp (`studio.youtube
+   sync-*`); `platform_ref`/`url` trong `publish-events` do code điền từ API; thiếu quyền → 0 + evidence. Agent chỉ diễn giải.
 8. **Hạn mức mọi nơi**: retry, timeout, token, vòng sửa đều có ngưỡng; hết ngưỡng thì escalate.
 9. **Prompt là code**: agent/skill có version, golden test, eval ghi/phát lại; đổi prompt phải chạy eval.
-10. **Trung lập provider**: text (`llm.yaml`, `STUDIO_*`) và media (`media.yaml`, `STUDIO_MEDIA_*`) đổi bằng cấu hình.
+10. **Trung lập provider**: text (`llm.yaml`, `STUDIO_*`), media (`media.yaml`, `STUDIO_MEDIA_*`) và nền tảng phân phối
+    (`platform:` / `STUDIO_PLATFORM=fake|youtube`) đổi bằng cấu hình.
 11. **Self-hosted, resume được**: bus SQLite là checkpoint; mở lại là chạy tiếp đúng chỗ.
 
 ## Các khối và agent (7 khối, 14 agent + human gate)
@@ -39,7 +40,7 @@ lên lịch/đăng/trả lời công khai trước khi qua human gate.
 | — | Human gate | (con người) | plan · publish · replies · escalation |
 
 Thành phần code (không phải agent): **renderer** (media), **desk** (vòng đời video, gom review), **preflight**,
-**analytics** (retention/A-B), **tools** (web chỉ đọc), **orchestrator**.
+**analytics** (retention/A-B), **tools** (web chỉ đọc), **platform** (adapter nền tảng), **orchestrator**.
 
 ## Topic
 
@@ -56,10 +57,10 @@ Thành phần code (không phải agent): **renderer** (media), **desk** (vòng 
 | cut-lists | editor | renderer (sửa / chốt) | video_id |
 | thumbnail-specs | thumbnail-designer | renderer | video_id |
 | metadata-packages | seo-optimizer | preflight (code), seo-optimizer (sửa block), publisher (sau gate) | video_id |
-| publish-events | publisher, human (published/rolled_back) | desk | video_id |
-| performance-snapshots | human / adapter | analytics-analyst (kèm retention_drops, experiment do code tính) | video_id |
+| publish-events | publisher (quyết định) + code điền platform_ref/url từ adapter, human (published/rolled_back) | desk | video_id |
+| performance-snapshots | human / adapter:youtube (`sync-metrics`) | analytics-analyst (kèm retention_drops, experiment do code tính) | video_id |
 | analytics-reports | analytics-analyst | channel-strategist (insight → `strategy`; cấp kênh → kế hoạch mới) | video_id / channel_id |
-| audience-comments | human / adapter | community-manager | video_id |
+| audience-comments | human / adapter:youtube (`sync-comments`) | community-manager | video_id |
 | reply-drafts | community-manager | gate replies → publisher | video_id |
 | shared-context | theo namespace | tất cả | namespace |
 | audit-log | tất cả | supervisor, orchestrator (gate.decide) | actor |
@@ -80,9 +81,10 @@ quality-reviewer:   review-results(source=quality)      ┐ trên gói hoàn ch�
 rights-checker:     review-results(source=rights)        ┘ (song song, độc lập)
 desk:               fact + rights + quality pass, có final + metadata + thumbnail → gate publish (checklist = review + preflight)
                     fail/block → brief retry+1 với hint; retry > 3 → blocked → gate escalation
-publisher:          gate approve → publish-events(scheduled) → (nền tảng) published
+publisher:          gate approve → quyết định lịch → CODE: platform.upload_video (private) + set_thumbnail(chosen) + schedule
+                    → publish-events(scheduled, platform_ref/url thật) | lỗi adapter → failed có evidence; (nền tảng) published
 analytics-analyst:  performance-snapshots → analytics-reports (điểm rơi theo cảnh, A/B) → channel-strategist ghi `strategy`
-community-manager:  audience-comments → reply-drafts (lô) → gate replies → publisher đăng (bỏ requires_human)
+community-manager:  audience-comments → reply-drafts (lô) → gate replies → publisher quyết định → CODE platform.reply (bỏ requires_human)
 supervisor:         retry, token, lỗi lặp, im lặng quá timeout → supervisor-actions(warn/pause/budget_cut/escalate)
 ```
 
@@ -96,8 +98,8 @@ cộng `changes_requested` (làm lại), `blocked`, `escalated` vào được t�
 | Gate | Subject | Khi nào | Approve | Reject / request_changes |
 |------|---------|---------|---------|---------------------------|
 | plan | PLAN-\<channel\>-\<n\> | channel-strategist sinh kế hoạch, code kiểm xong | desk dispatch từng brief theo priority | kế hoạch bỏ |
-| publish | PUB-\<video\> | 3 review pass + final + metadata + thumbnail | publisher lên lịch | request_changes → làm lại với hint; reject → đóng |
-| replies | REP-\<video\>-\<n\> | community-manager có lô nháp | publisher đăng các reply không `requires_human` | không đăng |
+| publish | PUB-\<video\> | 3 review pass + final + metadata + thumbnail | publisher quyết định, code upload + lên lịch | request_changes → làm lại với hint; reject → đóng |
+| replies | REP-\<video\>-\<n\> | community-manager có lô nháp | code đăng các reply không `requires_human` qua adapter | không đăng |
 | escalation | ESC-\<video\> | blocked / supervisor escalate | mở lại với hint, retry về 0 | đóng video |
 
 Timeout 24h, nhắc ở 12h, four-eyes (người duyệt ≠ người tạo). Checklist trong `gates/checklists.md`.
@@ -107,6 +109,18 @@ Timeout 24h, nhắc ở 12h, four-eyes (người duyệt ≠ người tạo). Ch
 `media.py`: `TTS.synthesize`, `ImageGen.generate`, `VideoAssembler.assemble`; provider `fake` (offline, file giữ chỗ hợp lệ),
 `openai` (endpoint OpenAI-compatible cho TTS/ảnh), `ffmpeg` (ghép MP4). `renderer.py` biến manifest thành asset có
 checksum + provenance (provider:model, prompt_ref, license) và publish `media-assets`. Asset nằm trong `output/<video_id>/`.
+
+## Adapter nền tảng (ADR-0008)
+
+`platform.py`: interface `Platform` — `upload_video(path, metadata, privacy, publish_at, made_for_kids) → UploadResult(platform_ref,
+url, status, evidence)`, `set_thumbnail`, `schedule` (private + publishAt), `list_comments(since)`, `reply` → `ReplyResult`,
+`snapshot(window_days)` → `SnapshotResult(PerformanceSnapshot, evidence)`. `FakePlatform` (mặc định; dict + `calls` cho test/demo)
+và `YouTubePlatform` (urllib thuần qua `fetcher` tiêm được: upload resumable 2 bước, `thumbnails/set`, `videos.update`,
+`commentThreads.list` phân trang, `comments.insert`, Analytics `reports.query` + `audienceWatchRatio`/`elapsedVideoTimeRatio`;
+token `~/.x-agents/auth/youtube_tokens.json` tự refresh, 401 → refresh một lần rồi thử lại, 403 quota → `PlatformError`).
+Orchestrator chỉ gọi adapter từ `gate.decide approve` (`_publish_video`, `_post_reply`): model quyết định, code hành động rồi ghi đè
+`platform_ref`/`url`/`evidence`; audit `platform.upload|upload_failed|reply|reply_failed`. `youtube.py`: `login` (OAuth do người
+chạy), `status`, `sync-comments`, `sync-metrics` (actor `adapter:youtube`, audit `platform.comments|snapshot` kèm evidence).
 
 ## Tool web chỉ đọc (ADR-0007)
 
