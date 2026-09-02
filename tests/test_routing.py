@@ -3,7 +3,17 @@ from pathlib import Path
 
 import pytest
 
-from studio.llm import TIERS, ClaudeCodeClient, Completion, LLMConfig, LLMError, Refused, load_config, make_client
+from studio.llm import (
+    TIERS,
+    ClaudeCodeClient,
+    CodexClient,
+    Completion,
+    LLMConfig,
+    LLMError,
+    Refused,
+    load_config,
+    make_client,
+)
 from studio.routing import (
     Backend,
     RoutingClient,
@@ -12,6 +22,10 @@ from studio.routing import (
     is_transient_error,
     retry_after_seconds,
 )
+from studio.tools import ToolSpec
+
+_TOOL = ToolSpec(name="t", description="", parameters={})
+_CODEX_QUOTA_EXC = LLMError
 
 
 class _Client:
@@ -109,6 +123,8 @@ routing: {cooldown_s: 1200, transient_cooldown_s: 15, prefer: {light: antigravit
     assert client.backends[0].calls == 0 and client.backends[1].calls == 1
     monkeypatch.setenv("STUDIO_LLM_BACKENDS", "antigravity")
     assert [b["name"] for b in load_config(p).backends] == ["antigravity"]
+    monkeypatch.setenv("STUDIO_LLM_BACKENDS", "claude-sub")   # prefer[light]=antigravity bị lọc → bỏ, không lỗi
+    cfg = load_config(p); assert cfg.routing["prefer"] == {} and make_client(cfg).prefer == {}
     monkeypatch.setenv("STUDIO_LLM_BACKENDS", "nope")
     with pytest.raises(LLMError, match="nope"): load_config(p)
 
@@ -140,3 +156,66 @@ def test_claude_code_config_dir_isolates_login(tmp_path: Path, monkeypatch):
     inner = client.backends[1].client
     inner = getattr(inner, "inner", inner)   # RetryingClient bọc ngoài khi retries > 0
     assert inner.env["CLAUDE_CONFIG_DIR"].endswith(".claude-acc2")
+
+
+# ---------- provider codex ----------
+
+OK_JSONL = """Reading additional input from stdin...
+{"type":"thread.started","thread_id":"t1"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `x` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"{\\"answer\\":\\"ok\\"}"}}
+{"type":"turn.completed","usage":{"input_tokens":15131,"cached_input_tokens":11008,"cache_write_input_tokens":0,"output_tokens":9,"reasoning_output_tokens":0}}
+"""
+FAIL_JSONL = """{"type":"thread.started","thread_id":"t2"}
+{"type":"turn.started"}
+{"type":"error","message":"{\\"type\\":\\"error\\",\\"status\\":400,\\"error\\":{\\"message\\":\\"The 'gpt-x' model is not supported when using Codex with a ChatGPT account.\\"}}"}
+{"type":"turn.failed","error":{"message":"..."}}
+"""
+
+
+def _cx(tmp_path, out, **kw):
+    cfg = LLMConfig(provider="codex", models={"strong": "gpt-5.6-terra", "standard": "gpt-5.6-terra"}, effort={"strong": "high", "standard": "low"}, **kw)
+    seen = []
+    c = CodexClient(cfg, runner=lambda a: (seen.append(a), out)[1])
+    return c, seen
+
+
+def test_codex_client_parses_jsonl_usage_and_builds_args(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    c, seen = _cx(tmp_path, OK_JSONL)
+    r = c.complete(system="SYS", user="USER", schema={"type": "object", "properties": {"answer": {"type": "string"}}}, model_tier="standard")
+    assert r.json() == {"answer": "ok"} and r.input_tokens == 15131 and r.cached_input_tokens == 11008 and r.output_tokens == 9
+    assert r.model == "gpt-5.6-terra" and "CODEX_HOME" not in c.env
+    a = seen[0]
+    assert a[1] == "exec" and "--json" in a and "--ephemeral" in a and a[a.index("-m") + 1] == "gpt-5.6-terra"
+    assert a[a.index("-s") + 1] == "read-only" and "model_reasoning_effort=low" in a
+    assert "--output-schema" not in a   # strict mode của OpenAI không hợp schema topic có trường tuỳ chọn
+    assert a[-1].startswith("# Vai trò và quy tắc\nSYS") and "USER" in a[-1] and "JSON Schema" in a[-1] and '"answer"' in a[-1]
+
+
+def test_codex_client_errors_config_dir_and_tools(tmp_path: Path):
+    c, _ = _cx(tmp_path, FAIL_JSONL)
+    with pytest.raises(LLMError, match="not supported"):
+        c.complete(system="s", user="u", schema={}, model_tier="strong")
+    c, _ = _cx(tmp_path, '{"type":"error","message":"429 usage limit reached, try again later"}\n{"type":"turn.failed","error":{"message":"x"}}\n')
+    with pytest.raises(_CODEX_QUOTA_EXC):
+        c.complete(system="s", user="u", schema={}, model_tier="strong")
+    c, _ = _cx(tmp_path, '{"type":"turn.completed","usage":{}}\n')
+    with pytest.raises(LLMError, match="agent_message"):
+        c.complete(system="s", user="u", schema={}, model_tier="strong")
+    c, _ = _cx(tmp_path, OK_JSONL, config_dir=str(tmp_path / "acc2"))
+    assert c.env["CODEX_HOME"] == str(tmp_path / "acc2")
+    with pytest.raises(LLMError, match="tool"):
+        c.complete(system="s", user="u", schema={}, model_tier="strong", tools=[_TOOL])
+
+
+def test_make_client_codex_backend_has_no_tools(tmp_path: Path, monkeypatch):
+    p = tmp_path / "llm.yaml"
+    p.write_text("provider: fake\nbackends:\n  - {name: gpt, provider: codex, models: {standard: gpt-5.6-terra}, binary: codex-khong-ton-tai}\n"
+                 "  - {name: f, provider: fake}\n", encoding="utf-8")
+    for v in ("COMPANY_LLM_BACKENDS", "COMPANY_LLM_PROVIDER", "STUDIO_LLM_BACKENDS", "STUDIO_LLM_PROVIDER"): monkeypatch.delenv(v, raising=False)
+    client = make_client(load_config(p))
+    assert [(b.name, b.supports_tools) for b in client.backends] == [("gpt", False), ("f", True)]
+    inner = client.backends[0].client; inner = getattr(inner, "inner", inner)
+    assert isinstance(inner, CodexClient) and inner.binary.endswith("codex-khong-ton-tai")

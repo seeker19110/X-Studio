@@ -2,7 +2,7 @@
 # Phòng ban trung lập provider: đổi model/provider ở đây, không đổi code hay prompt.
 
 # anthropic | openai (mọi server OpenAI-compatible: OpenAI, OpenRouter, Gemini OpenAI-compat, Ollama, Groq, vLLM...)
-# | claude-code (CLI `claude -p` đã đăng nhập trên máy, không cần key) | fake
+# | claude-code (CLI `claude -p` đã đăng nhập trên máy, không cần key) | codex (CLI `codex exec`, gói ChatGPT) | fake
 provider: openai
 
 # model theo tier trong front matter agent
@@ -48,6 +48,11 @@ extra: {}
 #     provider: claude-code            #   CLAUDE_CONFIG_DIR=~/.claude-acc2 claude login
 #     config_dir: ~/.claude-acc2
 #     models: {strong: claude-opus-5, standard: claude-sonnet-5, light: claude-haiku-4-5}
+#   - name: chatgpt-sub                # ChatGPT Plus/Pro qua Codex CLI `codex exec` (đã `codex login`); không tool-use
+#     provider: codex
+#     models: {strong: gpt-5.6-terra, standard: gpt-5.6-terra, light: gpt-5.6-terra}   # theo `codex` của gói; -c model_reasoning_effort theo `effort`
+#     # binary: C:/Users/<ban>/AppData/Local/OpenAI/Codex/bin/<hash>/codex.exe   # tự tìm nếu không có trên PATH
+#     # config_dir: ~/.codex-acc2     # tài khoản ChatGPT thứ hai: CODEX_HOME=~/.codex-acc2 codex login
 #   - name: antigravity                # ../gateway xoay vòng tài khoản Google (make login && make start)
 #     provider: openai
 #     base_url: http://127.0.0.1:8100/v1

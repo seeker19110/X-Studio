@@ -62,6 +62,7 @@ def is_transient_error(e: BaseException) -> bool:
 class Backend:
     name: str
     client: ModelClient
+    supports_tools: bool = True   # codex: không nhận tool web của phòng ban
     tiers: frozenset[str] = frozenset()
     cooldown_until: float = 0.0
     cooldown_reason: str = ""
@@ -91,9 +92,10 @@ class RoutingClient:
             if name not in names:
                 raise LLMError(f"routing.prefer[{tier}] = `{name}` không có trong backends {names}")
 
-    def order(self, tier: str) -> list[Backend]:
+    def order(self, tier: str, needs_tools: bool = False) -> list[Backend]:
         first = self.prefer.get(tier)
-        return sorted(self.backends, key=lambda b: 0 if b.name == first else 1)   # sort ổn định: giữ thứ tự khai báo
+        ordered = sorted(self.backends, key=lambda b: 0 if b.name == first else 1)   # sort ổn định: giữ thứ tự khai báo
+        return [b for b in ordered if b.supports_tools or not needs_tools]
 
     def status(self) -> list[dict[str, Any]]:
         now = self.clock()
@@ -129,7 +131,9 @@ class RoutingClient:
                  messages: list[dict[str, Any]] | None = None) -> Completion:
         """`tools`/`messages` (ADR-0007) chuyển nguyên cho backend được chọn; xoay backend giữa chừng một vòng tool là
         chấp nhận được vì hội thoại trung lập nằm trong `messages`, không nằm ở phía provider."""
-        candidates = self.order(model_tier)
+        candidates = self.order(model_tier, bool(tools))
+        if not candidates:
+            raise LLMError("routing: yêu cầu có tool nhưng không backend nào hỗ trợ tool-use")
         tried = 0
         for b in candidates:
             now = self.clock()

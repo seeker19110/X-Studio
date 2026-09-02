@@ -2,7 +2,7 @@
 hình bằng biến môi trường hoặc file `llm.yaml`, không hard-code vào code hay prompt của phòng ban.
 
 Cấu hình (ưu tiên: biến môi trường > llm.yaml > mặc định):
-    STUDIO_LLM_PROVIDER    anthropic | openai | claude-code | fake
+    STUDIO_LLM_PROVIDER    anthropic | openai | claude-code | codex | fake
                            (openai = mọi server OpenAI-compatible: OpenAI, OpenRouter, Gemini OpenAI-compat, Ollama,
                             Groq, vLLM, LM Studio, Kimi, GLM...; claude-code = CLI `claude -p` đã đăng nhập trên máy)
     STUDIO_MODEL_STRONG    model cho tier `strong`
@@ -117,7 +117,8 @@ class LLMConfig:
     max_tokens: int = 16_000
     effort: dict[str, str] = field(default_factory=lambda: {"strong": "high", "standard": "medium", "light": "low"})
     extra: dict[str, Any] = field(default_factory=dict)
-    config_dir: str | None = None    # claude-code: CLAUDE_CONFIG_DIR riêng → một tài khoản Claude khác trên cùng máy
+    config_dir: str | None = None    # claude-code: CLAUDE_CONFIG_DIR / codex: CODEX_HOME riêng → tài khoản khác trên cùng máy
+    binary: str | None = None        # đường dẫn CLI (claude / codex) khi không có trên PATH
     name: str = "default"            # tên backend (ADR-0006), hiện trong ghi chú audit khi xoay
     backends: list[dict[str, Any]] = field(default_factory=list)   # mỗi phần tử = một backend, cùng khoá như cấp trên
     routing: dict[str, Any] = field(default_factory=dict)          # cooldown_s, transient_cooldown_s, prefer{tier: backend}
@@ -142,6 +143,7 @@ class LLMConfig:
         _apply_yaml(cfg, data)
         cfg.name = str(data.get("name") or cfg.provider)
         cfg.config_dir = str(data["config_dir"]) if data.get("config_dir") else None
+        cfg.binary = str(data["binary"]) if data.get("binary") else None
         if data.get("api_key"): cfg.api_key = str(data["api_key"])
         if data.get("api_key_env"): cfg.api_key = os.environ.get(str(data["api_key_env"]), cfg.api_key)
         return cfg
@@ -177,15 +179,18 @@ def load_config(path: Path | None = None) -> LLMConfig:
         missing = [w for w in wanted if w not in by_name]
         if missing: raise LLMError(f"STUDIO_LLM_BACKENDS nhắc backend không có trong llm.yaml: {missing}")
         cfg.backends = [by_name[w] for w in wanted]
+        if cfg.routing.get("prefer"):   # prefer trỏ backend đã bị lọc bỏ thì bỏ mục đó, không phải lỗi cấu hình
+            cfg.routing["prefer"] = {t: n for t, n in cfg.routing["prefer"].items() if n in wanted}
     return cfg
 
 
 def _single_client(cfg: LLMConfig) -> ModelClient:
     if cfg.provider == "anthropic": return AnthropicClient(cfg)
     if cfg.provider == "openai": return OpenAICompatClient(cfg)
+    if cfg.provider == "codex": return CodexClient(cfg)
     if cfg.provider == "claude-code": return ClaudeCodeClient(cfg)
     if cfg.provider == "fake": return FakeClient()
-    raise LLMError(f"provider lạ: {cfg.provider} (anthropic | openai | claude-code | fake)")
+    raise LLMError(f"provider lạ: {cfg.provider} (anthropic | openai | claude-code | codex | fake)")
 
 
 def make_client(cfg: LLMConfig | None = None) -> ModelClient:
@@ -197,7 +202,8 @@ def make_client(cfg: LLMConfig | None = None) -> ModelClient:
     bs = []
     for data in cfg.backends:
         bc = cfg.backend_config(data)
-        bs.append(Backend(name=bc.name, client=_single_client(bc), tiers=bc.tiers_configured()))
+        bs.append(Backend(name=bc.name, client=_single_client(bc), tiers=bc.tiers_configured(),
+                          supports_tools=bool(data.get("supports_tools", bc.provider != "codex"))))
     r = cfg.routing
     return RoutingClient(bs, cooldown_s=float(r.get("cooldown_s", 3600)),
                          transient_cooldown_s=float(r.get("transient_cooldown_s", 60)),
@@ -416,7 +422,7 @@ class ClaudeCodeClient:
                  runner: Callable[[list[str]], str] | None = None):
         import shutil
         self.cfg = cfg or load_config()
-        self.binary = shutil.which(binary) or binary
+        self.binary = shutil.which(self.cfg.binary or binary) or self.cfg.binary or binary
         self.timeout = timeout
         self.env = dict(os.environ)
         if self.cfg.config_dir:   # nhiều tài khoản Claude trên một máy: mỗi backend một thư mục đăng nhập riêng
@@ -465,6 +471,106 @@ class ClaudeCodeClient:
         return Completion(text=str(data["result"]), input_tokens=int(u.get("input_tokens", 0) or 0) + read + write,
                           output_tokens=int(u.get("output_tokens", 0) or 0), model=used,
                           stop_reason=str(data.get("stop_reason") or "end_turn"), cached_input_tokens=read)
+
+
+# ---------- provider: Codex CLI (gói ChatGPT Plus/Pro đã `codex login` trên máy, không cần API key) ----------
+
+CODEX_EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "xhigh", "minimal": "minimal"}
+
+
+def find_codex_binary(binary: str = "codex") -> str:
+    """`codex` trên PATH; không có thì tìm bản đi kèm app Codex trên Windows (%LOCALAPPDATA%/OpenAI/Codex/bin/*/codex.exe)."""
+    import shutil
+    found = shutil.which(binary)
+    if found: return found
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        cands = sorted(Path(base).glob("OpenAI/Codex/bin/*/codex.exe"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if cands: return str(cands[0])
+    return binary
+
+
+class CodexClient:
+    """Gọi `codex exec --json` như một model backend: mỗi lượt một tiến trình con, sandbox read-only trong
+    thư mục rỗng (không tool của phòng ban; router bỏ qua backend này khi agent cần tool web), system prompt ghép vào đầu prompt vì
+    CLI không có cờ system riêng. Schema nhúng vào prompt, không dùng `--output-schema` (strict mode của OpenAI bắt mọi thuộc
+    tính phải `required`, không hợp schema topic có trường tuỳ chọn). Đầu ra JSONL: `item.completed` (agent_message) là câu trả lời, `turn.completed` mang
+    `usage` (input đã gồm phần cache như OpenAI), `error` / `turn.failed` là lỗi (CLI vẫn thoát mã 0).
+    Nhiều tài khoản ChatGPT trên một máy: `config_dir` → CODEX_HOME riêng (`CODEX_HOME=~/.codex-acc2 codex login`)."""
+
+    def __init__(self, cfg: LLMConfig | None = None, binary: str | None = None, timeout: float = 900.0,
+                 runner: Callable[[list[str]], str] | None = None):
+        import shutil
+        import tempfile
+        self.cfg = cfg or load_config()
+        explicit = binary or self.cfg.binary
+        self.binary = (shutil.which(explicit) or explicit) if explicit else find_codex_binary()
+        self.timeout = timeout
+        self.workdir = Path(tempfile.mkdtemp(prefix="codex-empty-"))
+        self.env = dict(os.environ)
+        if self.cfg.config_dir:
+            self.env["CODEX_HOME"] = str(Path(self.cfg.config_dir).expanduser())
+        self._run = runner or self._subprocess
+
+    def _subprocess(self, args: list[str]) -> str:
+        import subprocess
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               stdin=subprocess.DEVNULL, timeout=self.timeout, env=self.env)
+        except FileNotFoundError as e:
+            raise LLMError(f"không tìm thấy `{self.binary}` (cài Codex CLI hoặc đặt `binary:` cho backend)") from e
+        except subprocess.TimeoutExpired as e:
+            raise LLMError(f"codex exec quá {self.timeout}s") from e
+        if r.returncode != 0:
+            detail = (r.stdout[-600:] + "\n" + r.stderr[-300:]).strip()
+            raise LLMError(f"codex exec thoát mã {r.returncode}: {detail}")
+        return r.stdout
+
+    def _args(self, model: str, effort: str, prompt: str) -> list[str]:
+        return [self.binary, "exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "-s", "read-only",
+                "-C", str(self.workdir), "--json", "-m", model,
+                "-c", f"model_reasoning_effort={CODEX_EFFORT.get(effort, 'medium')}", prompt]
+
+    def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
+                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
+                 messages: list[dict[str, Any]] | None = None) -> Completion:
+        if tools:
+            raise LLMError("codex không hỗ trợ tool-use của công ty; router tự bỏ qua backend này khi agent có tool")
+        model = self.cfg.model_for(model_tier)
+        msgs = neutral_messages(user, messages)
+        body = msgs[0]["content"] if len(msgs) == 1 else "\n\n".join(f"[{m['role']}]\n{m.get('content') or ''}" for m in msgs)
+        hint = "# JSON Schema bắt buộc cho câu trả lời\n```json\n" + json.dumps(schema, ensure_ascii=False) + "\n```"
+        prompt = (f"# Vai trò và quy tắc\n{system}\n\n# Yêu cầu\n{body}\n\n{hint}\n\n"
+                  "Trả lời DUY NHẤT một JSON đúng schema trên, không giải thích, không đọc hay chạy gì trong thư mục làm việc.")
+        out = self._run(self._args(model, self.cfg.effort.get(model_tier, "medium"), prompt))
+        texts: list[str] = []; usage: dict[str, Any] = {}; errors: list[str] = []
+        for line in out.splitlines():
+            line = line.strip()
+            if not line.startswith("{"): continue
+            try: ev = json.loads(line)
+            except json.JSONDecodeError: continue
+            t = ev.get("type")
+            if t == "item.completed":
+                item = ev.get("item") or {}
+                if item.get("type") == "agent_message": texts.append(str(item.get("text") or ""))
+                elif item.get("type") == "error": errors.append(str(item.get("message") or ""))
+            elif t == "turn.completed": usage = ev.get("usage") or {}
+            elif t == "error": errors.append(str(ev.get("message") or ""))
+            elif t == "turn.failed": errors.append(str((ev.get("error") or {}).get("message") or ""))
+        fatal = [e for e in errors if "Defaulting to fallback metadata" not in e]   # cảnh báo metadata model không phải lỗi
+        if fatal and not texts:
+            msg = " | ".join(fatal)[:400]
+            low = msg.lower()
+            if any(s in low for s in ("429", "rate", "limit", "quota", "overloaded", "usage", "503", "502", "timeout")):
+                raise LLMError(f"codex exec: {msg}")
+            if "not logged in" in low or "login" in low:
+                raise LLMError(f"codex exec: chưa đăng nhập (CODEX_HOME={self.env.get('CODEX_HOME', '~/.codex')}): {msg}")
+            raise LLMError(f"codex exec lỗi: {msg}")
+        if not texts:
+            raise LLMError(f"codex exec không trả agent_message: {out[:300]}")
+        inp = int(usage.get("input_tokens", 0) or 0); cached = int(usage.get("cached_input_tokens", 0) or 0)
+        return Completion(text=texts[-1], input_tokens=inp, output_tokens=int(usage.get("output_tokens", 0) or 0),
+                          model=model, cached_input_tokens=cached)
 
 
 # ---------- provider: giả (test / eval offline) ----------
