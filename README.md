@@ -18,9 +18,13 @@ bỏ phần gắn với Hermes Agent (ProviderProfile, đồng bộ `auth.json`,
 | Lỗi mạng khi refresh (timeout, DNS) | Bỏ qua tài khoản **lượt này**, không cooldown (một nhịp mạng chập chờn không được làm nguội cả pool) |
 | 5xx endpoint chính | Thử endpoint dự phòng cùng tài khoản; stream thì sang tài khoản kế, không cooldown |
 | 4xx khác (payload hỏng) | Trả lỗi ngay, không xoay |
-| Mọi tài khoản đều cooldown | Trả **429** kèm "thử lại sau Ns" để lớp trên fallback tiếp |
+| Mọi tài khoản đều cooldown (hoặc pool trống) | Trả **429** kèm "thử lại sau khoảng Ns" để lớp trên fallback tiếp (router của công ty khớp chuỗi này để nghỉ đúng số giây) |
 
-Thêm: bearer token của client trùng access token hoặc email một tài khoản thì tài khoản đó được ưu tiên.
+Thời gian cooldown (`auth.py`): 401 → 300s; 402/403/429 → 3600s; mã khác → 60s; `Retry-After` ghi đè. Access token được làm mới
+sớm 120s trước hạn. Gateway **không** tự retry hay backoff mũ: chỉ cooldown + xoay tài khoản; request upstream timeout 120s.
+
+Thêm: bearer token của client trùng access token hoặc email một tài khoản thì tài khoản đó được ưu tiên; các chuỗi giữ chỗ
+`dummy`, `none`, `token`, `default`, `antigravity`, `gateway-local`, `sk-gateway` bị bỏ qua (không ghim tài khoản).
 Stream chỉ xoay tài khoản **trước** chunk đầu tiên; `finish_reason` thật (`tool_calls`, `length`) không bị đè bằng `stop`.
 `usage` trả token thật từ `usageMetadata` (kể cả cache) để `software-company` ghi audit-log đúng.
 
@@ -29,11 +33,20 @@ Stream chỉ xoay tài khoản **trước** chunk đầu tiên; `finish_reason` 
 ```bash
 cd gateway
 uv sync
-make login        # mở trình duyệt, đăng nhập Google; chạy lại để thêm tài khoản thứ 2, 3...
-make start        # daemon tại 127.0.0.1:8100
-make status       # server + từng tài khoản: sẵn sàng / cooldown / hạn token
-make setup        # ghi ../software-company/llm.yaml: provider openai, base_url trỏ gateway
+make login        # mở trình duyệt, đăng nhập Google; chạy lại để thêm tài khoản thứ 2, 3...   (login --no-browser: in URL)
+make start        # daemon tại 127.0.0.1:8100   (start --foreground/-f chạy tiền cảnh; --host/--port)
+make status       # server + từng tài khoản: sẵn sàng / cooldown / hạn token; exit 1 nếu server tắt hoặc 0 tài khoản sẵn sàng
+make setup        # ghi ../software-company/llm.yaml: provider openai, base_url trỏ gateway (--target, --strong, --standard)
+make fix          # ruff --fix
 ```
+
+Không có `make`: `PYTHONPATH=src uv run python -m gateway <lệnh>`. OAuth loopback dùng cổng cố định `127.0.0.1:51121`
+(`/oauth-callback`), chờ tối đa 300s; máy VPS không có trình duyệt thì đăng nhập ở máy cá nhân rồi copy file token.
+
+`setup` chỉ ghi dạng **một provider** (`provider: openai`, `base_url`, `models.strong/standard`, `max_tokens`), không có tier
+`light` và không có `backends:`. Nếu `llm.yaml` đã dùng `backends:` (nhiều gói, xem `../docs/HUONG-DAN-VAN-HANH.md` §3.2) thì các
+khoá `setup` ghi ra bị bỏ qua — khi đó khai gateway là một backend `antigravity` thay vì chạy `setup`. Studio-creators: dùng
+`--target ../Studio-creators/llm.yaml` hoặc khai backend tay.
 
 Rồi ở `software-company`:
 
@@ -65,13 +78,16 @@ Lệnh khác: `python -m gateway reset [EMAIL]` (xóa cooldown), `python -m gate
 
 Model: `gemini-3.7-flash` (+ `-medium`, `-low`), `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.1-pro`,
 `claude-sonnet-4-6`, `claude-opus-4-6`, `gpt-oss-120b`. Alias được map về id nội bộ của Code Assist trong
-`src/gateway/client.py` (`MODEL_ALIAS_MAP`).
+`src/gateway/client.py` (`MODEL_ALIAS_MAP`); upstream thật chỉ có 4 model: `gemini-3-flash-agent` (nhận `gemini-3.7-flash*`,
+`gemini-3.5-flash`, `gpt-oss-120b`), `gemini-3.6-flash-medium`, `gemini-3.1-pro-low`, `claude-sonnet-4-6` (nhận cả
+`claude-opus-4-6`). Tên model lạ rơi về `gemini-3-flash-agent` kèm cảnh báo trong log, không báo lỗi.
 
 ## Dữ liệu và biến môi trường
 
 - Token: `$XAGENTS_HOME/auth/antigravity_tokens.json` (mặc định `~/.x-agents/`), quyền 600, ghi nguyên tử. Không commit.
 - PID/log: `~/.x-agents/gateway/gateway.pid`, `~/.x-agents/logs/gateway.log`.
 - `GATEWAY_HOST`, `GATEWAY_PORT`; `GATEWAY_ANTIGRAVITY_CLIENT_ID/SECRET/PROJECT_ID` ghi đè OAuth client (hiếm khi cần).
+  `.env.example` chỉ là tài liệu: gateway không đọc file `.env`, phải export biến trong shell.
 
 Triển khai VPS: copy file token từ máy cá nhân lên, chạy `make start`; refresh token tự làm mới access token.
 
@@ -79,5 +95,5 @@ Triển khai VPS: copy file token từ máy cá nhân lên, chạy `make start`;
 
 ```bash
 make lint
-make test        # không gọi mạng: httpx MockTransport + aiohttp TestClient
+make test        # 42 ca, không gọi mạng: httpx MockTransport + aiohttp TestClient
 ```
