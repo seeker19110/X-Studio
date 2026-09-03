@@ -107,8 +107,8 @@ def test_openai_image_no_data_raises_media_error(tmp_path, monkeypatch):
 
 
 def test_http_post_http_error_and_network_error(tmp_path, monkeypatch):
-    import urllib.error
     import types
+    import urllib.error
 
     def raise_http(req, timeout=None):
         fp = types.SimpleNamespace(read=lambda: b"chi tiet loi")

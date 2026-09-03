@@ -6,10 +6,9 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.parse
-from datetime import UTC, datetime
+from typing import ClassVar
 
 from studio.platform import ANALYTICS_URL, API_URL, Tokens, YouTubePlatform, default_fetcher
-
 from test_platform import NOW, FakeHTTP, _store
 
 
@@ -34,7 +33,7 @@ def test_token_store_save_ignores_chmod_failure(tmp_path, monkeypatch):
 
 class _FakeHTTPResponse:
     status = 200
-    headers = {}
+    headers: ClassVar[dict] = {}
 
     def __enter__(self):
         return self
@@ -50,7 +49,7 @@ def test_default_fetcher_success(monkeypatch):
     import studio.platform as plat
 
     monkeypatch.setattr(plat.urllib.request, "urlopen", lambda req, timeout=None: _FakeHTTPResponse())
-    status, headers, body = default_fetcher("GET", "https://x.test/a", {}, None)
+    status, _headers, body = default_fetcher("GET", "https://x.test/a", {}, None)
     assert status == 200 and json.loads(body) == {"ok": True}
 
 
@@ -65,7 +64,7 @@ def test_default_fetcher_http_error_returns_status_and_body(monkeypatch):
         raise urllib.error.HTTPError("u", 403, "forbidden", {}, _FP())
 
     monkeypatch.setattr(plat.urllib.request, "urlopen", raise_http)
-    status, headers, body = default_fetcher("GET", "https://x.test/a", {}, None)
+    status, _headers, body = default_fetcher("GET", "https://x.test/a", {}, None)
     assert status == 403 and json.loads(body) == {"error": "bad"}
 
 
@@ -79,7 +78,7 @@ def test_default_fetcher_network_error_raises_platform_error(monkeypatch):
     monkeypatch.setattr(plat.urllib.request, "urlopen", raise_url)
     try:
         default_fetcher("GET", "https://x.test/a?k=v", {}, None)
-        assert False, "phải raise"
+        raise AssertionError("phải raise")
     except PlatformError as e:
         assert "lỗi mạng" in str(e)
 

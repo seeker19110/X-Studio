@@ -9,7 +9,7 @@ from studio.desk import ProductionDesk
 from studio.events import Envelope
 from studio.fakes import scripted
 from studio.llm import LLMError
-from studio.registry import SKILLS_DIR, _split, load_skill
+from studio.registry import _split
 from studio.routing import Backend, RoutingClient
 
 

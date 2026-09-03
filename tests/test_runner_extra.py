@@ -10,10 +10,10 @@ import pytest
 from studio.blackboard import Blackboard
 from studio.bus import InMemoryBus
 from studio.events import Envelope
-from studio.llm import FakeClient, LLMError
+from studio.llm import FakeClient
 from studio.registry import load_agents
 from studio.runner import AgentRunner, RunnerError, main, payload_schema
-from studio.tools import ToolBox, ToolCall, ToolError, ToolSpec
+from studio.tools import ToolBox, ToolCall
 
 AGENTS = load_agents()
 
@@ -137,7 +137,6 @@ def test_output_schema_returns_raw_schema_when_no_namespace_and_not_many():
 
 
 def test_cli_main_runs_agent_and_prints_json(tmp_path, monkeypatch, capsys):
-    import studio.runner as runner_mod
     from studio.fakes import make_scripted_client
     from studio.sqlite_bus import SQLiteBus
 

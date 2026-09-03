@@ -59,7 +59,6 @@ def test_pinned_https_connection_connect_wraps_socket_with_sni(monkeypatch):
         return _FakeSock()
 
     ctx = ssl_mod.create_default_context()
-    orig_wrap_socket = ctx.wrap_socket
 
     def spy_wrap_socket(sock, server_hostname=None, **kw):
         wrapped["hostname"] = server_hostname

@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import json
-
-import pytest
+from typing import ClassVar
 
 from studio.bus import InMemoryBus
 from studio.events import Envelope
-from studio.fakes import _inputs, make_scripted_client, scripted
-from studio.llm import FakeClient, LLMError
+from studio.fakes import make_scripted_client
+from studio.llm import FakeClient
 from studio.media import MediaConfig, MediaError, make_media
 from studio.orchestrator import Orchestrator
-from studio.runner import RunnerError
 from studio.sqlite_bus import SQLiteBus
 
 CHANNEL = {"channel_id": "CH1", "goals": ["1000 sub"], "audience": "người mới", "pillars": ["hướng dẫn"], "cadence": "2/tuần",
@@ -191,7 +189,7 @@ def test_emit_appends_failure_action_when_bus_rejects_payload(tmp_path):
     class _FakeGenerated:
         tokens = 0
         model = "m"
-        context_writes = []
+        context_writes: ClassVar[list] = []
         cache_hit_ratio = 0.0
 
     o._emit(PUBLISH_ROUTE, env, {"khong-hop-le": True}, _FakeGenerated(), res)

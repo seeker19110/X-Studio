@@ -8,6 +8,7 @@ import socket
 import threading
 import urllib.parse
 import urllib.request
+from typing import ClassVar
 
 import pytest
 
@@ -111,7 +112,7 @@ def test_cli_login_end_to_end(tmp_path, monkeypatch):
 
     class _Resp:
         status = 200
-        headers = {}
+        headers: ClassVar[dict] = {}
         def __enter__(self): return self
         def __exit__(self, *a): return False
         def read(self): return json.dumps({"access_token": "a", "refresh_token": "r", "expires_in": 3600}).encode()

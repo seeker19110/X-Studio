@@ -13,8 +13,8 @@ import pytest
 
 from studio import llm
 from studio.llm import (
-    Completion,
     CodexClient,
+    Completion,
     FakeClient,
     LLMConfig,
     LLMError,
@@ -22,7 +22,6 @@ from studio.llm import (
     find_codex_binary,
 )
 from studio.tools import ToolCall, ToolSpec
-
 
 # ---------- Completion.json() — fallback khi model không trả JSON trần ----------
 

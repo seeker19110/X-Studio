@@ -5,7 +5,6 @@ from __future__ import annotations
 from studio.bus import InMemoryBus
 from studio.events import Envelope
 from studio.gate_cli import main, rollback_target
-from studio.sqlite_bus import SQLiteBus
 
 
 def test_rollback_target_returns_none_once_already_rolled_back():

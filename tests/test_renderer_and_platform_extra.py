@@ -10,7 +10,7 @@ import pytest
 from studio.bus import InMemoryBus
 from studio.events import CutList, Repair, Scene, SceneManifest
 from studio.media import MediaConfig, make_media
-from studio.platform import ANALYTICS_URL, API_URL, PlatformError, Tokens, TokenStore, default_fetcher
+from studio.platform import ANALYTICS_URL, PlatformError, Tokens, TokenStore, default_fetcher
 from studio.renderer import Renderer
 
 
@@ -48,7 +48,6 @@ def test_tokens_expired_true_on_unparseable_expiry():
 def test_token_store_chmod_failure_is_swallowed(tmp_path, monkeypatch):
     import os
 
-    from studio import platform as plat
     st = TokenStore(tmp_path / "auth" / "tok.json")
 
     def raise_chmod(*a, **k): raise OSError("không đổi được quyền trên hệ thống này")
@@ -70,7 +69,7 @@ def test_default_fetcher_success_http_error_and_network_error(monkeypatch):
 
     from studio import platform as plat
     monkeypatch.setattr(plat.urllib.request, "urlopen", lambda req, timeout=None: _FakeHTTPResp(200, b'{"ok": true}'))
-    st, headers, body = default_fetcher("GET", "https://x.test/a", {}, None)
+    st, _headers, body = default_fetcher("GET", "https://x.test/a", {}, None)
     assert st == 200 and json.loads(body) == {"ok": True}
 
     def raise_http(req, timeout=None):

@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
-from studio.evals import _get, check, main, run_eval, stale_recordings
+from studio.evals import _get, run_eval, stale_recordings
 from studio.fakes import make_scripted_client
 
 

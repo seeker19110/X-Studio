@@ -70,7 +70,7 @@ def test_main_record_saves_recording_via_recording_client(monkeypatch, tmp_path,
         ])
 
     monkeypatch.setattr("studio.llm.make_client", fake_make_client)
-    rc = main(["supervisor", "--record"])
+    main(["supervisor", "--record"])
     out = capsys.readouterr().out
     assert "đã ghi" in out  # dòng 258-259: RecordingClient.save() được gọi và in đường dẫn
     saved = evals_mod.RECORDINGS_DIR / "supervisor.json"
