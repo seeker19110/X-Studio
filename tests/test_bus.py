@@ -51,3 +51,18 @@ def test_replay_by_key():
     for k in ("A", "B", "A"):
         bus.publish(Envelope(topic="audit-log", key=k, actor=k, payload={"actor": k, "action": "x"}))
     assert len(list(bus.replay(key="A"))) == 2
+
+
+def test_sqlite_poll_sees_events_written_by_another_connection(tmp_path):
+    from studio.sqlite_bus import SQLiteBus
+    db = tmp_path / "s.sqlite"
+    a = SQLiteBus(db); b = SQLiteBus(db)  # b đóng vai gate CLI (tiến trình khác)
+    assert a._db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    seen = []; a.subscribe("*", seen.append)
+    a.publish(Envelope(topic="audit-log", key="a", actor="a", payload={"actor": "a", "action": "1"}))
+    b.publish(Envelope(topic="audit-log", key="b", actor="b", payload={"actor": "b", "action": "2"}))
+    a.publish(Envelope(topic="audit-log", key="a", actor="a", payload={"actor": "a", "action": "3"}))  # seq 3 > seq 2 của b
+    new = a.poll()
+    assert [e.payload["action"] for e in new] == ["2"] and [e.payload["action"] for e in seen] == ["1", "3", "2"]
+    assert a.poll() == [] and len(a) == 3  # không nạp lại event của chính mình, không trùng
+    a.close(); b.close()

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 from .bus import InMemoryBus
 from .events import AssetKind, AuditLog, CutList, Envelope, MediaAsset, Provenance, Scene, SceneManifest, ThumbnailSpec
@@ -27,10 +28,13 @@ def checksum(p: Path) -> str:
 
 
 class Renderer:
-    def __init__(self, bus: InMemoryBus, media: MediaSuite | None = None, out_dir: Path | None = None):
+    def __init__(self, bus: InMemoryBus, media: MediaSuite | None = None, out_dir: Path | None = None,
+                 upload_dir: Path | None = None):
         self.bus = bus
         self.media = media or make_media()
         self.out_dir = Path(out_dir) if out_dir else self.media.cfg.output_dir
+        # `replacement_path` trong cut-list do model viết → chỉ chấp nhận file nằm TRONG thư mục upload này
+        self.upload_dir = Path(upload_dir or self.media.cfg.upload_dir or self.out_dir / "uploads")
 
     # ---------- helpers ----------
 
@@ -42,6 +46,17 @@ class Renderer:
         return MediaAsset(video_id=video_id, kind=kind, path=str(r.path), scene_id=scene_id, manifest_version=manifest_version,
                           provider=r.provider, checksum=checksum(r.path), duration_s=r.duration_s, variant_id=variant_id,
                           provenance=Provenance(generated_by=f"{r.provider}:{r.model}", prompt_ref=prompt_ref, license=license))
+
+    def safe_upload(self, raw: str) -> Path | None:
+        """Đường dẫn thay thế hợp lệ khi resolve xong vẫn nằm trong upload_dir và là file; ngược lại None (bị từ chối)."""
+        base = self.upload_dir.resolve()
+        p = Path(raw)
+        p = (base / p if not p.is_absolute() else p).resolve()
+        return p if p.is_relative_to(base) and p.is_file() else None
+
+    def _audit(self, action: str, video_id: str, data: dict[str, Any]) -> None:
+        a = AuditLog(actor=ACTOR, action=action, video_id=video_id, evidence=json.dumps(data, ensure_ascii=False))
+        self.bus.publish(Envelope(topic="audit-log", key=ACTOR, actor=ACTOR, payload=a.model_dump()))
 
     def _publish(self, assets: list[MediaAsset], action: str) -> list[Envelope]:
         out = [self.bus.publish(Envelope(topic="media-assets", key=a.video_id, actor=ACTOR, payload=a.model_dump()))
@@ -108,7 +123,12 @@ class Renderer:
             if r.new_visual_prompt: s.visual_prompt = r.new_visual_prompt
             if r.new_narration: s.narration = r.new_narration
             if r.action == "replace_asset" and r.replacement_path:
-                s.asset_refs["scene_image"] = r.replacement_path; s.locked = True; continue
+                safe = self.safe_upload(r.replacement_path)
+                if safe is None:  # ngoài upload_dir (vd. ../../etc) hoặc không tồn tại → bỏ qua sửa này, ghi audit
+                    self._audit("replace_asset.rejected", m.video_id, {"scene_id": r.scene_id, "path": r.replacement_path[:200],
+                                                                        "upload_dir": str(self.upload_dir)})
+                    continue
+                s.asset_refs["scene_image"] = str(safe); s.locked = True; continue
             regen[r.scene_id] = (r.action in {"regenerate_audio", "regenerate_both"}, r.action in {"regenerate_image", "regenerate_both"})
             touched.add(r.scene_id)
         if cut.order:

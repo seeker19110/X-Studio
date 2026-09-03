@@ -98,3 +98,41 @@ def test_persistent_gate_rebuilds_from_sqlite(tmp_path):
     bus2 = SQLiteBus(db); gate2 = PersistentGate(bus2)
     assert gate2.is_approved("PUB-V1") and not gate2.pending
     bus2.close()
+
+
+def test_supervisor_warns_and_cuts_budget_once_per_video():
+    from studio.supervisor import Supervisor
+    bus = InMemoryBus(); sup = Supervisor(bus)
+    bus.publish(Envelope(topic="video-briefs", key="V1", actor="channel-strategist", payload=_brief()))
+    def spend(t):
+        bus.publish(Envelope(topic="audit-log", key="x", actor="x", payload={"actor": "x", "action": "produced:scripts", "video_id": "V1", "tokens": t}))
+    spend(12_500); spend(100); spend(100)  # 3 lần trên 80%
+    assert [a.action for a in sup.actions] == ["warn"]
+    spend(3_000); spend(100)  # 2 lần trên 100%
+    assert [a.action for a in sup.actions] == ["warn", "budget_cut"]
+    assert [e.payload["action"] for e in bus.replay("supervisor-actions")] == ["warn", "budget_cut"]
+
+
+def test_gate_approver_allowlist_and_triggered_by(tmp_path, monkeypatch):
+    from studio.gates import HumanGate, gate_approvers
+    from studio.media import MediaConfig
+    monkeypatch.delenv("STUDIO_GATE_APPROVERS", raising=False)
+    assert gate_approvers(None) == frozenset() and gate_approvers(MediaConfig(gate={"approvers": ["human:owner"]})) == {"human:owner"}
+    monkeypatch.setenv("STUDIO_GATE_APPROVERS", "human:owner, human:editor")
+    assert gate_approvers(MediaConfig(gate={"approvers": ["x"]})) == {"human:owner", "human:editor"}  # env thắng yaml
+    g = HumanGate(approvers=gate_approvers())
+    g.request(GateRequest(kind="publish", subject_id="PUB-V1", checklist=[], created_by="desk", triggered_by="human:owner"))
+    with pytest.raises(PermissionError, match="danh sách người duyệt"):
+        g.decide("PUB-V1", "approve", by="human:intern")
+    assert g.decide("PUB-V1", "approve", by="human:editor").triggered_by == "human:owner"
+    # bền vững: triggered_by qua audit-log; replay quyết định cũ không kiểm lại danh sách (đã đổi sau đó)
+    db = tmp_path / "s.sqlite"; bus = SQLiteBus(db); pg = PersistentGate(bus, approvers={"human:editor"})
+    pg.request(GateRequest(kind="publish", subject_id="PUB-V2", checklist=[], created_by="desk", triggered_by="human:owner"))
+    pg.decide("PUB-V2", "approve", by="human:editor"); bus.close()
+    bus2 = SQLiteBus(db); pg2 = PersistentGate(bus2, approvers={"human:someone-else"})
+    assert pg2.history[-1].triggered_by == "human:owner" and pg2.is_approved("PUB-V2"); bus2.close()
+    # gate_cli từ chối --by ngoài danh sách (mã 3)
+    from studio.gate_cli import main as gate_main
+    bus3 = SQLiteBus(db); PersistentGate(bus3).request(GateRequest(kind="publish", subject_id="PUB-V3", checklist=[], created_by="desk")); bus3.close()
+    assert gate_main(["--db", str(db), "approve", "PUB-V3", "--by", "human:intern"]) == 3
+    assert gate_main(["--db", str(db), "approve", "PUB-V3", "--by", "human:editor"]) == 0

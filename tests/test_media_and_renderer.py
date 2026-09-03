@@ -63,3 +63,60 @@ def test_ffmpeg_assembles_fake_assets(tmp_path):
     draft = next(a for a in assets if a.kind == "draft_video")
     assert draft.provider == "ffmpeg" and (tmp_path / "V9" / "draft_v1.mp4").stat().st_size > 1000
     FFmpegAssembler()  # có trên PATH
+
+
+def test_replace_asset_only_accepts_files_inside_upload_dir(tmp_path):
+    bus = InMemoryBus(); r = Renderer(bus, make_media(MediaConfig(output_dir=tmp_path)), tmp_path)
+    assert r.upload_dir == tmp_path / "uploads"
+    m = _manifest(); r.render(m); before = dict(m.scenes[1].asset_refs)
+    outside = tmp_path / "secret.png"; outside.write_bytes(b"x")
+    (tmp_path / "uploads").mkdir(); inside = tmp_path / "uploads" / "ok.png"; inside.write_bytes(b"y")
+    cut = CutList(video_id="V1", manifest_version=1, decision="repair", repairs=[
+        Repair(scene_id="S2", action="replace_asset", reason="x", replacement_path=str(outside)),
+        Repair(scene_id="S2", action="replace_asset", reason="x", replacement_path="../secret.png"),
+        Repair(scene_id="S2", action="replace_asset", reason="x", replacement_path="/etc/passwd")])
+    new = r.apply_cutlist(m, cut)
+    assert new.scenes[1].asset_refs == before and not new.scenes[1].locked
+    rejected = [e.payload for e in bus.replay("audit-log") if e.payload["action"] == "replace_asset.rejected"]
+    assert len(rejected) == 3
+    new2 = r.apply_cutlist(new, CutList(video_id="V1", manifest_version=2, decision="repair", repairs=[
+        Repair(scene_id="S2", action="replace_asset", reason="x", replacement_path="ok.png")]))
+    assert new2.scenes[1].asset_refs["scene_image"] == str(inside.resolve()) and new2.scenes[1].locked
+
+
+def test_ffmpeg_concat_list_escapes_single_quotes(tmp_path, monkeypatch):
+    import subprocess
+
+    from studio import media
+    monkeypatch.setattr(media.shutil, "which", lambda b: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(media.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", ""))
+    out = tmp_path / "it's" / "o'k.mp4"
+    FFmpegAssembler().assemble([(tmp_path / "i.png", tmp_path / "a.wav", 1.0)], out, 24, "320x180")
+    lst = (out.parent / "o'k_concat.txt").read_text(encoding="utf-8")
+    seg = out.parent / "o'k_seg000.mp4"
+    assert lst == "file '" + seg.as_posix().replace("'", "'\\''") + "'\n"
+    assert "it'\\''s" in lst and "o'\\''k_seg000" in lst
+
+
+def test_ids_used_in_paths_must_be_safe():
+    from pydantic import ValidationError
+
+    from studio.events import ThumbnailVariant, VideoBrief
+    for bad in ("../x", "a/b", "", "x" * 65, "ả"):
+        with pytest.raises(ValidationError): SceneManifest(video_id=bad, scenes=[])
+    with pytest.raises(ValidationError): Scene(scene_id="S 1", order=0, narration="n", visual_prompt="v")
+    with pytest.raises(ValidationError): ThumbnailVariant(variant_id="A/..", prompt="p", overlay_text="t")
+    with pytest.raises(ValidationError): VideoBrief(video_id="CH1/V1", channel_id="c", working_title="t", pillar="p", angle="a", audience="u")
+    assert SceneManifest(video_id="CH1-V1_final", scenes=[]).video_id == "CH1-V1_final"
+
+
+def test_openai_image_url_goes_through_url_boundary(tmp_path, monkeypatch):
+    """URL trong phản hồi ảnh là dữ liệu không tin cậy: 127.0.0.1/169.254… bị chặn, không mở kết nối."""
+    import json
+
+    from studio.media import OpenAIImage
+    monkeypatch.setattr("studio.media.urllib.request.urlopen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("không được gọi")))
+    gen = OpenAIImage(MediaConfig(api_key="k", image={"provider": "openai", "base_url": "https://api.example.org/v1"}))
+    gen.http.post = lambda path, body: json.dumps({"data": [{"url": "http://169.254.169.254/latest/meta-data"}]}).encode()  # type: ignore[method-assign]
+    with pytest.raises(MediaError, match="URL ảnh bị chặn"):
+        gen.generate("p", "1024x1024", tmp_path / "a.png")

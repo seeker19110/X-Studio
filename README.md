@@ -84,10 +84,15 @@ PYTHONPATH=src uv run python -m studio.gate_cli list                    # hoặc
 PYTHONPATH=src uv run python -m studio.gate_cli approve PLAN-CH1-1 --by human:owner
 PYTHONPATH=src uv run python -m studio.gate_cli approve PUB-CH1-V1 --by human:editor --reason "đăng 12:00 thứ 6"
 #   quyết định: approve | request_changes | reject | hold | rollback; `request KIND SUBJECT --by --checklist` mở gate tay;
-#   gate hạn 24h, nhắc 12h (`list` in remind/OVERDUE)
+#   gate hạn 24h, nhắc 12h (`list` in remind/OVERDUE; `list --full` in nguyên văn checklist thay vì cắt 80 ký tự)
+#   four-eyes: --by phải khác người tạo gate; gate ghi `trigger=` người đã kích hoạt bước đó (vd. người duyệt plan) khi biết.
+#   Giới hạn ai được duyệt: STUDIO_GATE_APPROVERS=human:owner,human:editor (hoặc media.yaml `gate: {approvers: [...]}`);
+#   đặt rồi thì --by ngoài danh sách bị từ chối (mã 3). Checklist gate publish kèm final_video, thumbnail đã chọn, title.
 PYTHONPATH=src uv run python -m studio.orchestrator publish publish-events published.json      # nền tảng đã công khai (tay)
 PYTHONPATH=src uv run python -m studio.orchestrator publish performance-snapshots stats.json   # số liệu thật (nạp tay)
 PYTHONPATH=src uv run python -m studio.orchestrator publish audience-comments comments.json    # bình luận (nạp tay)
+#   `publish` chỉ nhận 4 topic do người/adapter nạp ở trên; audit-log (quyết định gate) và topic của agent bị từ chối (mã 2).
+#   STUDIO_SYNC_EVERY=300 → `run --watch` tự gọi sync-metrics/sync-comments cho video scheduled/published mỗi 300 s (audit `sync.tick`)
 
 # YouTube THẬT (ADR-0008) — mặc định STUDIO_PLATFORM=fake (offline). Bật: `platform: {provider: youtube}` trong media.yaml
 # hoặc STUDIO_PLATFORM=youtube. Đăng nhập là việc của NGƯỜI DÙNG (OAuth Desktop app, loopback 127.0.0.1, mở trình duyệt);

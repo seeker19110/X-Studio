@@ -33,6 +33,9 @@ REQUIRED_REVIEWS: frozenset[str] = frozenset({"fact", "rights", "quality"})
 RISK_TAGS = frozenset({"health", "finance", "legal", "minors", "politics", "music", "footage", "brand", "person"})
 BUDGET_FACTOR = 1.5  # budget_tokens ≥ estimate_tokens × BUDGET_FACTOR (skill cost-estimation)
 MAX_REPAIR_ROUNDS = 3  # editor chỉ được yêu cầu sửa cảnh tối đa 3 vòng (ADR-0004), rồi phải chốt hoặc bị block
+# video_id / scene_id / variant_id ghép vào đường dẫn file của renderer (out_dir/<video_id>/v<n>/<scene_id>.png...):
+# chỉ chữ, số, `_`, `-`, ≤ 64 ký tự — chặn `..`, `/` và ký tự lạ do model sinh ra.
+ID_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 
 
 class Envelope(BaseModel):
@@ -46,7 +49,7 @@ class Envelope(BaseModel):
 
 class VideoBrief(BaseModel):
     """Một video trong kế hoạch biên tập (channel-strategist tạo, human gate `plan` duyệt rồi code dispatch)."""
-    video_id: str
+    video_id: str = Field(pattern=ID_PATTERN)
     channel_id: str
     working_title: str
     pillar: str
@@ -91,7 +94,7 @@ class Script(BaseModel):
 
 
 class Scene(BaseModel):
-    scene_id: str
+    scene_id: str = Field(pattern=ID_PATTERN)
     order: int
     narration: str
     visual_prompt: str
@@ -102,7 +105,7 @@ class Scene(BaseModel):
 
 class SceneManifest(BaseModel):
     """Bản ghi bền vững của một sản xuất (ADR-0004): sửa một cảnh không phải làm lại cả video."""
-    video_id: str
+    video_id: str = Field(pattern=ID_PATTERN)
     version: int = 1
     script_version: int = 1
     scenes: list[Scene]
@@ -118,20 +121,20 @@ class Provenance(BaseModel):
 
 
 class MediaAsset(BaseModel):
-    video_id: str
+    video_id: str = Field(pattern=ID_PATTERN)
     kind: AssetKind
     path: str
-    scene_id: str | None = None
+    scene_id: str | None = Field(default=None, pattern=ID_PATTERN)
     manifest_version: int = 1
     provider: str = "fake"
     checksum: str = ""
     duration_s: float | None = None
     provenance: Provenance
-    variant_id: str | None = None  # thumbnail A/B
+    variant_id: str | None = Field(default=None, pattern=ID_PATTERN)  # thumbnail A/B
 
 
 class Repair(BaseModel):
-    scene_id: str
+    scene_id: str = Field(pattern=ID_PATTERN)
     action: Literal["regenerate_audio", "regenerate_image", "regenerate_both", "replace_asset", "lock"]
     reason: str
     new_visual_prompt: str | None = None
@@ -141,7 +144,7 @@ class Repair(BaseModel):
 
 class CutList(BaseModel):
     """Quyết định dựng của editor trên bản nháp: chốt, hoặc danh sách sửa cảnh (giới hạn MAX_REPAIR_ROUNDS)."""
-    video_id: str
+    video_id: str = Field(pattern=ID_PATTERN)
     manifest_version: int
     decision: Literal["approve", "repair"]
     repairs: list[Repair] = []
@@ -150,14 +153,14 @@ class CutList(BaseModel):
 
 
 class ThumbnailVariant(BaseModel):
-    variant_id: str
+    variant_id: str = Field(pattern=ID_PATTERN)
     prompt: str
     overlay_text: str
     style: str = ""
 
 
 class ThumbnailSpec(BaseModel):
-    video_id: str
+    video_id: str = Field(pattern=ID_PATTERN)
     variants: list[ThumbnailVariant]
     chosen: str | None = None
 

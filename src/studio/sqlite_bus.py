@@ -20,18 +20,22 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS ix_events_topic_key ON events(topic, key);
 """
+BUSY_TIMEOUT_S = 30.0  # nhiều tiến trình (orchestrator + gate CLI) cùng ghi một file → chờ khoá thay vì lỗi ngay
 
 
 class SQLiteBus(InMemoryBus):
     def __init__(self, path: str | Path = "studio.sqlite", enforce_owners: bool = True):
         super().__init__(enforce_owners=enforce_owners)
         self.path = Path(path)
-        self._db = sqlite3.connect(self.path)
+        self._db = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_S)
+        self._db.execute("PRAGMA journal_mode=WAL")  # đọc/ghi đồng thời giữa tiến trình không chặn nhau
         self._db.executescript(_DDL)
-        self._seq = 0
+        self._seq = 0  # seq cuối đã ĐỌC từ đĩa (không phải seq mình vừa ghi) — poll không được bỏ sót event của tiến trình khác
+        self._seen: set[str] = set()
         self._log = []
         for seq, body in self._db.execute("SELECT seq, body FROM events ORDER BY seq"):
-            self._log.append(Envelope.model_validate_json(body)); self._seq = seq
+            env = Envelope.model_validate_json(body)
+            self._log.append(env); self._seen.add(env.event_id); self._seq = seq
 
     def _notify(self, subs, env: Envelope) -> None:
         for fn in list(subs.get(env.topic, [])) + list(subs.get("*", [])):
@@ -45,19 +49,23 @@ class SQLiteBus(InMemoryBus):
         finally:
             self._subs = subs
         with self._db:
-            cur = self._db.execute("INSERT INTO events(event_id, topic, key, actor, ts, body) VALUES (?,?,?,?,?,?)",
-                                   (env.event_id, env.topic, env.key, env.actor, env.ts.isoformat(), env.model_dump_json()))
-            self._seq = cur.lastrowid or self._seq
+            self._db.execute("INSERT INTO events(event_id, topic, key, actor, ts, body) VALUES (?,?,?,?,?,?)",
+                             (env.event_id, env.topic, env.key, env.actor, env.ts.isoformat(), env.model_dump_json()))
+        # KHÔNG nhảy _seq tới lastrowid: tiến trình khác có thể đã chèn seq nhỏ hơn mà mình chưa đọc (gate CLI).
+        self._seen.add(env.event_id)
         self._notify(subs, env)
         return env
 
     def poll(self) -> list[Envelope]:
-        """Nạp event do tiến trình KHÁC ghi vào cùng file (gate CLI, human publish) và báo subscriber như event mới."""
-        rows = self._db.execute("SELECT seq, body FROM events WHERE seq > ? ORDER BY seq", (self._seq,)).fetchall()
+        """Nạp event do tiến trình KHÁC ghi vào cùng file (gate CLI, human publish) và báo subscriber như event mới.
+        Event của chính mình (đã có trong _seen) chỉ đẩy con trỏ seq, không báo lại."""
+        rows = self._db.execute("SELECT seq, event_id, body FROM events WHERE seq > ? ORDER BY seq", (self._seq,)).fetchall()
         new: list[Envelope] = []
-        for seq, body in rows:
+        for seq, event_id, body in rows:
+            self._seq = seq
+            if event_id in self._seen: continue
             env = Envelope.model_validate_json(body)
-            self._seq = seq; self._log.append(env); new.append(env)
+            self._seen.add(event_id); self._log.append(env); new.append(env)
             self._notify(self._subs, env)
         return new
 

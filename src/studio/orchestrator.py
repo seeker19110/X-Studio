@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,20 +44,27 @@ from .events import (
     PerformanceSnapshot,
     SceneManifest,
     ThumbnailSpec,
+    can_transition,
 )
-from .gate_cli import PersistentGate
-from .gates import GateRequest
+from .gate_cli import PersistentGate, rollback_target
+from .gates import GateRequest, gate_approvers
 from .llm import LLMError, ModelClient
 from .media import MediaError, MediaSuite
-from .platform import Platform, PlatformError, make_platform
+from .platform import Platform, PlatformError, UploadResult, make_platform
 from .preflight import PreflightReport, preflight
 from .registry import AgentSpec, load_agents
 from .renderer import ACTOR as RENDERER
 from .renderer import Renderer
 from .runner import CONTEXT_ONLY, AgentRunner, RunnerError
 from .supervisor import Supervisor
+from .youtube import sync_comments, sync_metrics
 
 ACTOR = "orchestrator"
+# Topic con người / adapter được nạp tay qua CLI `publish` (README, architecture.md). audit-log (quyết định gate) và các
+# topic do agent sinh KHÔNG nạp tay được — gate đi qua gate_cli, còn lại là việc của agent/code.
+HUMAN_TOPICS = frozenset({"channel-briefs", "publish-events", "performance-snapshots", "audience-comments"})
+SYNC_EVERY_ENV = "STUDIO_SYNC_EVERY"  # giây giữa hai lần kéo số liệu/bình luận cho video đã lên lịch/đăng; 0 = tắt
+SYNC_STATES = frozenset({"scheduled", "published"})
 PAUSING = frozenset({"pause", "budget_cut", "escalate"})
 CONTROL_TOPICS = frozenset({"audit-log", "shared-context", "supervisor-actions"})
 REVIEW_AGENT = {"fact": "fact-checker", "rights": "rights-checker", "quality": "quality-reviewer"}
@@ -241,18 +249,21 @@ class StepResult:
 class Orchestrator:
     def __init__(self, bus: InMemoryBus, client: ModelClient, agents: dict[str, AgentSpec] | None = None,
                  max_retries: int = 3, media: MediaSuite | None = None, out_dir: Path | None = None,
-                 platform: Platform | None = None):
+                 platform: Platform | None = None, sync_every: int | None = None):
         self.bus = bus
         self.agents = agents or load_agents()
         bad = check_routes(self.agents)
         if bad: raise ValueError("ROUTES lệch front matter: " + "; ".join(bad))
         self.blackboard = Blackboard(bus)
-        self.gate = PersistentGate(bus)
+        self.renderer = Renderer(bus, media, out_dir)
+        self.gate = PersistentGate(bus, approvers=gate_approvers(self.renderer.media.cfg))
         self.desk = ProductionDesk(bus, max_retries=max_retries)
         self.supervisor = Supervisor(bus, max_retries=max_retries)
         self.runner = AgentRunner(bus, client, self.agents, self.blackboard)
-        self.renderer = Renderer(bus, media, out_dir)
         self.platform: Platform = platform or make_platform(self.renderer.media.cfg)
+        self.sync_every = int(os.environ.get(SYNC_EVERY_ENV, "0") or 0) if sync_every is None else int(sync_every)
+        self.last_sync: dict[str, datetime] = {}  # video_id → lần kéo gần nhất (chỉ trong bộ nhớ; mở lại là kéo ngay)
+        self.triggers: dict[str, str] = {}       # video_id → người duyệt plan chứa video (ghi vào gate publish)
         self.processed: set[str] = set()
         self.paused: set[str] = set()
         self.plans: dict[str, dict[str, Any]] = {}
@@ -268,6 +279,7 @@ class Orchestrator:
     # ---------- khôi phục từ log ----------
 
     def _rehydrate(self) -> None:
+        approved: list[tuple[str, str]] = []  # (plan_id, event_id của gate.decide approve)
         for env in self.bus.replay():
             if env.topic == "audit-log":
                 a = env.payload; d = _evidence(a)
@@ -276,7 +288,7 @@ class Orchestrator:
                 elif a["action"] == "plan.proposed": self.plans[d["plan_id"]] = d
                 elif a["action"] == "replies.proposed": self.reply_batches[d["batch_id"]] = d["drafts"]
                 elif a["action"] == "gate.decide" and d.get("decision") == "approve" and d["subject_id"] in self.plans:
-                    self._dispatch_plan(d["subject_id"], replaying=True)
+                    approved.append((d["subject_id"], env.event_id)); self._remember_trigger(d["subject_id"], str(d.get("by")))
             elif env.topic == "supervisor-actions": self._track_pause(env)
             elif env.topic == "shared-context": self.blackboard._on(env)
             elif env.topic == "metadata-packages":
@@ -284,6 +296,13 @@ class Orchestrator:
                 self.preflights[env.payload["video_id"]] = preflight(MetadataPackage.model_validate(env.payload), self._format(env.payload["video_id"]))
             else: self.desk.replay(env)
             self.supervisor.replay(env)
+        # Plan đã duyệt chỉ coi là "đã dispatch" khi thấy bằng chứng: brief của plan đã lên bus, hoặc event quyết định đã
+        # được orchestrated. Nếu tiến trình chết giữa approve và dispatch, event gate.decide còn trong queue sẽ dispatch thật.
+        briefed = {e.payload.get("video_id") for e in self.bus.replay("video-briefs")}
+        for pid, eid in approved:
+            plan = self.plans[pid]
+            if eid in self.processed or any(b.get("video_id") in briefed for b in plan.get("briefs", [])):
+                self._dispatch_plan(pid, replaying=True)
         self.queue = [e for e in self.bus.replay() if self._actionable(e) and e.event_id not in self.processed]
 
     def _actionable(self, env: Envelope) -> bool:
@@ -321,7 +340,13 @@ class Orchestrator:
         out: list[StepResult] = []
         while self.queue and (max_steps is None or len(out) < max_steps):
             env = self.queue.pop(0)
-            r = self.process(env)
+            try:
+                r = self.process(env)
+            except Exception as e:  # một event hỏng (DeskError, dữ liệu lạ) không được làm chết vòng lặp
+                r = StepResult(env.event_id, env.topic, env.key, actions=[f"!{type(e).__name__}"])
+                self._audit("orchestrator_failed", {"event_id": env.event_id, "topic": env.topic, "error": f"{type(e).__name__}: {str(e)[:300]}"},
+                            video_id=env.payload.get("video_id") if isinstance(env.payload, dict) else None)
+                self._done(env, r)
             if r is not None: out.append(r)
             self._check_escalations()
         return out
@@ -329,6 +354,7 @@ class Orchestrator:
     def tick(self, now: datetime | None = None) -> list[StepResult]:
         if hasattr(self.bus, "poll"): self.bus.poll()
         results = self.run()
+        self._sync(now)
         remind, overdue = self.gate.due(now)
         for sid in [*remind, *overdue]:
             self._audit(f"gate.{'overdue' if sid in overdue else 'remind'}", {"subject_id": sid}, once=f"gate:{sid}")
@@ -345,6 +371,24 @@ class Orchestrator:
         self.supervisor.check_timeouts(now, active=active)
         results += self.run()
         return results
+
+    def _sync(self, now: datetime | None = None) -> None:
+        """Kéo số liệu + bình luận thật cho video đã lên lịch/đăng, mỗi `sync_every` giây một lần (0 = tắt).
+        Event sinh ra (performance-snapshots, audience-comments) đi vào queue như khi nạp tay; lỗi adapter chỉ ghi audit."""
+        if self.sync_every <= 0: return
+        now = now or datetime.now(UTC)
+        for vid, st in list(self.desk.state.items()):
+            if st not in SYNC_STATES or vid in self.paused: continue
+            last = self.last_sync.get(vid)
+            if last is not None and (now - last).total_seconds() < self.sync_every: continue
+            self.last_sync[vid] = now
+            try:
+                snap = sync_metrics(self.bus, self.platform, vid)
+                cm = sync_comments(self.bus, self.platform, vid, since=last.isoformat() if last else None)
+                self._audit("sync.tick", {"video_id": vid, "platform": self.platform.name, "snapshot_event": snap.event_id,
+                                          "comments": len(cm.payload["comments"]) if cm else 0}, video_id=vid)
+            except (PlatformError, OSError) as e:
+                self._audit("sync.failed", {"video_id": vid, "error": str(e)[:300]}, video_id=vid)
 
     def watch(self, interval: float = 5.0, max_ticks: int | None = None) -> None:
         n = 0
@@ -406,9 +450,10 @@ class Orchestrator:
                 self.runner.run_context(r.agent, env, extra=data or None); res.actions.append(f"{r.agent}→context"); return []
             g = self.runner.generate(r.agent, env, r.topic_out, many=r.many, extra=data or None)
             outs = []
-            for p in g.payloads:
+            for i, p in enumerate(g.payloads):
                 key = key_for(r.topic_out, p, env.key)
-                outs.append(self.runner.publish(r.agent, env, r.topic_out, p, key=key, tokens=g.tokens, model=g.model,
+                # một lần gọi model → token chỉ tính ở payload đầu, kẻo supervisor cộng ngân sách gấp N lần
+                outs.append(self.runner.publish(r.agent, env, r.topic_out, p, key=key, tokens=g.tokens if i == 0 else 0, model=g.model,
                                                 context_writes=g.context_writes, cache_hit_ratio=g.cache_hit_ratio))
                 g.context_writes = []
             res.actions.append(f"{r.agent}→{r.topic_out}×{len(outs)}")
@@ -489,6 +534,10 @@ class Orchestrator:
                                       checklist=[f"{b['video_id']}: {b['working_title']} ({b.get('format')}, est {b.get('estimate_tokens')} tok)" for b in g.payloads]))
         res.actions.append(f"plan→gate:{pid}")
 
+    def _remember_trigger(self, pid: str, by: str) -> None:
+        for b in self.plans.get(pid, {}).get("briefs", []):
+            if b.get("video_id"): self.triggers[str(b["video_id"])] = by
+
     def _dispatch_plan(self, pid: str, replaying: bool = False) -> None:
         plan = self.plans.get(pid)
         if not plan or plan.get("dispatched"): return
@@ -498,15 +547,24 @@ class Orchestrator:
 
     # ---------- gate publish / replies ----------
 
+    def _publish_checklist(self, vid: str) -> list[str]:
+        """Người duyệt thấy ngay thứ sẽ lên nền tảng: file video cuối, thumbnail đã chọn, tiêu đề — cùng review + preflight."""
+        rep = self.preflights.get(vid, PreflightReport())
+        final = next((a for a in reversed(_assets_of(self, vid)) if a["kind"] == "final_video"), None)
+        meta = _latest_payload(self, "metadata-packages", vid) or {}
+        thumb = self._chosen_thumbnail(vid)
+        facts = [f"final_video:{final['path']}" if final else "final_video:(chưa có)",
+                 f"thumbnail:{thumb}" if thumb else "thumbnail:(chưa có)", f"title:{meta.get('title', '(chưa có)')}"]
+        return [f"review:{s}:{r.verdict}" for s, r in sorted(self.desk.reviews[vid].items())] + rep.checklist() + facts
+
     def _maybe_request_publish(self, vid: str, res: StepResult) -> None:
         sid = f"PUB-{vid}"
         if not self.desk.ready_for_publish(vid) or sid in self.gate.pending: return
         key = f"publish:{vid}:{self.desk.briefs[vid].retry}"
         if key in self.once: return
         self._remember(key)
-        rep = self.preflights.get(vid, PreflightReport())
-        checklist = [f"review:{s}:{r.verdict}" for s, r in sorted(self.desk.reviews[vid].items())] + rep.checklist()
-        self.gate.request(GateRequest(kind="publish", subject_id=sid, created_by="desk", checklist=checklist))
+        self.gate.request(GateRequest(kind="publish", subject_id=sid, created_by="desk", checklist=self._publish_checklist(vid),
+                                      triggered_by=self.triggers.get(vid)))
         res.actions.append(f"gate:publish:{sid}")
 
     def _collect_replies(self, env: Envelope, res: StepResult) -> None:
@@ -516,8 +574,10 @@ class Orchestrator:
         if not drafts: return
         self.reply_batches[bid] = drafts
         self._audit("replies.proposed", {"batch_id": bid, "video_id": vid, "drafts": drafts}, video_id=vid)
+        src = self.latest("audience-comments", vid)  # người nạp lô bình luận (nếu là người) → triggered_by
         self.gate.request(GateRequest(kind="replies", subject_id=bid, created_by="community-manager",
-                                      checklist=[f"{d['comment_id']}{' [cần người]' if d.get('requires_human') else ''}: {d['reply'][:80]}" for d in drafts]))
+                                      triggered_by=src.actor if src and src.actor.startswith("human") else None,
+                                      checklist=[f"{d['comment_id']}{' [cần người]' if d.get('requires_human') else ''}: {d['reply']}" for d in drafts]))
         res.actions.append(f"gate:replies:{bid}")
         # các event reply-drafts cùng lô coi như đã xử lý
         for e in list(self.queue):
@@ -526,15 +586,27 @@ class Orchestrator:
     def _on_gate_decision(self, env: Envelope, res: StepResult) -> None:
         d = _evidence(env.payload); sid, dec, reason = d["subject_id"], d.get("decision"), d.get("reason", "")
         if sid in self.plans:
-            if dec == "approve": self._dispatch_plan(sid); res.actions.append(f"dispatch:{sid}")
+            if dec == "approve":
+                self._remember_trigger(sid, str(d.get("by"))); self._dispatch_plan(sid); res.actions.append(f"dispatch:{sid}")
             return
         if sid.startswith("PUB-"):
             vid = sid[4:]
             if dec == "approve":
-                self.desk.mark_approved(vid); meta = self.latest("metadata-packages", vid)
+                st = self.desk.state.get(vid)
+                if st != "approved":  # duyệt lại sau upload lỗi: đã approved thì giữ nguyên, không ép transition
+                    if st is None or not can_transition(st, "approved"):  # vd. video đã bị escalate/closed sau khi xin gate
+                        self._audit("gate.stale", {"subject_id": sid, "state": st, "decision": dec}, video_id=vid)
+                        res.actions.append(f"stale:{sid}"); return
+                    self.desk.mark_approved(vid)
+                meta = self.latest("metadata-packages", vid)
                 if meta: self._publish_video(meta, res, approved_by=str(d.get("by")), reason=reason)
-            elif dec in {"request_changes", "hold"}:
+            elif dec == "request_changes":
                 out = self.desk.rework(vid, f"gate publish {dec}: {reason}", stage="gate"); res.actions.append("rework" if out else "blocked")
+            elif dec == "hold":  # tạm giữ: không làm lại, không tăng retry — mở lại gate để người quyết định sau
+                self.gate.request(GateRequest(kind="publish", subject_id=sid, created_by="desk", checklist=self._publish_checklist(vid)))
+                self._audit("gate.hold", {"subject_id": sid, "reason": reason}, video_id=vid); res.actions.append(f"hold:{sid}")
+            elif dec == "rollback":
+                self._rollback(vid, res, reason=reason, by=str(d.get("by")))
             elif dec == "reject":
                 self.desk.close(vid); res.actions.append("closed")
             return
@@ -554,6 +626,17 @@ class Orchestrator:
             elif dec == "reject": self.desk.close(vid); res.actions.append("closed")
             self.bus.publish(Envelope(topic="supervisor-actions", key=vid, actor="supervisor",
                                       payload={"target": vid, "action": "resume", "reason": f"gate escalation {dec}"}))
+
+    def _rollback(self, vid: str, res: StepResult, reason: str, by: str) -> None:
+        """Gate rollback trên video đã scheduled/published: phát `publish-events` rolled_back (desk làm lại có hint)."""
+        prev = rollback_target(self.bus, vid)
+        if prev is None:
+            self._audit("rollback.nothing", {"video_id": vid, "reason": reason}, video_id=vid); res.actions.append("rollback!nothing"); return
+        ev = {"video_id": vid, "kind": "video", "status": "rolled_back", "platform_ref": prev.get("platform_ref"), "url": prev.get("url"),
+              "evidence": f"gate rollback by {by}: {reason}"[:1000]}
+        self.bus.publish(Envelope(topic="publish-events", key=vid, actor=ACTOR, payload=ev))
+        self._audit("platform.rollback", {"video_id": vid, "platform_ref": prev.get("platform_ref"), "by": by, "reason": reason}, video_id=vid)
+        res.actions.append(f"rollback:{prev.get('platform_ref')}")
 
     # ---------- adapter nền tảng (ADR-0008): model quyết định, code hành động ----------
 
@@ -592,29 +675,59 @@ class Orchestrator:
             self._emit(PUBLISH_ROUTE, meta_env, p, g, res); return
         final = next((a for a in reversed(_assets_of(self, vid)) if a["kind"] == "final_video"), None)
         thumb = self._chosen_thumbnail(vid); meta = MetadataPackage.model_validate(meta_env.payload)
-        note = str(p.get("evidence") or "")
+        note = str(p.get("evidence") or ""); prefix = (note + " | " if note else "") + "code: "
+        # Bước 1 — upload, idempotent: audit `platform.upload` trước đó của video này = file đã ở trên nền tảng, dùng lại ref
+        # (duyệt lại sau khi thumbnail/lịch lỗi không được upload lần hai).
+        prior = self._prior_upload(vid)
         try:
-            if final is None: raise PlatformError("không có final_video để upload")
-            up = self.platform.upload_video(Path(final["path"]), meta, privacy="private", publish_at=None)
-            steps: dict[str, Any] = {"platform": self.platform.name, "upload": up.evidence, "file": final["path"], "checksum": final.get("checksum")}
-            if thumb: steps["thumbnail"] = self.platform.set_thumbnail(up.platform_ref, Path(thumb))
-            if p.get("scheduled_at"): steps["schedule"] = self.platform.schedule(up.platform_ref, str(p["scheduled_at"]))
-            p.update(status="scheduled", platform_ref=up.platform_ref, url=up.url,
-                     evidence=(note + " | " if note else "") + "code: " + json.dumps(steps, ensure_ascii=False))
-            self._audit("platform.upload", {"video_id": vid, "platform_ref": up.platform_ref, "url": up.url, "approved_by": approved_by, **steps}, video_id=vid)
+            if prior is not None:
+                up = UploadResult(prior["platform_ref"], prior.get("url") or "", "reused", evidence=f"dùng lại upload trước: {prior['platform_ref']}")
+                steps: dict[str, Any] = {"platform": self.platform.name, "upload": up.evidence, "file": prior.get("file"), "checksum": prior.get("checksum")}
+                self._audit("platform.upload_reused", {"video_id": vid, "platform_ref": up.platform_ref, "approved_by": approved_by}, video_id=vid)
+            else:
+                if final is None: raise PlatformError("không có final_video để upload")
+                up = self.platform.upload_video(Path(final["path"]), meta, privacy="private", publish_at=None)
+                steps = {"platform": self.platform.name, "upload": up.evidence, "file": final["path"], "checksum": final.get("checksum")}
+                self._audit("platform.upload", {"video_id": vid, "platform_ref": up.platform_ref, "url": up.url, "approved_by": approved_by, **steps}, video_id=vid)
             res.actions.append(f"platform:upload:{up.platform_ref}")
         except (PlatformError, OSError) as e:
-            p.update(status="failed", platform_ref=None, url=None,
-                     evidence=(note + " | " if note else "") + f"code: upload lỗi ({self.platform.name}): {str(e)[:300]}")
+            p.update(status="failed", platform_ref=None, url=None, evidence=prefix + f"upload lỗi ({self.platform.name}): {str(e)[:300]}")
             self._audit("platform.upload_failed", {"video_id": vid, "error": str(e)[:300], "status": getattr(e, "status", None)}, video_id=vid)
-            res.actions.append("platform:upload!failed")
+            res.actions.append("platform:upload!failed"); self._emit(PUBLISH_ROUTE, meta_env, p, g, res); return
+        # Bước 2/3 — thumbnail, lịch: lỗi ở đây KHÔNG làm mất platform_ref (event failed vẫn mang ref để người xử lý/duyệt lại)
+        failed: str | None = None
+        for step, fn in (("thumbnail", lambda: self.platform.set_thumbnail(up.platform_ref, Path(thumb)) if thumb else None),
+                         ("schedule", lambda: self.platform.schedule(up.platform_ref, str(p["scheduled_at"])) if p.get("scheduled_at") else None)):
+            try:
+                out = fn()
+                if out is not None: steps[step] = out
+            except (PlatformError, OSError) as e:
+                failed = f"{step} lỗi ({self.platform.name}): {str(e)[:300]}"; steps[step] = failed
+                self._audit(f"platform.{step}_failed", {"video_id": vid, "platform_ref": up.platform_ref, "error": str(e)[:300],
+                                                        "status": getattr(e, "status", None)}, video_id=vid)
+                res.actions.append(f"platform:{step}!failed"); break
+        if failed: status = "failed"
+        elif p.get("scheduled_at"): status = "scheduled"
+        else:  # không lên lịch: giữ trạng thái nền tảng báo (public → published), không tự khai "scheduled"
+            status = {"public": "published", "scheduled": "scheduled"}.get(up.status, str(p["status"]))
+        p.update(status=status, platform_ref=up.platform_ref, url=up.url or None, evidence=prefix + json.dumps(steps, ensure_ascii=False))
         self._emit(PUBLISH_ROUTE, meta_env, p, g, res)
+
+    def _prior_upload(self, vid: str) -> dict[str, Any] | None:
+        """Audit `platform.upload` (orchestrator) gần nhất của video — bằng chứng file đã lên nền tảng; rollback xoá hiệu lực."""
+        found: dict[str, Any] | None = None
+        for env in self.bus.replay("audit-log"):
+            a = env.payload
+            if a.get("actor") != ACTOR or a.get("video_id") != vid: continue
+            if a.get("action") == "platform.upload": found = _evidence(a)
+            elif a.get("action") == "platform.rollback": found = None  # đã rút lại → lần duyệt sau phải upload mới
+        return found if found and found.get("platform_ref") else None
 
     def _post_reply(self, draft_env: Envelope, res: StepResult, approved_by: str) -> None:
         dr = draft_env.payload; vid = dr["video_id"]; cid = dr["comment_id"]
         p, g = self._decide(REPLY_ROUTE, draft_env, res, {"approved_by": approved_by})
         if p is None: return
-        p.update(kind="reply")
+        p.update(kind="reply", comment_id=cid)  # comment_id để `sync-comments` biết bình luận đã trả lời
         if p.get("status") not in {"scheduled", "published"}:
             self._emit(REPLY_ROUTE, draft_env, p, g, res); return
         try:
@@ -679,6 +792,11 @@ def main(argv: list[str] | None = None) -> int:
     from .sqlite_bus import SQLiteBus
     bus = SQLiteBus(ns.db)
     if ns.cmd == "publish":
+        if ns.topic not in HUMAN_TOPICS:
+            print(f"lỗi: `publish` chỉ nhận topic do người/adapter nạp: {', '.join(sorted(HUMAN_TOPICS))}. "
+                  f"Topic `{ns.topic}` không nạp tay được" + (" — quyết định gate đi qua `studio.gate_cli`." if ns.topic == "audit-log" else "."),
+                  file=sys.stderr)
+            return 2
         payload = json.loads(ns.json_file.read_text(encoding="utf-8"))
         env = bus.publish(Envelope(topic=ns.topic, key=ns.key or key_for(ns.topic, payload, "-"), actor=ns.actor, payload=payload))
         print(f"published {env.topic} key={env.key} event={env.event_id}"); return 0

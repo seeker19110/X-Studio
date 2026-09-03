@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import stat
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,13 +34,19 @@ SCOPES = ("https://www.googleapis.com/auth/youtube.upload", "https://www.googlea
           "https://www.googleapis.com/auth/yt-analytics.readonly")
 DEFAULT_TOKEN_FILE = Path.home() / ".x-agents" / "auth" / "youtube_tokens.json"
 TIMEOUT = 120.0
+MAX_ATTEMPTS = 3  # 5xx / 429 / lỗi mạng: thử lại với backoff mũ + jitter; 4xx khác (403 quota, 400...) không thử lại
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+BACKOFF_BASE_S = 0.5
+# reason trong error.errors[].reason của Google API cho biết 403 là hết quota hay thiếu quyền — xử lý khác nhau
+QUOTA_REASONS = frozenset({"quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded"})
 
 Fetcher = Callable[[str, str, dict[str, str], bytes | None], tuple[int, dict[str, str], bytes]]
 
 
 class PlatformError(Exception):
-    def __init__(self, msg: str, status: int | None = None):
+    def __init__(self, msg: str, status: int | None = None, reason: str | None = None):
         super().__init__(msg); self.status = status
+        self.reason = reason  # 403: quotaExceeded | forbidden ...; None với lỗi khác
 
 
 @dataclass
@@ -64,6 +72,20 @@ class Comment:
     author: str = ""
     likes: int = 0
     published_at: str = ""
+
+
+def parse_ts(s: str | None) -> datetime | None:
+    """ISO 8601 (chấp nhận `Z`) → datetime có múi giờ; thiếu múi giờ coi là UTC; hỏng → None."""
+    if not s: return None
+    try: d = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except ValueError: return None
+    return d if d.tzinfo else d.replace(tzinfo=UTC)
+
+
+def _before(published_at: str, since: str | None) -> bool:
+    """published_at < since, so sánh bằng datetime (không so chuỗi: `Z` vs `+00:00`, độ chính xác khác nhau)."""
+    a, b = parse_ts(published_at), parse_ts(since)
+    return a is not None and b is not None and a < b
 
 
 @dataclass
@@ -133,7 +155,7 @@ class FakePlatform:
 
     def list_comments(self, platform_ref: str, since: str | None = None) -> list[Comment]:
         self._check("list_comments", platform_ref=platform_ref, since=since)
-        return [c for c in self.comments.get(platform_ref, []) if not since or c.published_at >= since]
+        return [c for c in self.comments.get(platform_ref, []) if not _before(c.published_at, since)]
 
     def reply(self, comment_id: str, text: str) -> ReplyResult:
         self._check("reply", comment_id=comment_id, text=text)
@@ -179,7 +201,10 @@ class TokenStore:
 
     def save(self, t: Tokens) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(t.__dict__, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Tạo file với mode 0600 ngay từ đầu (không có khoảnh khắc 0644 rồi mới chmod); file cũ thì chmod lại cho chắc.
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(t.__dict__, ensure_ascii=False, indent=2))
         try: os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
         except OSError: pass
 
@@ -228,9 +253,11 @@ def parse_duration(s: str) -> float:
 class YouTubePlatform:
     name = "youtube"
 
-    def __init__(self, store: TokenStore, fetcher: Fetcher | None = None, now: Callable[[], datetime] | None = None):
+    def __init__(self, store: TokenStore, fetcher: Fetcher | None = None, now: Callable[[], datetime] | None = None,
+                 sleep: Callable[[float], None] | None = None):
         self.store, self.fetcher = store, fetcher or default_fetcher
         self.now = now or (lambda: datetime.now(UTC))
+        self.sleep = sleep or time.sleep  # test tiêm hàm giả để không chờ thật
         self._tokens: Tokens | None = None
 
     # --- auth + HTTP ---
@@ -244,16 +271,41 @@ class YouTubePlatform:
     def _call(self, method: str, url: str, body: bytes | None = None, headers: dict[str, str] | None = None,
               ok: tuple[int, ...] = (200, 201)) -> tuple[int, dict[str, str], bytes]:
         h = {"Authorization": f"Bearer {self._token()}", **(headers or {})}
-        st, rh, raw = self.fetcher(method, url, h, body)
-        if st == 401:  # token vừa bị thu hồi/hết hạn sớm → refresh đúng một lần rồi thử lại
-            h["Authorization"] = f"Bearer {self._token(force_refresh=True)}"
-            st, rh, raw = self.fetcher(method, url, h, body)
+        refreshed = False; err: PlatformError | None = None
+        st, raw = 0, b""; rh: dict[str, str] = {}
+        for attempt in range(MAX_ATTEMPTS):
+            try:
+                st, rh, raw = self.fetcher(method, url, h, body)
+            except PlatformError as e:  # lỗi mạng/timeout từ fetcher → thử lại
+                err = e
+                st = 0
+            else:
+                if st == 401 and not refreshed:  # token vừa bị thu hồi/hết hạn sớm → refresh đúng một lần rồi thử lại
+                    refreshed = True
+                    h["Authorization"] = f"Bearer {self._token(force_refresh=True)}"
+                    st, rh, raw = self.fetcher(method, url, h, body)
+                if st not in RETRY_STATUSES:
+                    break
+                err = PlatformError(f"YouTube HTTP {st} tạm thời {method} {url.split('?')[0].rsplit('/', 1)[-1]}", status=st)
+            if attempt + 1 < MAX_ATTEMPTS:  # backoff mũ + jitter: 0.5s, 1s (+ ≤ 0.25s ngẫu nhiên)
+                self.sleep(BACKOFF_BASE_S * (2**attempt) + random.uniform(0, 0.25))
+        else:
+            assert err is not None
+            raise err
         if st not in ok:
             msg = raw[:400].decode("utf-8", "replace")
-            try: msg = json.loads(raw)["error"]["message"]
+            reason = None
+            try:
+                body_err = json.loads(raw)["error"]
+                msg = body_err["message"]; reason = ((body_err.get("errors") or [{}])[0]).get("reason")
             except Exception: pass
-            kind = "quota/quyền" if st == 403 else "lỗi"
-            raise PlatformError(f"YouTube {kind} HTTP {st} {method} {url.split('?')[0].rsplit('/', 1)[-1]}: {msg}", status=st)
+            if st == 403:  # phân biệt hết quota (chờ reset/xin thêm) với thiếu quyền (đăng nhập lại đúng scope)
+                reason = reason or ("quotaExceeded" if "quota" in msg.lower() else "forbidden")
+                kind = f"quota ({reason})" if reason in QUOTA_REASONS else f"quyền ({reason})"
+            else:
+                kind = "lỗi"
+            raise PlatformError(f"YouTube {kind} HTTP {st} {method} {url.split('?')[0].rsplit('/', 1)[-1]}: {msg}",
+                                status=st, reason=reason)
         return st, rh, raw
 
     def _json(self, method: str, url: str, body: dict[str, Any] | None = None, ok: tuple[int, ...] = (200, 201)) -> tuple[int, dict[str, Any]]:
@@ -317,7 +369,7 @@ class YouTubePlatform:
                 top = (it.get("snippet") or {}).get("topLevelComment") or {}; sn = top.get("snippet") or {}
                 c = Comment(top.get("id") or it.get("id", ""), sn.get("textOriginal") or sn.get("textDisplay", ""),
                             sn.get("authorDisplayName", ""), int(sn.get("likeCount", 0) or 0), sn.get("publishedAt", ""))
-                if since and c.published_at and c.published_at < since: stop = True; continue
+                if _before(c.published_at, since): stop = True; continue
                 out.append(c)
             token = d.get("nextPageToken")
             if stop or not token: break

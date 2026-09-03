@@ -24,6 +24,8 @@ from typing import Any, Protocol
 
 import yaml
 
+from .tools import ToolError, check_url
+
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT / "media.yaml"
 WORDS_PER_SECOND = 2.5  # ~150 từ/phút: ước lượng thời lượng khi provider không trả về
@@ -60,7 +62,10 @@ class MediaConfig:
     image: dict[str, Any] = field(default_factory=lambda: {"provider": "fake", "model": "fake-image", "size": "1792x1024"})
     video: dict[str, Any] = field(default_factory=lambda: {"provider": "fake", "fps": 30, "resolution": "1920x1080"})
     platform: dict[str, Any] = field(default_factory=lambda: {"provider": "fake"})  # adapter nền tảng (ADR-0008): fake | youtube
+    # gate.approvers: [human:owner, ...] — ai được duyệt (env STUDIO_GATE_APPROVERS thắng)
+    gate: dict[str, Any] = field(default_factory=dict)
     output_dir: Path = field(default_factory=lambda: ROOT / "output")
+    upload_dir: Path | None = None  # nơi người dùng đặt file thay thế cho `replace_asset`; None = <output_dir>/uploads
     api_key: str | None = None
 
 
@@ -69,9 +74,10 @@ def load_media_config(path: Path | None = None) -> MediaConfig:
     p = path or CONFIG_FILE
     if p.exists():
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        for k in ("tts", "image", "video", "platform"):
+        for k in ("tts", "image", "video", "platform", "gate"):
             getattr(cfg, k).update(data.get(k) or {})
         if data.get("output_dir"): cfg.output_dir = ROOT / str(data["output_dir"])
+        if data.get("upload_dir"): cfg.upload_dir = ROOT / str(data["upload_dir"])
     env = os.environ
     for k in ("tts", "image", "video"):
         v = env.get(f"STUDIO_MEDIA_{k.upper()}_PROVIDER")
@@ -80,6 +86,7 @@ def load_media_config(path: Path | None = None) -> MediaConfig:
     if env.get("STUDIO_MEDIA_BASE_URL"):
         cfg.tts["base_url"] = cfg.image["base_url"] = env["STUDIO_MEDIA_BASE_URL"]
     if env.get("STUDIO_MEDIA_OUTPUT_DIR"): cfg.output_dir = Path(env["STUDIO_MEDIA_OUTPUT_DIR"])
+    if env.get("STUDIO_MEDIA_UPLOAD_DIR"): cfg.upload_dir = Path(env["STUDIO_MEDIA_UPLOAD_DIR"])
     cfg.api_key = env.get("STUDIO_MEDIA_API_KEY") or env.get("STUDIO_LLM_API_KEY") or env.get("OPENAI_API_KEY")
     return cfg
 
@@ -215,13 +222,21 @@ class OpenAIImage:
         if item.get("b64_json"):
             out.write_bytes(base64.b64decode(item["b64_json"]))
         elif item.get("url"):
-            with urllib.request.urlopen(item["url"], timeout=120) as r: out.write_bytes(r.read())
+            try:  # URL do server trả về = dữ liệu không tin cậy: cùng ranh giới với web_fetch
+                url = check_url(item["url"])
+            except ToolError as e:
+                raise MediaError(f"URL ảnh bị chặn: {e}") from e
+            with urllib.request.urlopen(url, timeout=120) as r: out.write_bytes(r.read())
         else:
             raise MediaError("phản hồi ảnh không có b64_json/url")
         return MediaResult(out, "openai", self.model)
 
 
 # ---------- ghép video bằng ffmpeg ----------
+
+def _concat_quote(p: Path) -> str:
+    return p.as_posix().replace("'", "'\\''")
+
 
 class FFmpegAssembler:
     def __init__(self, binary: str = "ffmpeg"):
@@ -246,6 +261,7 @@ class FFmpegAssembler:
                        "-c:v", "libx264", "-tune", "stillimage", "-c:a", "aac", "-ar", "44100", "-shortest", str(seg)])
             parts.append(seg)
         lst = out.parent / f"{out.stem}_concat.txt"
-        lst.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
+        # ffmpeg concat: đường dẫn trong nháy đơn, dấu ' trong tên file phải viết thành '\'' (đóng, escape, mở lại)
+        lst.write_text("".join(f"file '{_concat_quote(p)}'\n" for p in parts), encoding="utf-8")
         self._run(["-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(out)])
         return MediaResult(out, "ffmpeg", "libx264", round(sum(d for _, _, d in segments), 2))

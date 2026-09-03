@@ -124,11 +124,25 @@ def _audit(bus: Any, action: str, video_id: str, data: dict[str, Any]) -> None:
     bus.publish(Envelope(topic="audit-log", key=ACTOR, actor=ACTOR, payload=a.model_dump()))
 
 
+def seen_comment_ids(bus: Any, video_id: str) -> set[str]:
+    """comment_id đã lên bus (`audience-comments`) hoặc đã được trả lời (`publish-events` kind=reply) — kéo lại không tạo lô mới."""
+    seen: set[str] = set()
+    for e in bus.replay("audience-comments", video_id):
+        seen.update(str(c.get("comment_id")) for c in e.payload.get("comments", []) if c.get("comment_id"))
+    for e in bus.replay("publish-events", video_id):
+        if e.payload.get("kind") == "reply" and e.payload.get("comment_id"):
+            seen.add(str(e.payload["comment_id"]))
+    return seen
+
+
 def sync_comments(bus: Any, platform: Platform, video_id: str, ref: str | None = None, since: str | None = None) -> Envelope | None:
     ref = ref or find_ref(bus, video_id)
     if not ref: raise PlatformError(f"{video_id}: chưa có platform_ref (chưa upload?) — truyền --ref")
-    cs = platform.list_comments(ref, since=since)
-    _audit(bus, "platform.comments", video_id, {"platform": platform.name, "platform_ref": ref, "since": since, "count": len(cs)})
+    seen = seen_comment_ids(bus, video_id)
+    got = platform.list_comments(ref, since=since)
+    cs = [c for c in got if c.comment_id not in seen]
+    _audit(bus, "platform.comments", video_id, {"platform": platform.name, "platform_ref": ref, "since": since,
+                                                "count": len(cs), "skipped": len(got) - len(cs)})
     if not cs: return None
     payload = {"video_id": video_id, "platform_ref": ref, "comments": [
         {"comment_id": c.comment_id, "author": c.author, "text": c.text, "likes": c.likes, "published_at": c.published_at} for c in cs]}

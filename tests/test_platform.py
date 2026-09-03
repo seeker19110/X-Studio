@@ -151,9 +151,9 @@ def test_youtube_refresh_failure_and_quota_403_are_platform_errors(tmp_path):
         YouTubePlatform(_store(tmp_path, expiry="2020-01-01T00:00:00+00:00"), http, lambda: NOW).reply("c", "x")
     assert ei.value.status == 400
     http = FakeHTTP().on("POST", f"{API_URL}/comments", (403, {}, {"error": {"message": "The request cannot be completed because you have exceeded your quota."}}))
-    with pytest.raises(PlatformError, match="quota/quyền HTTP 403 POST comments: The request cannot") as ei:
+    with pytest.raises(PlatformError, match=r"quota \(quotaExceeded\) HTTP 403 POST comments: The request cannot") as ei:
         YouTubePlatform(_store(tmp_path), http, lambda: NOW).reply("c", "x")
-    assert ei.value.status == 403 and len(http.calls) == 1  # không tự retry khi quota
+    assert ei.value.status == 403 and ei.value.reason == "quotaExceeded" and len(http.calls) == 1  # không tự retry khi quota
 
 
 # ---------- YouTube: bình luận + số liệu ----------
@@ -260,3 +260,60 @@ def test_token_file_is_private_and_missing_client_secret_is_clear(tmp_path):
     (tmp_path / "bad.json").write_text("{}", encoding="utf-8")
     with pytest.raises(PlatformError, match="client_id"): load_client_secrets(tmp_path / "bad.json")
     assert Path(st.path).read_text(encoding="utf-8").count("cs") >= 1
+
+
+def test_token_file_created_with_0600_from_the_start(tmp_path, monkeypatch):
+    import os
+    import stat as st_
+    seen = []
+    real_open = os.open
+    def spy(path, flags, mode=0o777, *a, **k):
+        seen.append((str(path), mode)); return real_open(path, flags, mode, *a, **k)
+    monkeypatch.setattr(os, "open", spy)
+    st = _store(tmp_path)
+    assert any(p == str(st.path) and m == 0o600 for p, m in seen)  # mode 0600 ngay lúc tạo, không có khoảnh khắc 0644
+    assert st_.S_IMODE(st.path.stat().st_mode) == 0o600 and st.load().access_token == "tok-1"
+
+
+def test_youtube_retries_5xx_429_and_network_with_backoff_but_not_403(tmp_path):
+    slept = []; n = {"k": 0}
+    def flaky(method, url, headers, body):
+        n["k"] += 1
+        if n["k"] == 1: return 503, {}, {"error": {"message": "backend"}}
+        if n["k"] == 2: raise PlatformError("lỗi mạng POST comments")
+        if n["k"] == 3: return 429, {}, {"error": {"message": "slow down"}}
+        return 200, {}, {"id": "r1"}
+    http = FakeHTTP().on("POST", f"{API_URL}/comments", flaky)
+    yt = YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=slept.append)
+    with pytest.raises(PlatformError) as ei: yt.reply("c", "x")  # 3 lần đều lỗi tạm thời → ném lỗi cuối
+    assert ei.value.status == 429 and len(slept) == 2 and 0.5 <= slept[0] < 0.75 and 1.0 <= slept[1] < 1.25
+    assert yt.reply("c", "x").reply_id == "r1" and n["k"] == 4 and len(slept) == 2  # lần sau thành công ngay, không chờ
+    # 403 thiếu quyền: không retry, reason=forbidden, khác với quotaExceeded
+    http = FakeHTTP().on("POST", f"{API_URL}/comments", (403, {}, {"error": {"message": "Insufficient Permission",
+                                                                            "errors": [{"reason": "insufficientPermissions"}]}}))
+    with pytest.raises(PlatformError, match=r"quyền \(insufficientPermissions\)") as ei:
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=slept.append).reply("c", "x")
+    assert ei.value.reason == "insufficientPermissions" and len(http.calls) == 1 and len(slept) == 2
+    http = FakeHTTP().on("POST", f"{API_URL}/comments", (403, {}, {"error": {"message": "Quota", "errors": [{"reason": "quotaExceeded"}]}}))
+    with pytest.raises(PlatformError, match=r"quota \(quotaExceeded\)"): YouTubePlatform(_store(tmp_path), http, lambda: NOW).reply("c", "x")
+
+
+def test_sync_comments_skips_seen_and_replied_and_since_compares_datetimes():
+    from studio.platform import Comment, parse_ts
+    from studio.youtube import seen_comment_ids
+    assert parse_ts("2026-09-01T00:00:00Z") == datetime(2026, 9, 1, tzinfo=UTC) and parse_ts("2026-09-01T00:00:00") == datetime(2026, 9, 1, tzinfo=UTC)
+    assert parse_ts("rác") is None and parse_ts(None) is None
+    bus = InMemoryBus(); p = FakePlatform()
+    p.comments["fake-0001"] = [Comment("c1", "a", "x", 0, "2026-09-01T00:00:00Z"), Comment("c2", "b", "y", 0, "2026-09-02T00:00:00.000Z"),
+                               Comment("c3", "c", "z", 0, "2026-08-01T00:00:00+00:00")]
+    # `since` với múi giờ khác / độ chính xác khác: so bằng datetime chứ không so chuỗi
+    assert [c.comment_id for c in p.list_comments("fake-0001", since="2026-09-01T02:00:00+02:00")] == ["c1", "c2"]
+    bus.publish(Envelope(topic="audience-comments", key="V1", actor="human", payload={"video_id": "V1", "comments": [{"comment_id": "c1", "text": "a"}]}))
+    bus.publish(Envelope(topic="publish-events", key="V1", actor="publisher", payload={"video_id": "V1", "kind": "reply", "status": "published",
+                                                                                      "platform_ref": "reply:r3", "comment_id": "c3"}))
+    assert seen_comment_ids(bus, "V1") == {"c1", "c3"}
+    env = sync_comments(bus, p, "V1", ref="fake-0001")
+    assert [c["comment_id"] for c in env.payload["comments"]] == ["c2"]
+    ev = json.loads(next(e.payload["evidence"] for e in bus.replay("audit-log") if e.payload["action"] == "platform.comments"))
+    assert ev["count"] == 1 and ev["skipped"] == 2
+    assert sync_comments(bus, p, "V1", ref="fake-0001") is None  # kéo lại: tất cả đã thấy

@@ -408,18 +408,21 @@ def reported_model(model_usage: dict[str, Any], requested: str) -> str:
 
 CLI_WEB_TOOLS = "WebFetch,WebSearch"  # tool sẵn có của CLI, bản đồ 1-1 của web_fetch/web_search (ADR-0007)
 CLI_TOOL_TURNS = 8
+# trần tổng độ dài argv (Windows ~32 KB; POSIX rộng hơn nhưng vẫn hữu hạn)
+CLI_ARGV_MAX = 30_000 if os.name == "nt" else 120_000
 
 
 class ClaudeCodeClient:
     """Gọi `claude -p --output-format json` như một model backend: mỗi lượt là một tiến trình con, system prompt
-    truyền qua `--system-prompt`, schema nhúng vào user message (CLI không có structured output).
+    truyền qua `--system-prompt`, user message (kèm schema nhúng — CLI không có structured output) đưa qua STDIN,
+    không qua argv (argv lộ trong `ps`, có trần độ dài và không được chứa nội dung không tin cậy).
     Không `tools` → `--tools ""` một lượt. Có `tools` (web) → uỷ quyền vòng tool cho CLI: `--tools WebFetch,WebSearch`
     nhiều lượt, CLI tự tìm/đọc rồi trả kết quả cuối; `Completion.tool_calls` luôn rỗng nên runner không lặp thêm.
     Token thật lấy từ `usage` trong JSON trả về (input + cache read + cache creation, cùng nghĩa với adapter Anthropic).
     Dùng khi máy đã đăng nhập Claude Code mà không có ANTHROPIC_API_KEY (vd. ghi bản ghi eval tại chỗ)."""
 
     def __init__(self, cfg: LLMConfig | None = None, binary: str = "claude", timeout: float = 900.0,
-                 runner: Callable[[list[str]], str] | None = None):
+                 runner: Callable[[list[str], str], str] | None = None):
         import shutil
         self.cfg = cfg or load_config()
         self.binary = shutil.which(self.cfg.binary or binary) or self.cfg.binary or binary
@@ -427,18 +430,20 @@ class ClaudeCodeClient:
         self.env = dict(os.environ)
         if self.cfg.config_dir:   # nhiều tài khoản Claude trên một máy: mỗi backend một thư mục đăng nhập riêng
             self.env["CLAUDE_CONFIG_DIR"] = str(Path(self.cfg.config_dir).expanduser())
-        self._run = runner or self._subprocess  # test thay bằng hàm giả
+        self._run = runner or self._subprocess  # test thay bằng hàm giả: (args, stdin) → stdout
         self.delegated_tools = False  # lần gọi gần nhất có uỷ quyền vòng tool cho CLI không (runner ghi audit)
 
-    def _subprocess(self, args: list[str]) -> str:
+    def _subprocess(self, args: list[str], prompt: str) -> str:
         import subprocess
         try:
             r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               stdin=subprocess.DEVNULL, timeout=self.timeout, env=self.env)
+                               input=prompt, timeout=self.timeout, env=self.env)
         except FileNotFoundError as e:
             raise LLMError(f"không tìm thấy `{self.binary}` (cài Claude Code hoặc đổi provider)") from e
         except subprocess.TimeoutExpired as e:
             raise LLMError(f"claude -p quá {self.timeout}s") from e
+        except OSError as e:  # argv quá dài, không có quyền chạy, pipe vỡ…
+            raise LLMError(f"không chạy được `{self.binary}`: {e}") from e
         if r.returncode != 0:
             raise LLMError(f"claude -p thoát mã {r.returncode}: {(r.stderr or r.stdout)[-500:]}")
         return r.stdout
@@ -453,8 +458,10 @@ class ClaudeCodeClient:
         self.delegated_tools = bool(tools)
         tool_args = (["--tools", CLI_WEB_TOOLS, "--allowedTools", CLI_WEB_TOOLS, "--max-turns", str(CLI_TOOL_TURNS)]
                      if tools else ["--tools", "", "--max-turns", "1"])
-        args = [self.binary, "-p", "--output-format", "json", "--model", model, *tool_args, "--system-prompt", system, user + hint]
-        out = self._run(args)
+        args = [self.binary, "-p", "--output-format", "json", "--model", model, *tool_args, "--system-prompt", system]
+        if sum(len(a) + 1 for a in args) > CLI_ARGV_MAX:
+            raise LLMError(f"claude -p: argv (system prompt) vượt {CLI_ARGV_MAX} ký tự — rút gọn prompt/skill của agent")
+        out = self._run(args, user + hint)
         try:
             data = json.loads(out[out.index("{"):]) if "{" in out else {}
         except json.JSONDecodeError as e:

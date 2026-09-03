@@ -29,6 +29,7 @@ class Supervisor:
         self.error_signatures: dict[str, list[str]] = defaultdict(list)
         self.actions: list[SupervisorAction] = []
         self.knowledge: list[dict] = []
+        self.notified: dict[str, set[str]] = defaultdict(set)  # video → ngưỡng đã báo (warn/budget_cut): mỗi ngưỡng đúng một lần
         self.replaying = False
         bus.subscribe("*", self._on)
 
@@ -37,6 +38,11 @@ class Supervisor:
         self.actions.append(a)
         if not self.replaying:
             self.bus.publish(Envelope(topic="supervisor-actions", key=target, actor="supervisor", payload=a.model_dump()))
+
+    def _act_once(self, target: str, action: SupervisorActionKind, reason: str) -> None:
+        # Mỗi audit-log sau ngưỡng đều qua đây; chỉ phát hành động lần đầu, tránh spam warn/budget_cut lên bus.
+        if action in self.notified[target]: return
+        self.notified[target].add(action); self._act(target, action, reason)
 
     def replay(self, env: Envelope) -> None:
         prev, self.replaying = self.replaying, True
@@ -56,8 +62,8 @@ class Supervisor:
             a = AuditLog.model_validate(env.payload)
             if a.video_id and a.video_id in self.budgets:
                 bud = self.budgets[a.video_id]; bud.used += a.tokens
-                if bud.ratio >= self.CUT_AT: self._act(a.video_id, "budget_cut", f"dùng {bud.used}/{bud.limit} token")
-                elif bud.ratio >= self.WARN_AT: self._act(a.video_id, "warn", f"đã dùng {bud.ratio:.0%} ngân sách")
+                if bud.ratio >= self.CUT_AT: self._act_once(a.video_id, "budget_cut", f"dùng {bud.used}/{bud.limit} token")
+                elif bud.ratio >= self.WARN_AT: self._act_once(a.video_id, "warn", f"đã dùng {bud.ratio:.0%} ngân sách")
         elif env.topic == "review-results" and env.payload.get("verdict") in {"fail", "block"}:
             sig = env.payload.get("root_cause") or " | ".join(f["text"] for f in env.payload.get("findings", []))
             sigs = self.error_signatures[env.key]; sigs.append(sig)

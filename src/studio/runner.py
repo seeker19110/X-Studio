@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -23,8 +24,23 @@ from .llm import Completion, LLMError, ModelClient
 from .registry import AgentSpec, load_agents
 from .tools import ToolBox, ToolError, default_toolbox, tools_prompt
 
-INJECTION_NEEDLES = ("ignore previous instructions", "ignore all prior", "you are now", "system prompt:",
-                     "bỏ qua hướng dẫn trước")
+# Mẫu prompt injection (không phân biệt hoa thường, Anh + Việt). Đầu vào topic khớp → từ chối chạy; riêng lô bình luận
+# thì bỏ từng bình luận khớp; kết quả tool và blackboard thì thay đoạn khớp bằng "[đã lọc]" rồi vẫn chạy.
+INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(re.compile(p, re.IGNORECASE) for p in (
+    r"ignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above|earlier)\b",
+    r"disregard\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above|earlier|your)\b",
+    r"\byou\s+are\s+now\b",
+    r"system\s+prompt\s*:",
+    r"\b(?:reveal|print|show|repeat|output)\s+(?:me\s+)?(?:your|the)\s+(?:system\s+)?(?:instructions?|prompt)\b",
+    r"developer\s+mode",
+    r"jailbreak",
+    r"<\|im_start\|>|<\|im_end\|>",
+    r"bỏ\s+qua\s+(?:mọi\s+|tất\s+cả\s+(?:các\s+)?)?(?:hướng\s+dẫn|chỉ\s+dẫn|lệnh)",
+    r"quên\s+(?:mọi\s+|tất\s+cả\s+(?:các\s+)?|hết\s+)?(?:hướng\s+dẫn|chỉ\s+dẫn|lệnh)",
+    r"bây\s+giờ\s+bạn\s+là",
+    r"tiết\s+lộ\s+(?:system\s+prompt|hướng\s+dẫn\s+hệ\s+thống)",
+))
+FILTERED = "[đã lọc]"
 CONTEXT_ONLY = "shared-context"  # topic_out đặc biệt: agent chỉ ghi blackboard, không publish topic
 MAX_TOOL_TURNS = 10  # trần lượt model ↔ tool mỗi lần generate (ADR-0007)
 ToolboxFactory = Callable[[AgentSpec], ToolBox | None]
@@ -36,6 +52,31 @@ def spec_toolbox(spec: AgentSpec) -> ToolBox | None:
 
 
 class RunnerError(Exception): ...
+
+
+def has_injection(text: str) -> bool:
+    return any(p.search(text) for p in INJECTION_PATTERNS)
+
+
+def sanitize_text(text: str) -> tuple[str, int]:
+    """Thay mọi đoạn khớp mẫu injection bằng FILTERED; trả (văn bản, số đoạn đã thay)."""
+    n = 0
+    for p in INJECTION_PATTERNS:
+        text, k = p.subn(FILTERED, text); n += k
+    return text, n
+
+
+def sanitize_obj(obj: Any) -> tuple[Any, int]:
+    """Đệ quy sanitize_text trên mọi chuỗi trong dict/list (blackboard snapshot, dữ liệu enrich)."""
+    if isinstance(obj, str): return sanitize_text(obj)
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}; n = 0
+        for k, v in obj.items(): out[k], m = sanitize_obj(v); n += m
+        return out, n
+    if isinstance(obj, list):
+        items = [sanitize_obj(v) for v in obj]
+        return [v for v, _ in items], sum(m for _, m in items)
+    return obj, 0
 
 
 def payload_schema(topic: str) -> dict[str, Any]:
@@ -151,6 +192,8 @@ class AgentRunner:
             for t in c.tool_calls:
                 try: out = tools.call(t)
                 except ToolError as e: out = f"lỗi: {e}"
+                out, n = sanitize_text(out)  # trang web là dữ liệu không tin cậy: lọc mẫu ra lệnh trước khi đưa lại model
+                if n: self._audit(spec, "injection_sanitized", inp, evidence=f"tool {t.name}: {n} đoạn → {FILTERED}")
                 msgs.append({"role": "tool", "tool_call_id": t.id, "content": out})
         if c is None or c.tool_calls or not c.text.strip():
             if c is not None and c.tool_calls:
@@ -163,7 +206,8 @@ class AgentRunner:
         evidence: dict[str, Any] = {"turns": turn, "calls": tools.summary()}
         if tools.urls(): evidence["urls"] = tools.urls()
         if getattr(self.client, "delegated_tools", False): evidence["delegated"] = "claude-code"
-        self._audit(spec, "tools_used", inp, evidence=json.dumps(evidence, ensure_ascii=False)[:2000], tokens=total)
+        # tokens=0: token thật ghi MỘT lần ở audit `produced:*` (supervisor cộng ngân sách từ đó), không đếm đôi ở đây
+        self._audit(spec, "tools_used", inp, evidence=json.dumps(evidence, ensure_ascii=False)[:2000])
         return c, total, turn
 
     def generate(self, agent_id: str, inp: Envelope, topic_out: str, many: bool = False,
@@ -179,13 +223,16 @@ class AgentRunner:
             raise RunnerError(f"{agent_id} không được ghi topic {topic_out} (writes={spec.writes})")
         if inp.topic not in spec.reads and "*" not in spec.reads:
             raise RunnerError(f"{agent_id} không đọc topic {inp.topic} (reads={spec.reads})")
-        raw = json.dumps([inp.payload, extra or {}], ensure_ascii=False).lower()
-        if any(n in raw for n in INJECTION_NEEDLES):
+        inp = self._filter_comments(spec, inp)
+        raw = json.dumps([inp.payload, extra or {}], ensure_ascii=False)
+        if has_injection(raw):
             self._audit(spec, "injection_detected", inp, evidence="đầu vào chứa mẫu prompt injection")
             raise RunnerError(f"{agent_id}: đầu vào {inp.event_id} nghi prompt injection, không chạy")
 
         schema = None if context_only else payload_schema(topic_out)
         context = {ns: sc.model_dump() for ns, sc in self.blackboard.snapshot().items()} if self.blackboard else {}
+        context, n = sanitize_obj(context)  # blackboard do agent khác ghi: lọc chứ không chặn cả lượt
+        if n: self._audit(spec, "injection_sanitized", inp, evidence=f"shared-context: {n} đoạn → {FILTERED}")
         user = build_user_message(spec, inp, topic_out, context, many=many, extra=extra)
         out_schema = output_schema(schema, spec.namespaces_write, many)
         tools = self.toolbox_factory(spec) if spec.tools else None
@@ -214,6 +261,23 @@ class AgentRunner:
             raise RunnerError(f"{agent_id}: đầu ra không hợp lệ cho {topic_out}: {e}") from e
         return Generated(payloads=payloads, tokens=total, model=c.model, context_writes=writes,
                          cache_hit_ratio=c.cache_hit_ratio, turns=turns, tool_calls=tools.summary() if tools else {})
+
+    def _filter_comments(self, spec: AgentSpec, inp: Envelope) -> Envelope:
+        """Lô `audience-comments`: bỏ từng bình luận nghi injection (audit `comment_dropped`), giữ phần còn lại.
+        Không còn bình luận nào → payload rỗng sẽ bị chặn ở kiểm tra chung phía sau."""
+        cs = inp.payload.get("comments") if inp.topic == "audience-comments" else None
+        if not isinstance(cs, list): return inp
+        keep = []
+        for c in cs:
+            if has_injection(json.dumps(c, ensure_ascii=False)):
+                self._audit(spec, "comment_dropped", inp, evidence=json.dumps({"comment_id": c.get("comment_id") if isinstance(c, dict) else None,
+                                                                              "reason": "nghi prompt injection"}, ensure_ascii=False))
+            else: keep.append(c)
+        if len(keep) == len(cs): return inp
+        if not keep:
+            self._audit(spec, "injection_detected", inp, evidence="mọi bình luận trong lô đều nghi prompt injection")
+            raise RunnerError(f"{spec.id}: lô bình luận {inp.event_id} toàn mẫu prompt injection, không chạy")
+        return inp.model_copy(update={"payload": {**inp.payload, "comments": keep}})
 
     def write_context(self, agent_id: str, inp: Envelope, writes: list[dict[str, Any]]) -> list[str]:
         spec = self.agents[agent_id]; done: list[str] = []

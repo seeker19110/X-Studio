@@ -178,7 +178,7 @@ def test_tool_loop_calls_tool_feeds_result_back_and_audits(monkeypatch):
     assert second["messages"][1]["role"] == "assistant" and second["messages"][2]["role"] == "tool"
     audit = [e.payload for e in bus.replay("audit-log")]
     used = next(a for a in audit if a["action"] == "tools_used"); ev = json.loads(used["evidence"])
-    assert ev["turns"] == 2 and ev["calls"] == {"web_fetch": 2} and ev["urls"] == ["https://example.org/report"] and used["tokens"] == 2600
+    assert ev["turns"] == 2 and ev["calls"] == {"web_fetch": 2} and ev["urls"] == ["https://example.org/report"] and used["tokens"] == 0  # token chỉ đếm ở produced
     assert audit[-1]["action"] == "produced:review-results" and audit[-1]["tokens"] == 2600
 
 
@@ -216,10 +216,10 @@ def test_agent_without_tools_never_gets_tools():
 # ---------- ClaudeCodeClient ----------
 
 def test_claude_code_delegates_web_tools_to_cli():
-    seen: list[list[str]] = []
+    seen: list[list[str]] = []; prompts: list[str] = []
 
-    def run(args):
-        seen.append(args)
+    def run(args, prompt):
+        seen.append(args); prompts.append(prompt)
         return json.dumps({"result": "{}", "usage": {"input_tokens": 1, "output_tokens": 1},
                            "modelUsage": {"claude-haiku-4-5-20251001": {"outputTokens": 5}, "claude-sonnet-5": {"outputTokens": 100}}})
 
@@ -230,14 +230,14 @@ def test_claude_code_delegates_web_tools_to_cli():
                      messages=[{"role": "user", "content": "U\n\n# Tool ..."}])
     args = seen[0]
     assert args[args.index("--tools") + 1] == "WebFetch,WebSearch" and args[args.index("--allowedTools") + 1] == "WebFetch,WebSearch"
-    assert int(args[args.index("--max-turns") + 1]) > 1 and args[-1].startswith("U\n\n# Tool") and c.delegated_tools
+    assert int(args[args.index("--max-turns") + 1]) > 1 and prompts[0].startswith("U\n\n# Tool") and c.delegated_tools
     assert out.tool_calls == [] and out.model == "claude-sonnet-5"  # không phải model phụ của WebFetch
     c.complete(system="S", user="U", schema={}, model_tier="standard")
     a2 = seen[1]; assert a2[a2.index("--tools") + 1] == "" and a2[a2.index("--max-turns") + 1] == "1" and not c.delegated_tools
 
 
 def test_claude_code_tools_used_audit_marks_delegation():
-    def run(args):
+    def run(args, prompt):
         return json.dumps({"result": json.dumps({"video_id": "V1", "source": "fact", "verdict": "pass", "findings": []}),
                            "usage": {"input_tokens": 10, "output_tokens": 5}, "modelUsage": {"claude-sonnet-5": {}}})
     cfg = LLMConfig(provider="claude-code", models={"strong": "m", "standard": "m"})
@@ -272,3 +272,46 @@ def test_recording_keeps_only_final_answer_and_replay_skips_tools(tmp_path, monk
     assert r.output.payload == final and tb.calls == []
     used = next(e.payload for e in bus2.replay("audit-log") if e.payload["action"] == "tools_used")
     assert json.loads(used["evidence"])["turns"] == 1
+
+
+def test_default_fetcher_pins_ip_and_revalidates_every_redirect_hop(monkeypatch):
+    """Chống DNS rebinding: phân giải một lần, kết nối tới IP đã ghim; redirect không tự động, mỗi chặng kiểm lại."""
+    import email.message
+    import io
+    import typing
+    import urllib.error
+    import urllib.request
+
+    from studio.tools import MAX_HOPS, _PinnedHTTPConnection, default_fetcher, pin_url
+    assert pin_url("https://a.example.org/x") == ("https://a.example.org/x", "93.184.216.34")
+
+    class Resp(io.BytesIO):
+        status = 200
+        headers: typing.ClassVar[dict[str, str]] = {"Content-Type": "text/plain"}
+
+    hops: list[tuple[str, str, str]] = []  # (ip, Host header, url)
+
+    def opener(ip, req: urllib.request.Request):
+        hops.append((ip, req.get_header("Host") or req.host, req.full_url))
+        if req.full_url == "https://a.example.org/x":
+            h = email.message.Message(); h["Location"] = "/y"
+            raise urllib.error.HTTPError(req.full_url, 302, "Found", h, None)
+        if req.full_url == "https://a.example.org/y":
+            h = email.message.Message(); h["Location"] = "http://127.0.0.1/secret"
+            raise urllib.error.HTTPError(req.full_url, 301, "Moved", h, None)
+        if req.full_url.endswith("/loop"):
+            h = email.message.Message(); h["Location"] = req.full_url
+            raise urllib.error.HTTPError(req.full_url, 307, "loop", h, None)
+        return Resp(b"ok")
+
+    assert default_fetcher("https://a.example.org/x/../x", opener) == (200, "text/plain", "https://a.example.org/x/../x", b"ok")
+    with pytest.raises(ToolError, match="host bị chặn"):  # chặng 2 trỏ về loopback → dừng trước khi kết nối
+        default_fetcher("https://a.example.org/x", opener)
+    assert [h[0] for h in hops] == ["93.184.216.34"] * 3 and all(h[1] == "a.example.org" for h in hops)
+    with pytest.raises(ToolError, match=f"quá {MAX_HOPS} chặng"):
+        default_fetcher("https://a.example.org/loop", opener)
+    # kết nối thật đi tới IP ghim, không phân giải lại; Host header vẫn là hostname gốc
+    dialed: list[tuple[str, int]] = []
+    monkeypatch.setattr("studio.tools.socket.create_connection", lambda addr, *a, **k: dialed.append(addr) or object())
+    c = _PinnedHTTPConnection("a.example.org", 8080, pinned_ip="93.184.216.34"); c.connect()
+    assert dialed == [("93.184.216.34", 8080)] and c.host == "a.example.org"

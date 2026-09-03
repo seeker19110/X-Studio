@@ -7,6 +7,7 @@ import json
 from studio.bus import InMemoryBus
 from studio.events import Envelope
 from studio.fakes import make_scripted_client
+from studio.gates import GateRequest
 from studio.media import MediaConfig, make_media
 from studio.orchestrator import Orchestrator, check_routes
 from studio.registry import load_agents
@@ -194,3 +195,161 @@ def test_supervisor_pause_defers_video_events(tmp_path):
                          payload={"target": "CH1-V1", "action": "resume", "reason": "ok"}))
     o.run()
     assert list(bus.replay("research-dossiers", "CH1-V1"))
+
+
+# ---------- upload idempotent, hold/rollback, event lỗi không làm chết vòng lặp, resume plan ----------
+
+def test_thumbnail_failure_keeps_platform_ref_and_reapprove_reuses_upload(tmp_path):
+    bus, o = _to_publish_gate(tmp_path); o.platform.fail.add("set_thumbnail")
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")]
+    assert ev[-1]["status"] == "failed" and ev[-1]["platform_ref"] == "fake-0001" and "thumbnail lỗi" in ev[-1]["evidence"]
+    assert "platform.thumbnail_failed" in _audit_actions(bus, "orchestrator") and o.desk.state["CH1-V1"] == "approved"
+    # người sửa thumbnail rồi mở gate lại và duyệt: KHÔNG upload lần hai, dùng lại ref cũ, thumbnail + lịch chạy tiếp
+    o.platform.fail.clear()
+    o.gate.request(GateRequest(kind="publish", subject_id="PUB-CH1-V1", created_by="desk", checklist=["đăng lại"]))
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    assert [c[0] for c in o.platform.calls] == ["upload_video", "set_thumbnail", "set_thumbnail", "schedule"]
+    ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")]
+    assert ev[-1]["status"] == "scheduled" and ev[-1]["platform_ref"] == "fake-0001" and "dùng lại upload" in ev[-1]["evidence"]
+    assert "platform.upload_reused" in _audit_actions(bus, "orchestrator") and o.desk.state["CH1-V1"] == "scheduled"
+
+
+def test_publish_without_scheduled_at_keeps_platform_status(tmp_path):
+    from studio.fakes import scripted
+    bus, o = _to_publish_gate(tmp_path)
+    # model quyết định "published" không kèm scheduled_at → code không tự khai "scheduled", không gọi schedule
+    o.runner.client.handler = lambda system, user: (lambda inp: {**scripted("publisher", inp, {}, {}), "status": "published", "scheduled_at": None})(
+        __import__("studio.fakes", fromlist=["_inputs"])._inputs(user)[0]) if "# publisher" in system else None
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")]
+    assert [c[0] for c in o.platform.calls] == ["upload_video", "set_thumbnail"] and ev[-1]["status"] == "published"
+
+
+def test_hold_keeps_gate_pending_and_rollback_emits_rolled_back(tmp_path):
+    bus, o = _to_publish_gate(tmp_path)
+    o.gate.decide("PUB-CH1-V1", "hold", by="human:editor", reason="chờ pháp lý"); o.run()
+    assert "PUB-CH1-V1" in o.gate.pending and o.desk.briefs["CH1-V1"].retry == 0 and o.desk.state["CH1-V1"] == "in_review"
+    assert "gate.hold" in _audit_actions(bus, "orchestrator") and "video.rework" not in _audit_actions(bus, "desk")
+    # rollback khi chưa có gì trên nền tảng → chỉ audit, không phát event
+    o.gate.decide("PUB-CH1-V1", "rollback", by="human:editor", reason="nhầm"); o.run()
+    assert not list(bus.replay("publish-events")) and "rollback.nothing" in _audit_actions(bus, "orchestrator")
+    o.gate.request(GateRequest(kind="publish", subject_id="PUB-CH1-V1", created_by="desk", checklist=[]))
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    assert o.desk.state["CH1-V1"] == "scheduled"
+    o.gate.request(GateRequest(kind="publish", subject_id="PUB-CH1-V1", created_by="desk", checklist=[]))
+    o.gate.decide("PUB-CH1-V1", "rollback", by="human:editor", reason="sai số liệu"); o.run()
+    ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")]
+    assert ev[-1]["status"] == "rolled_back" and ev[-1]["platform_ref"] == "fake-0001" and "sai số liệu" in ev[-1]["evidence"]
+    briefs = [e.payload for e in bus.replay("video-briefs", "CH1-V1")]
+    assert briefs[-1]["retry"] == 1 and "rolled back" in briefs[-1]["hint"]
+    assert o._prior_upload("CH1-V1") is None  # duyệt lại sau rollback phải upload mới
+
+
+def test_gate_cli_rollback_rejects_when_nothing_published(tmp_path, capsys):
+    from studio.gate_cli import main
+    db = tmp_path / "s.sqlite"; bus = SQLiteBus(db)
+    bus.publish(Envelope(topic="audit-log", key="desk", actor="desk", payload={"actor": "desk", "action": "gate.request",
+                         "evidence": json.dumps({"kind": "publish", "subject_id": "PUB-V1", "checklist": [], "created_by": "desk"})}))
+    bus.close()
+    assert main(["--db", str(db), "rollback", "PUB-V1", "--by", "human:editor"]) == 4 and "không có gì để rollback" in capsys.readouterr().err
+    b = SQLiteBus(db); assert not any(e.payload["action"] == "gate.decide" for e in b.replay("audit-log")); b.close()
+
+
+def test_failing_event_is_audited_and_loop_continues(tmp_path):
+    bus, o = _to_publish_gate(tmp_path)
+    # video bị escalate sau khi xin gate → approve không hợp lệ: không crash, không upload, audit gate.stale
+    o.desk.state["CH1-V1"] = "escalated"
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    assert o.platform.calls == [] and "gate.stale" in _audit_actions(bus, "orchestrator")
+    # lỗi bất ngờ trong process → audit orchestrator_failed, event vẫn được đánh dấu xong, event sau vẫn chạy
+    o._on_gate_decision = lambda env, res: (_ for _ in ()).throw(RuntimeError("bùm"))
+    o.gate.request(GateRequest(kind="publish", subject_id="PUB-CH1-V1", created_by="desk", checklist=[]))
+    o.gate.decide("PUB-CH1-V1", "reject", by="human:editor")
+    bus.publish(Envelope(topic="audience-comments", key="V5", actor="human", payload={"video_id": "V5", "comments": [{"comment_id": "c1", "text": "Hay!"}]}))
+    res = o.run()
+    assert any("!RuntimeError" in r.actions for r in res) and "orchestrator_failed" in _audit_actions(bus, "orchestrator")
+    assert o.queue == [] and "REP-V5-1" in o.gate.pending
+
+
+def test_resume_dispatches_plan_approved_before_crash(tmp_path):
+    db = tmp_path / "studio.sqlite"
+    bus = SQLiteBus(db); o = _orch(bus, tmp_path)
+    bus.publish(Envelope(topic="channel-briefs", key="CH1", actor="human", payload=CHANNEL)); o.run()
+    o.gate.decide("PLAN-CH1-1", "approve", by="human:owner")  # duyệt xong thì tiến trình chết trước khi dispatch
+    bus.close()
+    bus2 = SQLiteBus(db); o2 = _orch(bus2, tmp_path)
+    assert not o2.plans["PLAN-CH1-1"].get("dispatched") and len(o2.queue) == 1
+    o2.run()
+    assert [e.payload["video_id"] for e in bus2.replay("video-briefs")] == ["CH1-V1"] and o2.plans["PLAN-CH1-1"]["dispatched"]
+    bus2.close()
+    bus3 = SQLiteBus(db); o3 = _orch(bus3, tmp_path)  # mở lại lần nữa: brief đã có → không dispatch đôi
+    assert o3.plans["PLAN-CH1-1"]["dispatched"] and o3.run() == [] and len(list(bus3.replay("video-briefs"))) == 1
+    bus3.close()
+
+
+def test_many_route_counts_tokens_once(tmp_path):
+    bus = InMemoryBus(); o = _orch(bus, tmp_path)
+    bus.publish(Envelope(topic="audience-comments", key="V6", actor="human", payload={"video_id": "V6", "comments": [
+        {"comment_id": "c1", "text": "Hay!"}, {"comment_id": "c2", "text": "Tuyệt!"}]}))
+    o.run()
+    produced = [e.payload["tokens"] for e in bus.replay("audit-log") if e.payload["action"] == "produced:reply-drafts"]
+    assert len(produced) == 2 and sum(produced) == 1300  # một lần gọi model = 1300 token, không nhân đôi
+
+
+def test_publish_cli_only_accepts_human_input_topics(tmp_path, capsys):
+    from studio.orchestrator import HUMAN_TOPICS, main
+    db = tmp_path / "s.sqlite"; f = tmp_path / "x.json"
+    f.write_text(json.dumps({"actor": "human", "action": "gate.decide", "evidence": json.dumps({"subject_id": "PUB-V1", "decision": "approve", "by": "x"})}), encoding="utf-8")
+    assert main(["--db", str(db), "publish", "audit-log", str(f)]) == 2
+    err = capsys.readouterr().err; assert "audit-log" in err and "gate_cli" in err
+    assert main(["--db", str(db), "publish", "scripts", str(f)]) == 2
+    f.write_text(json.dumps(CHANNEL), encoding="utf-8")
+    assert main(["--db", str(db), "publish", "channel-briefs", str(f), "--actor", "human:owner"]) == 0
+    assert HUMAN_TOPICS == {"channel-briefs", "publish-events", "performance-snapshots", "audience-comments"}
+    bus = SQLiteBus(db); assert [e.topic for e in bus.replay()] == ["channel-briefs"]; bus.close()
+
+
+def test_publish_checklist_shows_final_video_thumbnail_title_and_cli_full(tmp_path, capsys):
+    from studio.gate_cli import format_checklist
+    from studio.gate_cli import main as gate_main
+    bus, o = _to_publish_gate(tmp_path)
+    req = o.gate.pending["PUB-CH1-V1"]
+    final = next(a for a in reversed([e.payload for e in bus.replay("media-assets", "CH1-V1")]) if a["kind"] == "final_video")
+    assert f"final_video:{final['path']}" in req.checklist and any(c.startswith("thumbnail:") and c.endswith("A.png") for c in req.checklist)
+    assert any(c.startswith("title:AI dựng video") for c in req.checklist) and req.triggered_by == "human:owner"  # người duyệt plan
+    # reply: checklist giữ nguyên văn; `list` cắt 80 ký tự trừ khi --full
+    long = "x" * 100
+    assert format_checklist([long]) == "x" * 80 + "…" and format_checklist([long], full=True) == long and format_checklist(["ab"]) == "ab"
+    db = tmp_path / "g.sqlite"; b = SQLiteBus(db)
+    from studio.gate_cli import PersistentGate
+    PersistentGate(b).request(GateRequest(kind="replies", subject_id="REP-V1-1", created_by="community-manager", checklist=[f"c1: {long}"],
+                                          triggered_by="human:mod")); b.close()
+    assert gate_main(["--db", str(db), "list"]) == 0
+    out = capsys.readouterr().out; assert "…" in out and long not in out and "trigger=human:mod" in out
+    assert gate_main(["--db", str(db), "list", "--full"]) == 0 and long in capsys.readouterr().out
+
+
+def test_tick_periodic_sync_pulls_metrics_and_comments_once_per_interval(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from studio.platform import Comment
+    bus, o = _to_publish_gate(tmp_path)
+    o.sync_every = 60
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    assert o.desk.state["CH1-V1"] == "scheduled"
+    o.platform.comments["fake-0001"] = [Comment("c1", "hay quá", "an", 1, "2026-09-02T00:00:00Z")]
+    t0 = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    o.tick(t0)
+    snaps = list(bus.replay("performance-snapshots", "CH1-V1")); cms = list(bus.replay("audience-comments", "CH1-V1"))
+    assert len(snaps) == 1 and len(cms) == 1 and cms[0].actor == "adapter:youtube" and [c["comment_id"] for c in cms[0].payload["comments"]] == ["c1"]
+    ticks = [json.loads(e.payload["evidence"]) for e in bus.replay("audit-log") if e.payload["action"] == "sync.tick"]
+    assert ticks == [{"video_id": "CH1-V1", "platform": "fake", "snapshot_event": snaps[0].event_id, "comments": 1}]
+    assert "REP-CH1-V1-1" in o.gate.pending  # bình luận kéo về đi tiếp vào community-manager → gate replies
+    o.tick(t0 + timedelta(seconds=30))  # chưa tới hạn → không kéo lại
+    assert len(list(bus.replay("performance-snapshots", "CH1-V1"))) == 1
+    o.tick(t0 + timedelta(seconds=61))  # tới hạn: kéo lại; c1 đã có trên bus → không phát lô mới
+    assert len(list(bus.replay("performance-snapshots", "CH1-V1"))) == 2 and len(list(bus.replay("audience-comments", "CH1-V1"))) == 1
+    o.sync_every = 0; o.tick(t0 + timedelta(hours=1)); assert len(list(bus.replay("performance-snapshots", "CH1-V1"))) == 2
+    o.platform.fail.add("snapshot"); o.sync_every = 60; o.tick(t0 + timedelta(hours=2))
+    assert any(e.payload["action"] == "sync.failed" for e in bus.replay("audit-log"))
