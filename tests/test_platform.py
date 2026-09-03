@@ -272,7 +272,9 @@ def test_token_file_created_with_0600_from_the_start(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "open", spy)
     st = _store(tmp_path)
     assert any(p == str(st.path) and m == 0o600 for p, m in seen)  # mode 0600 ngay lúc tạo, không có khoảnh khắc 0644
-    assert st_.S_IMODE(st.path.stat().st_mode) == 0o600 and st.load().access_token == "tok-1"
+    assert st.load().access_token == "tok-1"
+    if os.name == "posix":  # Windows không có bit quyền POSIX, stat() luôn báo 0666 dù os.open đã nhận 0600
+        assert st_.S_IMODE(st.path.stat().st_mode) == 0o600
 
 
 def test_youtube_retries_5xx_429_and_network_with_backoff_but_not_403(tmp_path):
