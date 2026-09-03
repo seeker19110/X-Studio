@@ -55,7 +55,7 @@ extra: {}
 #     # config_dir: ~/.codex-acc2     # tài khoản ChatGPT thứ hai: CODEX_HOME=~/.codex-acc2 codex login
 #   - name: antigravity                # ../gateway xoay vòng tài khoản Google (make login && make start)
 #     provider: openai
-#     base_url: http://127.0.0.1:8100/v1
+#     base_url: http://127.0.0.1:1123/v1
 #     api_key: gateway-local           # chuỗi bất kỳ; hoặc api_key_env: TEN_BIEN
 #     models: {strong: claude-sonnet-4-6, standard: gemini-3.7-flash, light: gemini-3.7-flash-low}
 #   - name: local                      # Ollama: không bao giờ hết quota, làm lưới đỡ cuối

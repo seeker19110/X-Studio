@@ -63,7 +63,7 @@ make lint                                  # ruff (make fix = ruff --fix); make 
 #   STUDIO_LLM_PROVIDER=openai STUDIO_LLM_BASE_URL=https://openrouter.ai/api/v1 STUDIO_MODEL_STRONG=... STUDIO_LLM_API_KEY=...
 #   STUDIO_LLM_PROVIDER=anthropic STUDIO_MODEL_STRONG=claude-opus-5   (uv sync --extra anthropic)
 #   Qua gateway xoay vòng tài khoản Google Antigravity (../gateway, xem README ở đó):
-#   STUDIO_LLM_PROVIDER=openai STUDIO_LLM_BASE_URL=http://127.0.0.1:8100/v1 STUDIO_LLM_API_KEY=gateway-local STUDIO_MODEL_STRONG=claude-sonnet-4-6
+#   STUDIO_LLM_PROVIDER=openai STUDIO_LLM_BASE_URL=http://127.0.0.1:1123/v1 STUDIO_LLM_API_KEY=gateway-local STUDIO_MODEL_STRONG=claude-sonnet-4-6
 #   Gói Claude Pro/Max (CLI `claude -p`, không key, không tool-use của công ty): STUDIO_LLM_PROVIDER=claude-code STUDIO_MODEL_STRONG=claude-opus-5
 #   Gói ChatGPT Plus/Pro (Codex CLI `codex exec --json`, không key, không tool-use): STUDIO_LLM_PROVIDER=codex STUDIO_MODEL_STRONG=gpt-5.6-terra
 #   NHIỀU gói cùng lúc (ADR-0006): `backends:` + `routing.prefer` trong llm.yaml — mẫu ở llm.example.yaml; agent có tier

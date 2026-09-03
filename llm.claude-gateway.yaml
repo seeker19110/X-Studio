@@ -5,7 +5,7 @@
 #
 # Chuẩn bị một lần:
 #   1. claude login                                    # gói Claude trên máy này
-#   2. cd ../gateway && make login && make start       # thêm tài khoản Google, bật daemon 127.0.0.1:8100
+#   2. cd ../gateway && make login && make start       # thêm tài khoản Google, bật daemon 127.0.0.1:1123
 #   3. cd ../gateway && uv run python -m gateway models --check ../Studio-creators/llm.yaml
 #                                                      # đối chiếu tên model, tránh 400 lúc đang chạy
 #   4. kiểm tra một lượt gọi thật: mục 3.4 của ../docs/HUONG-DAN-VAN-HANH.md
@@ -28,7 +28,7 @@ backends:
   # --- Gateway Antigravity: việc tầm trung và việc nhẹ, theo quota miễn phí của Google ---
   - name: antigravity
     provider: openai                 # gateway nói OpenAI-compatible nên có tool-use gốc
-    base_url: http://127.0.0.1:8100/v1
+    base_url: http://127.0.0.1:1123/v1
     api_key: gateway-local           # gateway chạy cục bộ, chuỗi bất kỳ; đừng để trống
     models:
       strong: claude-sonnet-4-6

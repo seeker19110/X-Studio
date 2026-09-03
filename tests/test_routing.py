@@ -106,7 +106,7 @@ backends:
     models: {strong: claude-opus-5, standard: claude-sonnet-5}
   - name: antigravity
     provider: fake
-    base_url: http://127.0.0.1:8100/v1
+    base_url: http://127.0.0.1:1123/v1
     api_key: gateway-local
     models: {strong: claude-sonnet-4-6, standard: gemini-3.7-flash, light: gemini-3.7-flash-low}
 routing: {cooldown_s: 1200, transient_cooldown_s: 15, prefer: {light: antigravity}}
