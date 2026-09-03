@@ -1,4 +1,7 @@
-.PHONY: test cov types demo lint fix golden gate eval eval-record eval-replay run watch status
+.PHONY: llm test cov types demo lint fix golden gate eval eval-record eval-replay run watch status
+llm:           # cài hồ sơ model chạy thật: make llm PROFILE=claude-gateway (không ghi đè llm.yaml đang có)
+	@test -f llm.yaml && echo "llm.yaml đã có, không ghi đè (xoá nó nếu muốn cài lại)" || \
+	 (cp llm.$(or $(PROFILE),claude-gateway).yaml llm.yaml && echo "đã tạo llm.yaml từ llm.$(or $(PROFILE),claude-gateway).yaml")
 test:
 	uv run pytest -q
 cov:

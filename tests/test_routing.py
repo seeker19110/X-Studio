@@ -219,3 +219,22 @@ def test_make_client_codex_backend_has_no_tools(tmp_path: Path, monkeypatch):
     assert [(b.name, b.supports_tools) for b in client.backends] == [("gpt", False), ("f", True)]
     inner = client.backends[0].client; inner = getattr(inner, "inner", inner)
     assert isinstance(inner, CodexClient) and inner.binary.endswith("codex-khong-ton-tai")
+
+
+# ---------- hồ sơ chạy thật: claude-code + gateway ----------
+
+def test_claude_gateway_profile_loads_and_routes_as_documented(monkeypatch):
+    """`llm.claude-gateway.yaml` phải chạy được thật: đúng backend, đúng tier, đúng ưu tiên."""
+    for v in ("STUDIO_LLM_BACKENDS", "STUDIO_LLM_PROVIDER"):
+        monkeypatch.delenv(v, raising=False)
+    for t in TIERS:
+        monkeypatch.delenv(f"STUDIO_MODEL_{t.upper()}", raising=False)
+    client = make_client(load_config(Path(__file__).resolve().parents[1] / "llm.claude-gateway.yaml"))
+    assert [b.name for b in client.backends] == ["claude-1", "antigravity"]
+    assert client.prefer == {"light": "antigravity", "standard": "antigravity", "strong": "claude-1"}
+    for b in client.backends:
+        assert b.tiers == frozenset(TIERS) and b.supports_tools, b.name
+    assert [b.name for b in client.order("strong", needs_tools=True)] == ["claude-1", "antigravity"]
+    assert [b.name for b in client.order("light", needs_tools=True)] == ["antigravity", "claude-1"]
+    cc = client.backends[0].client
+    assert cc.cfg.model_for("strong") == "claude-opus-5" and cc.cfg.model_for("light") == "claude-haiku-4-5"
