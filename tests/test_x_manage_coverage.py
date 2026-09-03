@@ -81,6 +81,37 @@ def test_cmd_start_background_spawn_success(tmp_path, monkeypatch, capsys):
     assert manage.get_pid_file().read_text(encoding="utf-8") == "4242"
 
 
+def test_cmd_start_background_spawn_uses_windows_creationflags(tmp_path, monkeypatch, capsys):
+    """Nhánh `if sys.platform == "win32": flags = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW`.
+    Ba hằng số này chỉ có trong `subprocess` trên Windows, nên CI Linux không bao giờ chạy dòng đó — stub
+    chúng (raising=False) và ép platform để phủ cross-platform, đồng thời kiểm đúng flag được truyền cho Popen."""
+    monkeypatch.setenv(gw_auth.ENV_HOME, str(tmp_path))
+    monkeypatch.setattr(sys, "platform", "win32")
+    for name, val in (("CREATE_NEW_PROCESS_GROUP", 0x200), ("DETACHED_PROCESS", 0x8), ("CREATE_NO_WINDOW", 0x08000000)):
+        monkeypatch.setattr(manage.subprocess, name, val, raising=False)
+    running_calls = {"n": 0}
+
+    def fake_running(host, port):
+        running_calls["n"] += 1
+        return running_calls["n"] > 1
+
+    monkeypatch.setattr(manage, "is_server_running", fake_running)
+    seen = {}
+
+    class FakeProc:
+        pid = 4245
+
+    def fake_popen(*a, **k):
+        seen["creationflags"] = k.get("creationflags")
+        return FakeProc()
+
+    monkeypatch.setattr(manage.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(manage.time, "sleep", lambda s: None)
+    assert manage.main(["start", "--host", "127.0.0.1", "--port", "6"]) == 0
+    assert seen["creationflags"] == 0x200 | 0x8 | 0x08000000
+    assert "PID 4245" in capsys.readouterr().out
+
+
 def test_cmd_start_background_spawn_sleeps_between_healthcheck_polls(tmp_path, monkeypatch, capsys):
     """Healthcheck đầu tiên thất bại (server chưa kịp bind) -> phải sleep rồi thử lại, không chỉ chờ 1 lần."""
     monkeypatch.setenv(gw_auth.ENV_HOME, str(tmp_path))
