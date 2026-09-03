@@ -22,19 +22,31 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _drive_callback(port: int, *, code: str, state: str) -> int:
+def _drive_callback(port: int, *, code: str, state: str, wait_s: float = 5.0) -> int:
     """Gọi callback loopback qua `http.client` thay vì `urllib.request` — vài test dưới đây monkeypatch
     `urllib.request.urlopen` để giả lập endpoint token của Google bên trong luồng `login`, và vì đó là cùng
-    module `urllib.request` (không phải bản sao), gọi qua urllib ở đây sẽ vô tình bị chính mock đó chặn lại."""
+    module `urllib.request` (không phải bản sao), gọi qua urllib ở đây sẽ vô tình bị chính mock đó chặn lại.
+
+    Thread gọi hàm này đua với thread chính đang bind server trong `_wait_for_code`/`login`; kết nối trước
+    khi server kịp listen thì bị refused (thấy trên CI Linux, Windows tình cờ thắng đua). Nên thử lại tới
+    `wait_s` thay vì `sleep` đoán mò — chỉ lỗi thật (server không bao giờ lên) mới ném ra."""
+    import time
+
     path = "/?" + urllib.parse.urlencode({"code": code, "state": state})
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
-    try:
-        conn.request("GET", path)
-        resp = conn.getresponse()
-        resp.read()
-        return resp.status
-    finally:
-        conn.close()
+    deadline = time.monotonic() + wait_s
+    while True:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5.0)
+        try:
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            resp.read()
+            return resp.status
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+        finally:
+            conn.close()
 
 
 def test_wait_for_code_returns_code_on_matching_state():
