@@ -179,6 +179,19 @@ def test_is_server_running_true_and_false(monkeypatch):
 # response.prepare/write/write_eof — KHÔNG phải exception từ generator (cái đó đã bị nuốt bởi
 # try/except lồng bên trong quanh `async for chunk in gen`, xem dòng 226-231). Nên phải khiến
 # chính lệnh gọi write() của aiohttp ném lỗi, không phải generator của client.
+#
+# Về `_no_discovery`: coverage.py (CTracer lẫn PyTracer, đã xác minh với 7.16 trên 3.11) MẤT
+# trace của frame coroutine sau khi nó resume từ một future do executor thread hoàn thành —
+# ở đây là `await self._refresh_catalog()` (bên trong `asyncio.to_thread`) ngay trước đoạn
+# stream. Hậu quả: mọi dòng từ 202 trở đi của handle_chat_completions không được ghi nhận dù
+# test PASS và log assertion chứng minh code đã chạy. Ép `discovery_is_stale()` -> False để
+# `_refresh_catalog` return sớm (không chạm to_thread) thì trace giữ được tới hết hàm.
+# Đây là workaround cho công cụ đo, không thay đổi hành vi được test.
+
+
+@pytest.fixture
+def _no_discovery(monkeypatch):
+    monkeypatch.setattr(gw_server, "discovery_is_stale", lambda: False)
 
 
 class _SimpleStreamStub:
@@ -191,7 +204,7 @@ class _SimpleStreamStub:
 
 
 @pytest.mark.asyncio
-async def test_stream_connection_reset_during_write_is_handled_quietly(manager, monkeypatch, caplog):
+async def test_stream_connection_reset_during_write_is_handled_quietly(manager, monkeypatch, caplog, _no_discovery):
     from aiohttp import web
 
     async def raising_write_eof(self, *a, **kw):
@@ -209,7 +222,7 @@ async def test_stream_connection_reset_during_write_is_handled_quietly(manager, 
 
 
 @pytest.mark.asyncio
-async def test_stream_generic_unexpected_error_during_write_logged_as_error(manager, monkeypatch, caplog):
+async def test_stream_generic_unexpected_error_during_write_logged_as_error(manager, monkeypatch, caplog, _no_discovery):
     from aiohttp import web
 
     async def raising_write_eof(self, *a, **kw):
@@ -227,7 +240,7 @@ async def test_stream_generic_unexpected_error_during_write_logged_as_error(mana
 
 
 @pytest.mark.asyncio
-async def test_stream_closing_transport_message_during_write_is_handled_quietly(manager, monkeypatch, caplog):
+async def test_stream_closing_transport_message_during_write_is_handled_quietly(manager, monkeypatch, caplog, _no_discovery):
     """Exception không thuộc 3 lớp Connection* nhưng message chứa 'closing transport' -> vẫn nuốt êm."""
     from aiohttp import web
 
