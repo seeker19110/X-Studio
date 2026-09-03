@@ -13,10 +13,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
@@ -317,12 +318,24 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[dict[str, Any]], str]
     return tool_calls, cleaned
 
 
+# Trần ký tự cho kết quả tool gửi lên upstream (mặc định 200k ≈ rất rộng); vượt thì cắt và đánh dấu rõ.
+TOOL_RESULT_MAX_CHARS = int(os.getenv("GATEWAY_TOOL_RESULT_MAX_CHARS", "200000"))
+TOOL_RESULT_TRUNCATED_MARKER = "…[đã cắt]"
+
+
+def _truncate_tool_result(text: str) -> str:
+    if TOOL_RESULT_MAX_CHARS > 0 and len(text) > TOOL_RESULT_MAX_CHARS:
+        return text[:TOOL_RESULT_MAX_CHARS] + TOOL_RESULT_TRUNCATED_MARKER
+    return text
+
+
 def build_code_assist_request(openai_payload: dict[str, Any], project_id: str) -> dict[str, Any]:
     """OpenAI /v1/chat/completions payload → envelope Code Assist."""
     messages = openai_payload.get("messages") or []
     model_name = map_model_name(openai_payload.get("model") or "gemini-3.7-flash")
     system_parts: list[str] = []
     contents: list[dict[str, Any]] = []
+    tool_call_names: dict[str, str] = {}  # tool_call_id → tên hàm, để functionResponse khớp functionCall
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -334,10 +347,14 @@ def build_code_assist_request(openai_payload: dict[str, Any], project_id: str) -
                 system_parts.append(text)
             continue
         if role in {"tool", "function"}:
-            # Kết quả tool → text: tránh functionResponse mồ côi khi functionCall không có thoughtSignature thật.
-            tool_text = _coerce_content_to_text(msg.get("content"))
-            tool_name = msg.get("name") or msg.get("tool_call_id") or "tool"
-            contents.append({"role": "user", "parts": [{"text": f"[Tool result from {tool_name}: {tool_text[:2000]}]"}]})
+            # Kết quả tool → functionResponse thật (id khớp functionCall phía trên); cắt ở trần lớn có đánh dấu.
+            tool_text = _truncate_tool_result(_coerce_content_to_text(msg.get("content")))
+            call_id = str(msg.get("tool_call_id") or "")
+            tool_name = msg.get("name") or tool_call_names.get(call_id) or call_id or "tool"
+            function_response: dict[str, Any] = {"name": tool_name, "response": {"result": tool_text}}
+            if call_id:
+                function_response["id"] = call_id
+            contents.append({"role": "user", "parts": [{"functionResponse": function_response}]})
             continue
 
         gemini_role = "model" if role == "assistant" else "user"
@@ -347,11 +364,12 @@ def build_code_assist_request(openai_payload: dict[str, Any], project_id: str) -
             for tc in tool_calls:
                 if not isinstance(tc, dict):
                     continue
-                if _real_thought_signature(tc):
-                    parts.append(_translate_tool_call_to_gemini(tc))
-                else:
-                    fn = tc.get("function") or {}
-                    parts.append({"text": f"[Tool call: {fn.get('name', 'unknown')}({fn.get('arguments', '{}')})]"})
+                # Không có thoughtSignature thật (lịch sử cũ) → vẫn gửi functionCall thật với chữ ký
+                # "skip_thought_signature_validator" (_translate_tool_call_to_gemini tự điền), giữ nguyên id.
+                part = _translate_tool_call_to_gemini(tc)
+                if tc.get("id"):
+                    tool_call_names[str(tc["id"])] = part["functionCall"]["name"]
+                parts.append(part)
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
 
@@ -416,12 +434,12 @@ def _map_finish_reason(gemini_finish: str | None) -> str:
     return _FINISH_MAP.get(gemini_finish or "STOP", "stop")
 
 
-def _usage_from_gemini(inner: dict[str, Any]) -> dict[str, int]:
+def _usage_from_gemini(inner: dict[str, Any]) -> dict[str, Any]:
     meta = inner.get("usageMetadata") or {}
     prompt = int(meta.get("promptTokenCount") or 0)
     completion = int(meta.get("candidatesTokenCount") or 0) + int(meta.get("thoughtsTokenCount") or 0)
     cached = int(meta.get("cachedContentTokenCount") or 0)
-    usage = {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
+    usage: dict[str, Any] = {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
     if cached:
         usage["prompt_tokens_details"] = {"cached_tokens": cached}
     return usage
@@ -431,7 +449,7 @@ def _parts_to_openai(parts: list[Any], *, with_index: bool) -> tuple[str, str, l
     content_text = ""
     reasoning_text = ""
     tool_calls: list[dict[str, Any]] = []
-    for idx, part in enumerate(parts):
+    for part in parts:
         if not isinstance(part, dict):
             continue
         if part.get("thought") is True and isinstance(part.get("text"), str):
@@ -447,7 +465,7 @@ def _parts_to_openai(parts: list[Any], *, with_index: bool) -> tuple[str, str, l
                 "function": {"name": fc.get("name") or "", "arguments": json.dumps(fc.get("args") or {})},
             }
             if with_index:
-                item = {"index": idx, **item}
+                item = {"index": len(tool_calls), **item}
             if ts:
                 item["thoughtSignature"] = ts
                 item["extra_content"] = {"google": {"thought_signature": ts}}
@@ -456,9 +474,10 @@ def _parts_to_openai(parts: list[Any], *, with_index: bool) -> tuple[str, str, l
 
 
 def translate_gemini_to_openai_response(gemini_resp: dict[str, Any], requested_model: str) -> dict[str, Any]:
-    inner = gemini_resp.get("response") if isinstance(gemini_resp.get("response"), dict) else gemini_resp
+    inner: dict[str, Any] = gemini_resp["response"] if isinstance(gemini_resp.get("response"), dict) else gemini_resp
     candidates = inner.get("candidates") or []
-    content_text, reasoning_text, tool_calls = "", "", []
+    content_text, reasoning_text = "", ""
+    tool_calls: list[dict[str, Any]] = []
     gemini_finish: str | None = None
     if candidates and isinstance(candidates[0], dict):
         cand = candidates[0]
@@ -466,7 +485,7 @@ def translate_gemini_to_openai_response(gemini_resp: dict[str, Any], requested_m
         content_text, reasoning_text, tool_calls = _parts_to_openai(
             (cand.get("content") or {}).get("parts") or [], with_index=False
         )
-    if not tool_calls and content_text and "[Tool call:" in content_text:
+    if not tool_calls and content_text and any(p.search(content_text) for p in _TOOL_CALL_TEXT_PATTERNS):
         extracted, cleaned = _extract_tool_calls_from_text(content_text)
         if extracted:
             tool_calls, content_text = extracted, cleaned
@@ -491,7 +510,7 @@ def translate_gemini_to_openai_response(gemini_resp: dict[str, Any], requested_m
 def translate_gemini_stream_event(
     event_data: dict[str, Any], requested_model: str, stream_id: str
 ) -> dict[str, Any] | None:
-    inner = event_data.get("response") if isinstance(event_data.get("response"), dict) else event_data
+    inner: dict[str, Any] = event_data["response"] if isinstance(event_data.get("response"), dict) else event_data
     candidates = inner.get("candidates") or []
     if not candidates or not isinstance(candidates[0], dict):
         return None
@@ -506,9 +525,12 @@ def translate_gemini_stream_event(
         delta["reasoning_content"] = reasoning_piece
     if tool_calls:
         delta["tool_calls"] = tool_calls
-    if not delta:
-        return None
     finish = cand.get("finishReason")
+    has_usage = bool(inner.get("usageMetadata"))
+    if not delta and not finish and not has_usage:
+        return None
+    # Chunk chỉ có finishReason (MAX_TOKENS/SAFETY...) và/hoặc usageMetadata: vẫn phát với delta rỗng,
+    # kẻo client thấy finish_reason "stop" sạch và mất usage.
     finish_reason = "tool_calls" if tool_calls else (_map_finish_reason(finish) if finish else None)
     chunk: dict[str, Any] = {
         "id": stream_id,
@@ -520,6 +542,31 @@ def translate_gemini_stream_event(
     if inner.get("usageMetadata"):
         chunk["usage"] = _usage_from_gemini(inner)
     return chunk
+
+
+_UPSTREAM_ERROR_MAX_CHARS = 500
+
+
+def _upstream_error_message(status_code: int, body: str | bytes, *, stream: bool = False) -> str:
+    """Thông điệp lỗi trả cho client: chỉ `error.message` của upstream (hoặc body thô nếu không phải JSON),
+    cắt tối đa 500 ký tự — không dội nguyên body Google (có thể chứa chi tiết nội bộ, rất dài) ra ngoài."""
+    text = body.decode("utf-8", "replace") if isinstance(body, bytes) else body
+    message = text.strip()
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        err = parsed.get("error")
+        if isinstance(err, dict) and isinstance(err.get("message"), str):
+            message = err["message"]
+        elif isinstance(err, str):
+            message = err
+    message = " ".join(message.split())
+    if len(message) > _UPSTREAM_ERROR_MAX_CHARS:
+        message = message[: _UPSTREAM_ERROR_MAX_CHARS - 1] + "…"
+    kind = "Code Assist stream lỗi" if stream else "Code Assist lỗi"
+    return f"{kind} HTTP {status_code}: {message}"
 
 
 # ---------- client ----------
@@ -556,7 +603,7 @@ class AntigravityClient:
             account_level_failure = resp.status_code < 500 and _should_fail_over(resp)
             if account_level_failure:
                 # Thử model anh em (quota riêng) trên CÙNG tài khoản trước khi xoay.
-                sibling = IN_ACCOUNT_MODEL_FALLBACK.get(envelope.get("model"))
+                sibling = IN_ACCOUNT_MODEL_FALLBACK.get(str(envelope.get("model") or ""))
                 if sibling:
                     sibling_resp = await self._http.post(url, json=dict(envelope, model=sibling), headers=headers)
                     last_response = sibling_resp
@@ -568,14 +615,14 @@ class AntigravityClient:
                         )
                         continue
                     raise UpstreamError(
-                        f"Code Assist lỗi HTTP {sibling_resp.status_code}: {sibling_resp.text}", sibling_resp.status_code
+                        _upstream_error_message(sibling_resp.status_code, sibling_resp.text), sibling_resp.status_code
                     )
                 self.auth_manager.mark_account_unavailable(creds, resp.status_code, resp.headers.get("Retry-After"))
                 continue
 
             if resp.status_code < 500:
                 # Lỗi 4xx không liên quan tài khoản (payload hỏng...): tài khoản khác không cứu được.
-                raise UpstreamError(f"Code Assist lỗi HTTP {resp.status_code}: {resp.text}", resp.status_code)
+                raise UpstreamError(_upstream_error_message(resp.status_code, resp.text), resp.status_code)
 
             logger.warning("Endpoint chính trả %s, thử endpoint dự phòng", resp.status_code)
             resp = await self._http.post(f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
@@ -585,21 +632,23 @@ class AntigravityClient:
             if _should_fail_over(resp):
                 self.auth_manager.mark_account_unavailable(creds, resp.status_code, resp.headers.get("Retry-After"))
                 continue
-            raise UpstreamError(f"Code Assist lỗi HTTP {resp.status_code}: {resp.text}", resp.status_code)
+            raise UpstreamError(_upstream_error_message(resp.status_code, resp.text), resp.status_code)
 
         if last_response is None:
             raise UpstreamError("Không có tài khoản Antigravity nào sẵn sàng.", 429)
         raise UpstreamError(
-            f"Code Assist lỗi HTTP {last_response.status_code}: {last_response.text}", last_response.status_code
+            _upstream_error_message(last_response.status_code, last_response.text), last_response.status_code
         )
 
-    async def stream_chat_completion(self, openai_payload: dict[str, Any], bearer_token: str = "") -> AsyncIterator[str]:
+    async def stream_chat_completion(self, openai_payload: dict[str, Any], bearer_token: str = "") -> AsyncGenerator[str, None]:
         """Stream SSE; chỉ xoay tài khoản TRƯỚC khi phát chunk đầu tiên."""
         candidates = await self._candidates(bearer_token)
         requested_model = openai_payload.get("model") or "gemini-3.7-flash"
         url = f"{CODE_ASSIST_BASE_URL}:streamGenerateContent?alt=sse"
         last_error = "Không có tài khoản Antigravity nào sẵn sàng."
         last_status = 500
+        stream_options = openai_payload.get("stream_options") or {}
+        include_usage = isinstance(stream_options, dict) and bool(stream_options.get("include_usage"))
 
         for creds in candidates:
             envelope = build_code_assist_request(openai_payload, creds.project_id)
@@ -610,7 +659,7 @@ class AntigravityClient:
             async with self._http.stream("POST", url, json=envelope, headers=headers) as response:
                 if response.status_code != 200:
                     body = await response.aread()
-                    last_error = f"Code Assist stream lỗi HTTP {response.status_code}: {body.decode('utf-8', 'replace')}"
+                    last_error = _upstream_error_message(response.status_code, body, stream=True)
                     last_status = response.status_code
                     if response.status_code >= 500:
                         # Lỗi phía Google, không phải lỗi tài khoản: thử tài khoản kế, không cooldown.
@@ -635,6 +684,7 @@ class AntigravityClient:
 
                 buffer = ""
                 sent_finish: str | None = None
+                last_usage: dict[str, Any] | None = None
                 async for raw in response.aiter_text():
                     buffer += raw.replace("\r\n", "\n").replace("\r", "\n")
                     while "\n\n" in buffer:
@@ -655,6 +705,8 @@ class AntigravityClient:
                                 fr = chunk["choices"][0].get("finish_reason")
                                 if fr:
                                     sent_finish = fr
+                                if chunk.get("usage"):
+                                    last_usage = chunk["usage"]
                                 yield f"data: {json.dumps(chunk)}\n\n"
 
                 # Chỉ phát chunk đóng tổng hợp khi upstream CHƯA gửi finish_reason thật; nếu không sẽ
@@ -667,6 +719,18 @@ class AntigravityClient:
                             "created": int(time.time()),
                             "model": requested_model,
                             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        }
+                    ) + "\n\n"
+                # `stream_options.include_usage` (OpenAI): chunk cuối chỉ có usage, `choices: []`.
+                if include_usage and last_usage is not None:
+                    yield "data: " + json.dumps(
+                        {
+                            "id": stream_id,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": requested_model,
+                            "choices": [],
+                            "usage": last_usage,
                         }
                     ) + "\n\n"
                 yield "data: [DONE]\n\n"

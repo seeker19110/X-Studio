@@ -57,6 +57,27 @@ def _error_response(exc: Exception) -> web.Response:
     return web.json_response({"error": {"message": str(exc), "type": err_type, "code": status}}, status=status)
 
 
+def _stream_error_chunk(exc: Exception) -> str:
+    status = upstream_status(exc)
+    err_type = "rate_limit_error" if status == 429 else "api_error"
+    payload = {"error": {"message": str(exc), "type": err_type, "code": status}}
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\ndata: [DONE]\n\n"
+
+
+def is_loopback_host(host: str) -> bool:
+    return host in {"127.0.0.1", "localhost", "::1", "[::1]"} or host.startswith("127.")
+
+
+def warn_if_public_host(host: str) -> None:
+    """Gateway không có xác thực client: mở ra ngoài loopback là ai trong mạng cũng dùng được pool tài khoản."""
+    if not is_loopback_host(host):
+        logger.warning(
+            "Gateway lắng nghe trên %s (không phải loopback): endpoint KHÔNG có xác thực, "
+            "mọi máy trong mạng đều dùng được tài khoản Google trong pool. Chỉ làm vậy sau firewall/reverse proxy.",
+            host,
+        )
+
+
 class GatewayServer:
     def __init__(
         self,
@@ -69,7 +90,7 @@ class GatewayServer:
         self.port = port
         self.auth_manager = auth_manager or AntigravityAuthManager()
         self.client = client or AntigravityClient(self.auth_manager)
-        self.app = web.Application()
+        self.app = web.Application(client_max_size=32 * 1024**2)  # lịch sử chat dài kèm ảnh vượt 1MB mặc định
         self.app.router.add_get("/health", self.handle_health)
         self.app.router.add_get("/auth/status", self.handle_auth_status)
         self.app.router.add_post("/auth/login", self.handle_auth_login)
@@ -162,7 +183,9 @@ class GatewayServer:
                 async for chunk in gen:
                     await response.write(chunk.encode("utf-8"))
             except Exception as e:
+                # Báo lỗi cho client dạng chunk rồi [DONE], thay vì cắt stream im lặng.
                 logger.error("Lỗi giữa stream: %s", e)
+                await response.write(_stream_error_chunk(e).encode("utf-8"))
             await response.write_eof()
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as e:
             logger.debug("Client ngắt giữa stream: %s", e)
@@ -180,6 +203,7 @@ class GatewayServer:
 
 def run_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    warn_if_public_host(host)
     server = GatewayServer(host=host, port=port)
     web.run_app(server.app, host=host, port=port)
 

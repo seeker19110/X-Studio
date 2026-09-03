@@ -78,8 +78,13 @@ def test_request_builder_system_tools_and_role_merge():
     assert req["contents"][2]["parts"] == [{"text": "a"}, {"text": "b"}]
     model_parts = req["contents"][3]["parts"]
     assert model_parts[0]["functionCall"]["name"] == "f" and model_parts[0]["thoughtSignature"] == "sig"
-    assert model_parts[1] == {"text": "[Tool call: g({})]"}
-    assert req["contents"][4]["parts"][0]["text"].startswith("[Tool result from f:")
+    # Không có thoughtSignature thật → vẫn là functionCall thật với chữ ký skip, giữ id.
+    assert model_parts[1] == {
+        "functionCall": {"name": "g", "args": {}, "id": "c2"},
+        "thoughtSignature": "skip_thought_signature_validator",
+    }
+    fr = req["contents"][4]["parts"][0]["functionResponse"]
+    assert fr == {"name": "f", "id": "c1", "response": {"result": "{\"ok\": true}"}}
     assert req["tools"][0]["functionDeclarations"][0]["name"] == "f"
 
 
@@ -113,3 +118,63 @@ def test_stream_event_translation():
     chunk = gw.translate_gemini_stream_event(ev, "m", "id1")
     assert chunk["choices"][0]["delta"] == {"content": "xin"} and chunk["choices"][0]["finish_reason"] is None
     assert gw.translate_gemini_stream_event({"response": {"candidates": [{"content": {"parts": []}}]}}, "m", "id") is None
+
+
+def test_tool_result_name_from_call_id_and_truncation_marker(monkeypatch):
+    monkeypatch.setattr(gw, "TOOL_RESULT_MAX_CHARS", 10)
+    payload = {
+        "model": "gemini-3.7-flash",
+        "messages": [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "c9", "type": "function", "function": {"name": "grep", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c9", "content": "x" * 50},
+        ],
+    }
+    fr = gw.build_code_assist_request(payload, "p")["request"]["contents"][2]["parts"][0]["functionResponse"]
+    assert fr["name"] == "grep" and fr["id"] == "c9"
+    assert fr["response"]["result"] == "x" * 10 + gw.TOOL_RESULT_TRUNCATED_MARKER
+    monkeypatch.setattr(gw, "TOOL_RESULT_MAX_CHARS", 0)
+    assert gw._truncate_tool_result("y" * 5000) == "y" * 5000
+
+
+def test_stream_event_with_only_finish_reason_and_usage_is_emitted():
+    ev = {
+        "response": {
+            "candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": []}}],
+            "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 7, "totalTokenCount": 10},
+        }
+    }
+    chunk = gw.translate_gemini_stream_event(ev, "m", "id1")
+    assert chunk["choices"][0]["delta"] == {}
+    assert chunk["choices"][0]["finish_reason"] == "length"
+    assert chunk["usage"]["total_tokens"] == 10
+    safety = {"response": {"candidates": [{"finishReason": "SAFETY", "content": {"parts": []}}]}}
+    assert gw.translate_gemini_stream_event(safety, "m", "id1")["choices"][0]["finish_reason"] == "content_filter"
+
+
+def test_stream_tool_call_index_counts_tool_calls_not_parts():
+    event = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"text": "thinking...", "thought": True},
+                        {"functionCall": {"name": "a", "args": {}}},
+                        {"text": "and"},
+                        {"functionCall": {"name": "b", "args": {}}},
+                    ]
+                }
+            }
+        ]
+    }
+    chunk = gw.translate_gemini_stream_event(event, "gemini-3.7-flash", "chatcmpl-x")
+    assert [tc["index"] for tc in chunk["choices"][0]["delta"]["tool_calls"]] == [0, 1]
+
+
+def test_response_translation_extracts_action_style_textual_tool_call():
+    resp = {"candidates": [{"content": {"parts": [{"text": 'Action: Called search({"q": "x"})'}]}}]}
+    out = gw.translate_gemini_to_openai_response(resp, "gemini-3.7-flash")
+    calls = out["choices"][0]["message"]["tool_calls"]
+    assert calls[0]["function"]["name"] == "search"
+    assert out["choices"][0]["finish_reason"] == "tool_calls"

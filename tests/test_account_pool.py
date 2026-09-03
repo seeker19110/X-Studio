@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import threading
 import urllib.error
 
@@ -151,8 +153,53 @@ def test_bearer_token_prioritizes_matching_account(manager):
         manager.save_credentials(_creds(name))
     by_token = manager.resolve_credential_candidates(bearer_token="token-b")
     assert [c.email for c in by_token] == ["b@example.com", "a@example.com"]
-    by_email = manager.resolve_credential_candidates(bearer_token="b@example.com")
+    by_email = manager.resolve_credential_candidates(bearer_token="B@example.com")
     assert by_email[0].email == "b@example.com"
+
+
+def test_bearer_email_prefix_does_not_match(manager):
+    # "b" từng khớp "b@example.com" qua startswith → giờ phải so bằng chính xác (không phân biệt hoa thường).
+    manager.save_credentials(_creds("a"))
+    manager.save_credentials(_creds("b"))
+    manager.resolve_credential_candidates()  # a được dùng → LRU đẩy b lên đầu dù không khớp bearer
+    assert [c.email for c in manager.resolve_credential_candidates(bearer_token="b")] == ["b@example.com", "a@example.com"]
+    manager.resolve_credential_candidates(bearer_token="a@example.com")
+    assert manager.resolve_credential_candidates(bearer_token="b")[0].email == "b@example.com"
+
+
+def test_round_robin_least_recently_used(manager):
+    manager.save_credentials(_creds("a"))
+    manager.save_credentials(_creds("b"))
+    first = manager.resolve_credential_candidates()[0].email
+    second = manager.resolve_credential_candidates()[0].email
+    third = manager.resolve_credential_candidates()[0].email
+    assert first != second and third == first
+    stored = json.loads(manager.token_file.read_text(encoding="utf-8"))["accounts"]
+    assert stored[first]["last_used_at"] > 0 and stored[second]["last_used_at"] > 0
+
+
+def test_mark_unavailable_keeps_newer_token_from_other_request(manager):
+    stale = _creds("a")
+    manager.save_credentials(stale)
+    fresh = _creds("a", access_token="token-a-NEW", refresh_token="r2", expires_at=9e9)
+    manager.save_credentials(fresh)  # request khác vừa refresh
+    manager.mark_account_unavailable(stale, 429, retry_after="30")
+    stored = json.loads(manager.token_file.read_text(encoding="utf-8"))["accounts"]["a@example.com"]
+    assert stored["access_token"] == "token-a-NEW" and stored["refresh_token"] == "r2"
+    assert stored["last_failure_status"] == 429 and stored["unavailable_until"] > 0
+    manager.mark_account_healthy(stale)
+    stored = json.loads(manager.token_file.read_text(encoding="utf-8"))["accounts"]["a@example.com"]
+    assert stored["access_token"] == "token-a-NEW" and stored["unavailable_until"] == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="chmod POSIX")
+def test_token_file_is_owner_only_after_save_and_remove(manager):
+    manager.save_credentials(_creds("a"))
+    manager.save_credentials(_creds("b"))
+    assert stat.S_IMODE(manager.token_file.stat().st_mode) == 0o600
+    assert stat.S_IMODE(manager.token_file.parent.stat().st_mode) == 0o700
+    assert manager.remove_account("a@example.com")
+    assert stat.S_IMODE(manager.token_file.stat().st_mode) == 0o600
 
 
 def test_remove_account(manager):

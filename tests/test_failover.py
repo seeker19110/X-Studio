@@ -255,3 +255,89 @@ async def test_usage_translated_from_gemini_metadata():
         "prompt_tokens_details": {"cached_tokens": 4},
     }
     assert result["choices"][0]["finish_reason"] == "length"
+
+
+@pytest.mark.asyncio
+async def test_stream_include_usage_emits_final_usage_only_chunk():
+    auth = FakeAuthManager()
+
+    def handler(request):
+        event = {
+            "response": {
+                "candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "hi"}]}}],
+                "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 7, "totalTokenCount": 10},
+            }
+        }
+        body = f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=body.encode())
+
+    payload = dict(_payload(stream=True), stream_options={"include_usage": True})
+    client = _client(auth, handler)
+    try:
+        chunks = [c async for c in client.stream_chat_completion(payload)]
+    finally:
+        await client.close()
+    objs = [json.loads(c[6:]) for c in chunks if c.startswith("data: {")]
+    assert objs[-1]["choices"] == []
+    assert objs[-1]["usage"]["total_tokens"] == 10
+    assert chunks[-1] == "data: [DONE]\n\n"
+
+
+@pytest.mark.asyncio
+async def test_stream_without_include_usage_has_no_usage_only_chunk():
+    auth = FakeAuthManager()
+
+    def handler(request):
+        event = {
+            "response": {
+                "candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": "hi"}]}}],
+                "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 7, "totalTokenCount": 10},
+            }
+        }
+        body = f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=body.encode())
+
+    client = _client(auth, handler)
+    try:
+        chunks = [c async for c in client.stream_chat_completion(_payload(stream=True))]
+    finally:
+        await client.close()
+    objs = [json.loads(c[6:]) for c in chunks if c.startswith("data: {")]
+    assert all(o["choices"] for o in objs)
+    assert objs[-1]["usage"]["total_tokens"] == 10   # usage vẫn đi kèm chunk thường như trước
+
+
+@pytest.mark.asyncio
+async def test_upstream_error_body_is_trimmed_to_message():
+    auth = FakeAuthManager()
+    long_detail = "x" * 2000
+
+    def handler(request):
+        return httpx.Response(
+            400, json={"error": {"message": "invalid argument", "details": [{"debug": long_detail}]}}
+        )
+
+    client = _client(auth, handler)
+    try:
+        with pytest.raises(gw_auth.UpstreamError) as exc:
+            await client.create_chat_completion(_payload())
+    finally:
+        await client.close()
+    assert str(exc.value) == "Code Assist lỗi HTTP 400: invalid argument"
+
+
+@pytest.mark.asyncio
+async def test_upstream_error_non_json_body_is_capped_at_500_chars():
+    auth = FakeAuthManager()
+
+    def handler(request):
+        return httpx.Response(400, content=("<html>" + "y" * 3000).encode())
+
+    client = _client(auth, handler)
+    try:
+        with pytest.raises(gw_auth.UpstreamError) as exc:
+            await client.create_chat_completion(_payload())
+    finally:
+        await client.close()
+    msg = str(exc.value).removeprefix("Code Assist lỗi HTTP 400: ")
+    assert len(msg) == 500 and msg.endswith("…")

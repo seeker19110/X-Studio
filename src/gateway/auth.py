@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import secrets
-import shutil
 import stat
 import threading
 import time
@@ -111,6 +110,7 @@ class AntigravityCredentials:
     source: str = "oauth_pkce"
     unavailable_until: float = 0.0
     last_failure_status: int = 0
+    last_used_at: float = 0.0  # lần cuối được chọn làm ứng viên đầu; dùng để xoay vòng LRU
 
     @property
     def is_expired(self) -> bool:
@@ -136,6 +136,7 @@ class AntigravityCredentials:
             "source": self.source,
             "unavailable_until": self.unavailable_until,
             "last_failure_status": self.last_failure_status,
+            "last_used_at": self.last_used_at,
             "updated_at": time.time(),
         }
 
@@ -152,6 +153,7 @@ class AntigravityCredentials:
             source=data.get("source") or "stored",
             unavailable_until=float(data.get("unavailable_until") or 0.0),
             last_failure_status=int(data.get("last_failure_status") or 0),
+            last_used_at=float(data.get("last_used_at") or 0.0),
         )
 
 
@@ -215,6 +217,23 @@ class AntigravityAuthManager:
                     return c
         return all_creds[0]
 
+    def _atomic_write(self, path: Path, data: dict[str, Any]) -> None:
+        """Ghi JSON nguyên tử: tạo file tạm với mode 0600 ngay từ lúc mở (không có khoảng hở
+        world-readable), thư mục cha 0700, rồi replace vào chỗ."""
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        tmp_path = path.with_suffix(".tmp")
+        try:
+            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            if os.name != "nt":
+                os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+            os.replace(tmp_path, path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink(missing_ok=True)
+            raise
+
     def save_credentials(self, creds: AntigravityCredentials) -> None:
         """Ghi nguyên tử, giữ nguyên các tài khoản khác. File chỉ chủ sở hữu đọc được."""
         with self._lock:
@@ -228,18 +247,32 @@ class AntigravityAuthManager:
 
             out = creds.to_dict()
             out["accounts"] = accounts
-            tmp_path = self.auth_file.with_suffix(".tmp")
             try:
-                self.auth_file.parent.mkdir(parents=True, exist_ok=True)
-                with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(out, f, indent=2)
-                if os.name != "nt":
-                    os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
-                shutil.move(str(tmp_path), str(self.auth_file))
+                self._atomic_write(self.auth_file, out)
             except Exception as e:
                 logger.error("Không ghi được token file %s: %s", self.auth_file, e)
-                with contextlib.suppress(OSError):
-                    tmp_path.unlink(missing_ok=True)
+
+    def _update_account_fields(self, creds: AntigravityCredentials, **fields: Any) -> None:
+        """Đọc lại file và chỉ sửa vài trường của một tài khoản, KHÔNG ghi đè cả object `creds`
+        (có thể đã cũ: request khác vừa refresh token mới trong lúc request này đang chờ upstream)."""
+        with self._lock:
+            for k, v in fields.items():
+                setattr(creds, k, v)
+            existing = self._read_file()
+            accounts = existing.get("accounts")
+            key = creds.email or "primary"
+            if not isinstance(accounts, dict) or not isinstance(accounts.get(key), dict):
+                self.save_credentials(creds)
+                return
+            accounts[key].update(fields)
+            out = dict(existing)
+            out["accounts"] = accounts
+            if (existing.get("email") or "primary") == key:
+                out.update(fields)
+            try:
+                self._atomic_write(self.auth_file, out)
+            except Exception as e:
+                logger.error("Không ghi được token file %s: %s", self.auth_file, e)
 
     def remove_account(self, email: str) -> bool:
         with self._lock:
@@ -254,10 +287,7 @@ class AntigravityAuthManager:
             first = next(iter(accounts.values()))
             out = dict(first)
             out["accounts"] = accounts
-            tmp_path = self.auth_file.with_suffix(".tmp")
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(out, f, indent=2)
-            shutil.move(str(tmp_path), str(self.auth_file))
+            self._atomic_write(self.auth_file, out)
             return True
 
     def clear_credentials(self) -> bool:
@@ -292,11 +322,11 @@ class AntigravityAuthManager:
                 return bool(
                     c.access_token == bearer_token
                     or (bearer_token.startswith("ya29.") and c.access_token.startswith(bearer_token[:20]))
-                    or c.email == bearer_token
-                    or (c.email and c.email.startswith(bearer_token))
+                    or (c.email and c.email.lower() == bearer_token.lower())
                 )
 
-            all_creds.sort(key=lambda c: not matches_bearer(c))
+            # Bearer khớp lên đầu; còn lại xoay vòng LRU (tài khoản lâu chưa dùng nhất đi trước).
+            all_creds.sort(key=lambda c: (not matches_bearer(c), c.last_used_at))
             now = time.time()
             candidates: list[AntigravityCredentials] = []
             for creds in all_creds:
@@ -330,6 +360,7 @@ class AntigravityAuthManager:
                 wait = max(0, int(earliest - now)) if earliest else 0
                 suffix = f" Thử lại sau khoảng {wait}s." if wait else ""
                 raise UpstreamError("Mọi tài khoản Antigravity đều đang cooldown hoặc hết hạn." + suffix, 429)
+            self._update_account_fields(candidates[0], last_used_at=now)
             return candidates
 
     def mark_account_unavailable(
@@ -340,20 +371,17 @@ class AntigravityAuthManager:
         if retry_after:
             with contextlib.suppress(ValueError, TypeError):
                 cooldown = max(1, int(float(retry_after)))
-        with self._lock:
-            creds.unavailable_until = time.time() + cooldown
-            creds.last_failure_status = int(status_code)
-            self.save_credentials(creds)
+        # Chỉ cập nhật hai trường cooldown, không ghi đè token (có thể đã được request khác refresh).
+        self._update_account_fields(
+            creds, unavailable_until=time.time() + cooldown, last_failure_status=int(status_code)
+        )
         logger.warning(
             "Tài khoản %s vào cooldown %ss sau HTTP %s", creds.email or "unknown", cooldown, status_code
         )
 
     def mark_account_healthy(self, creds: AntigravityCredentials) -> None:
         """Xóa cooldown thủ công (CLI `reset`)."""
-        with self._lock:
-            creds.unavailable_until = 0.0
-            creds.last_failure_status = 0
-            self.save_credentials(creds)
+        self._update_account_fields(creds, unavailable_until=0.0, last_failure_status=0)
 
     # ---------- Google ----------
 

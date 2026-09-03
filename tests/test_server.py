@@ -8,12 +8,13 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway import auth as gw_auth
-from gateway.server import GatewayServer, upstream_status
+from gateway.server import GatewayServer, is_loopback_host, upstream_status, warn_if_public_host
 
 
 class StubClient:
-    def __init__(self, result=None, error: Exception | None = None, stream_chunks=None):
+    def __init__(self, result=None, error: Exception | None = None, stream_chunks=None, mid_stream_error=None):
         self.result, self.error, self.stream_chunks = result, error, stream_chunks or []
+        self.mid_stream_error = mid_stream_error
         self.bearers: list[str] = []
 
     async def close(self):
@@ -31,6 +32,8 @@ class StubClient:
             raise self.error
         for c in self.stream_chunks:
             yield c
+        if self.mid_stream_error:
+            raise self.mid_stream_error
 
 
 @pytest.fixture
@@ -131,3 +134,41 @@ def test_upstream_status_guesses():
     assert upstream_status(gw_auth.UpstreamError("x", 403)) == 403
     assert upstream_status(RuntimeError("quota exhausted")) == 429
     assert upstream_status(RuntimeError("boom")) == 500
+
+
+@pytest.mark.asyncio
+async def test_mid_stream_error_emits_error_chunk_then_done(manager):
+    stub = StubClient(stream_chunks=['data: {"a": 1}\n\n'], mid_stream_error=gw_auth.UpstreamError("quota", 429))
+    tc = await _client(manager, stub)
+    try:
+        r = await tc.post("/v1/chat/completions", json={"model": "m", "messages": [], "stream": True})
+        assert r.status == 200
+        text = await r.text()
+    finally:
+        await tc.close()
+    events = [e for e in text.split("\n\n") if e]
+    assert events[0] == 'data: {"a": 1}'
+    err = json.loads(events[1].removeprefix("data: "))["error"]
+    assert err["code"] == 429 and err["type"] == "rate_limit_error"
+    assert events[-1] == "data: [DONE]"
+
+
+@pytest.mark.asyncio
+async def test_large_body_accepted_up_to_32mb(manager):
+    stub = StubClient(result={"id": "big", "choices": []})
+    tc = await _client(manager, stub)
+    try:
+        body = {"model": "m", "messages": [{"role": "user", "content": "x" * (2 * 1024 * 1024)}]}
+        r = await tc.post("/v1/chat/completions", json=body)
+        assert r.status == 200
+    finally:
+        await tc.close()
+
+
+def test_public_host_warning(caplog):
+    assert is_loopback_host("127.0.0.1") and is_loopback_host("localhost") and not is_loopback_host("0.0.0.0")
+    with caplog.at_level("WARNING", logger="gateway.server"):
+        warn_if_public_host("127.0.0.1")
+        assert "loopback" not in caplog.text
+        warn_if_public_host("0.0.0.0")
+    assert "không phải loopback" in caplog.text

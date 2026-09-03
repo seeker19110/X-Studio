@@ -1,8 +1,13 @@
-.PHONY: test lint fix login start stop status setup
+.PHONY: test cov lint types fix login start stop status setup
 test:
 	uv run pytest -q
+cov:
+	uv run pytest -q --cov
+types:
+	uv run mypy src/gateway --ignore-missing-imports
 lint:
 	uv run ruff check src tests
+	uv run mypy src/gateway --ignore-missing-imports
 fix:
 	uv run ruff check --fix src tests
 login:      # thêm một tài khoản Google vào pool (chạy nhiều lần để thêm nhiều tài khoản)
