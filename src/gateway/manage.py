@@ -2,7 +2,7 @@
 """CLI quản lý gateway.
 
   python -m gateway login [--no-browser]   thêm một tài khoản Google vào pool (chạy nhiều lần = nhiều tài khoản)
-  python -m gateway start [--foreground]   chạy daemon (mặc định 127.0.0.1:8100)
+  python -m gateway start [--foreground]   chạy daemon (mặc định 127.0.0.1:1123)
   python -m gateway stop
   python -m gateway status                 trạng thái server + từng tài khoản trong pool
   python -m gateway reset [EMAIL]          xóa cooldown (một hoặc mọi tài khoản)

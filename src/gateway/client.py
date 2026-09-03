@@ -750,12 +750,19 @@ class AntigravityClient:
         url = f"{CODE_ASSIST_BASE_URL}:generateContent"
         last_response: httpx.Response | None = None
 
-        for creds in candidates:
+        for index, creds in enumerate(candidates, start=1):
             envelope = build_code_assist_request(openai_payload, creds.project_id)
             headers = build_antigravity_headers(creds.access_token, creds.project_id)
             resp = await self._http.post(url, json=envelope, headers=headers)
             last_response = resp
             if resp.status_code == 200:
+                # Lượt nào đi tài khoản nào — thứ duy nhất cho phép người vận hành KIỂM CHỨNG việc
+                # xoay vòng thay vì phải tin. Không có dòng này thì mọi lượt thành công trông giống
+                # hệt nhau, kể cả khi pool đã kẹt vào đúng một tài khoản.
+                # `lần thử i/n` là vị trí trong danh sách ứng viên CỦA LƯỢT NÀY, không phải số thứ tự
+                # cố định của tài khoản: pool đã sắp lại theo LRU nên lượt trơn tru luôn là 1/n, và
+                # 2/n trở lên nghĩa là đã phải bỏ qua tài khoản nào đó. Danh tính nằm ở email.
+                logger.info("%s → %s (lần thử %d/%d)", requested_model, creds.email, index, len(candidates))
                 return translate_gemini_to_openai_response(resp.json(), requested_model)
 
             account_level_failure = resp.status_code < 500 and _should_fail_over(resp)
@@ -766,8 +773,12 @@ class AntigravityClient:
                     sibling_resp = await self._http.post(url, json=dict(envelope, model=sibling), headers=headers)
                     last_response = sibling_resp
                     if sibling_resp.status_code == 200:
+                        logger.info("%s → %s qua model anh em %s (lần thử %d/%d)",
+                                    requested_model, creds.email, sibling, index, len(candidates))
                         return translate_gemini_to_openai_response(sibling_resp.json(), requested_model)
                     if _should_fail_over(sibling_resp):
+                        logger.warning("tài khoản %s trả %s cả ở model anh em, cho nghỉ và xoay",
+                                       creds.email, sibling_resp.status_code)
                         self.auth_manager.mark_account_unavailable(
                             creds, sibling_resp.status_code, sibling_resp.headers.get("Retry-After")
                         )
@@ -775,6 +786,8 @@ class AntigravityClient:
                     raise UpstreamError(
                         _upstream_error_message(sibling_resp.status_code, sibling_resp.text), sibling_resp.status_code
                     )
+                logger.warning("tài khoản %s trả %s, cho nghỉ và xoay sang tài khoản kế",
+                               creds.email, resp.status_code)
                 self.auth_manager.mark_account_unavailable(creds, resp.status_code, resp.headers.get("Retry-After"))
                 continue
 
@@ -782,12 +795,16 @@ class AntigravityClient:
                 # Lỗi 4xx không liên quan tài khoản (payload hỏng...): tài khoản khác không cứu được.
                 raise UpstreamError(_upstream_error_message(resp.status_code, resp.text), resp.status_code)
 
-            logger.warning("Endpoint chính trả %s, thử endpoint dự phòng", resp.status_code)
+            logger.warning("Endpoint chính trả %s cho %s, thử endpoint dự phòng", resp.status_code, creds.email)
             resp = await self._http.post(f"{FALLBACK_CODE_ASSIST_BASE_URL}:generateContent", json=envelope, headers=headers)
             last_response = resp
             if resp.status_code == 200:
+                logger.info("%s → %s qua endpoint dự phòng (lần thử %d/%d)",
+                            requested_model, creds.email, index, len(candidates))
                 return translate_gemini_to_openai_response(resp.json(), requested_model)
             if _should_fail_over(resp):
+                logger.warning("tài khoản %s trả %s ở cả endpoint dự phòng, cho nghỉ và xoay",
+                               creds.email, resp.status_code)
                 self.auth_manager.mark_account_unavailable(creds, resp.status_code, resp.headers.get("Retry-After"))
                 continue
             raise UpstreamError(_upstream_error_message(resp.status_code, resp.text), resp.status_code)
@@ -809,7 +826,7 @@ class AntigravityClient:
         stream_options = openai_payload.get("stream_options") or {}
         include_usage = isinstance(stream_options, dict) and bool(stream_options.get("include_usage"))
 
-        for creds in candidates:
+        for index, creds in enumerate(candidates, start=1):
             envelope = build_code_assist_request(openai_payload, creds.project_id)
             headers = build_antigravity_headers(creds.access_token, creds.project_id)
             headers["Accept"] = "text/event-stream"
@@ -825,12 +842,17 @@ class AntigravityClient:
                         logger.warning("Stream trả %s cho %s, xoay tài khoản", response.status_code, creds.email)
                         continue
                     if _should_fail_over(response):
+                        logger.warning("tài khoản %s trả %s khi mở stream, cho nghỉ và xoay",
+                                       creds.email, response.status_code)
                         self.auth_manager.mark_account_unavailable(
                             creds, response.status_code, response.headers.get("Retry-After")
                         )
                         continue
                     raise UpstreamError(last_error, response.status_code)
 
+                # Xem chú thích ở create_chat_completion: đây là chỗ duy nhất kiểm chứng được việc xoay vòng.
+                logger.info("%s → %s (lần thử %d/%d, stream)",
+                            requested_model, creds.email, index, len(candidates))
                 yield "data: " + json.dumps(
                     {
                         "id": stream_id,

@@ -96,7 +96,7 @@ def test_models_lists_and_accepts_valid_llm_yaml(tmp_path, capsys):
         "  - {name: claude-sub, provider: claude-code, models: {strong: claude-opus-5}}\n"
         "  - name: antigravity\n"
         "    provider: openai\n"
-        "    base_url: http://127.0.0.1:8100/v1\n"
+        "    base_url: http://127.0.0.1:1123/v1\n"
         "    models: {strong: claude-sonnet-4-6, standard: gemini-3.7-flash, light: gemini-3.7-flash-low}\n",
         encoding="utf-8",
     )
@@ -114,7 +114,7 @@ def test_models_flags_unknown_model_in_llm_yaml(tmp_path, capsys):
         "backends:\n"
         "  - name: antigravity\n"
         "    provider: openai\n"
-        "    base_url: http://127.0.0.1:8100/v1\n"
+        "    base_url: http://127.0.0.1:1123/v1\n"
         "    models: {strong: gemini-9-ultra, standard: gemini-3.7-flash}\n",
         encoding="utf-8",
     )

@@ -341,3 +341,56 @@ async def test_upstream_error_non_json_body_is_capped_at_500_chars():
         await client.close()
     msg = str(exc.value).removeprefix("Code Assist lỗi HTTP 400: ")
     assert len(msg) == 500 and msg.endswith("…")
+
+
+# --- log: lượt nào đi tài khoản nào -----------------------------------------
+#
+# Đây là thứ duy nhất cho phép người vận hành KIỂM CHỨNG việc xoay vòng thay vì phải tin vào
+# test. Thiếu nó thì mọi lượt thành công trông giống hệt nhau, kể cả khi pool đã kẹt vào đúng
+# một tài khoản — nên các test dưới đây coi dòng log là hành vi, không phải trang trí.
+
+@pytest.mark.asyncio
+async def test_log_ghi_tai_khoan_da_phuc_vu(caplog):
+    auth = FakeAuthManager()
+    client = _client(auth, lambda request: _ok("xong"))
+    with caplog.at_level("INFO", logger="gateway.client"):
+        await client.create_chat_completion(_payload())
+    dong = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
+    assert any("a@example.com" in d and "gemini-3.7-flash" in d for d in dong), dong
+    assert any("lần thử 1/2" in d for d in dong), dong   # đi thẳng, không phải bỏ qua ai
+
+
+@pytest.mark.asyncio
+async def test_log_ghi_ca_tai_khoan_bi_bo_qua_va_tai_khoan_thay_the(caplog):
+    """Tài khoản đầu hết quota: log phải nói RÕ nó bị cho nghỉ, và lượt đó rơi sang tài khoản nào."""
+    auth = FakeAuthManager()
+
+    def handler(request):
+        if _token(request) == "token-a":
+            return httpx.Response(429, json={"error": {"message": "RESOURCE_EXHAUSTED"}})
+        return _ok("xong")
+
+    client = _client(auth, handler)
+    with caplog.at_level("INFO", logger="gateway.client"):
+        await client.create_chat_completion({"model": "gemini-3.8-flash-low",
+                                             "messages": [{"role": "user", "content": "hi"}]})
+    dong = [r.getMessage() for r in caplog.records]
+    assert any("a@example.com" in d and "429" in d for d in dong), dong      # ai bị cho nghỉ
+    assert any("b@example.com" in d and "lần thử 2/2" in d for d in dong), dong  # ai gánh lượt đó
+
+
+@pytest.mark.asyncio
+async def test_log_stream_cung_ghi_tai_khoan(caplog):
+    auth = FakeAuthManager()
+
+    def handler(request):
+        return httpx.Response(200, text='data: {"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}}\n\n',
+                              headers={"Content-Type": "text/event-stream"})
+
+    client = _client(auth, handler)
+    with caplog.at_level("INFO", logger="gateway.client"):
+        gen = client.stream_chat_completion(_payload(stream=True))
+        await gen.__anext__()
+        await gen.aclose()
+    dong = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
+    assert any("a@example.com" in d and "stream" in d for d in dong), dong

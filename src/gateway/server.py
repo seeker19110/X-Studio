@@ -32,7 +32,7 @@ from gateway.client import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = os.getenv("GATEWAY_HOST", "127.0.0.1")
-DEFAULT_PORT = int(os.getenv("GATEWAY_PORT", "8100"))
+DEFAULT_PORT = int(os.getenv("GATEWAY_PORT", "1123"))
 _DUMMY_BEARERS = {"dummy", "none", "token", "default", "antigravity", "gateway-local", "sk-gateway"}
 
 

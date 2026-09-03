@@ -1,6 +1,6 @@
 # gateway — proxy xoay vòng tài khoản Google Antigravity
 
-Daemon cục bộ (mặc định `http://127.0.0.1:8100/v1`) nhận request theo chuẩn **OpenAI Chat Completions**,
+Daemon cục bộ (mặc định `http://127.0.0.1:1123/v1`) nhận request theo chuẩn **OpenAI Chat Completions**,
 dịch sang Google Code Assist (Gemini / Claude qua đăng nhập Antigravity OAuth) và tự động xoay vòng
 nhiều tài khoản Google. Mọi công ty trong X-Agents dùng provider `openai` với `base_url` trỏ vào gateway,
 không đổi code hay prompt (đúng nguyên tắc trung lập provider của `software-company/src/company/llm.py`).
@@ -34,32 +34,58 @@ Stream chỉ xoay tài khoản **trước** chunk đầu tiên; `finish_reason` 
 cd gateway
 uv sync
 make login        # mở trình duyệt, đăng nhập Google; chạy lại để thêm tài khoản thứ 2, 3...   (login --no-browser: chỉ in URL, không mở trình duyệt)
-make start        # daemon tại 127.0.0.1:8100   (start --foreground/-f chạy tiền cảnh; --host/--port)
+make start        # daemon tại 127.0.0.1:1123   (start --foreground/-f chạy tiền cảnh; --host/--port)
 make status       # server + từng tài khoản: sẵn sàng / cooldown / hạn token; exit 1 nếu server tắt hoặc 0 tài khoản sẵn sàng
 make models       # model gateway hỗ trợ + đối chiếu llm.yaml (thêm --probe để gọi thử upstream)
 make setup        # ghi ../software-company/llm.yaml: provider openai, base_url trỏ gateway (--target, --strong, --standard)
 make fix          # ruff --fix
 ```
 
-### Cổng 8100 đã có người giữ
+### Lượt nào đi tài khoản nào
 
-Bridge của [Plugin-For-Hermes](https://github.com/donghanhcungban/Plugin-For-Hermes) cũng nghe ở `127.0.0.1:8100`.
-Xem ai đang giữ cổng:
+Mỗi lượt gọi thành công ghi một dòng vào log, kèm tài khoản đã phục vụ và vị trí của nó trong pool:
+
+```
+INFO gateway.client: gemini-3.8-flash-low → a@example.com (lần thử 1/3)
+WARNING gateway.client: tài khoản a@example.com trả 429, cho nghỉ và xoay sang tài khoản kế
+INFO gateway.client: gemini-3.8-flash-low → b@example.com (lần thử 2/3)
+```
+
+Đây là chỗ duy nhất **kiểm chứng** được việc xoay vòng thay vì phải tin: thiếu nó thì mọi lượt thành công
+trông giống hệt nhau, kể cả khi pool đã kẹt vào đúng một tài khoản.
+
+`lần thử i/n` là vị trí trong danh sách ứng viên **của lượt đó**, không phải số thứ tự cố định của tài khoản:
+pool sắp lại theo LRU trước mỗi lượt, nên lượt trơn tru luôn là `1/n`, còn `2/n` trở lên nghĩa là đã phải bỏ
+qua tài khoản nào đó. Danh tính nằm ở email, không nằm ở con số. Log nằm ở
+`$XAGENTS_HOME/logs/gateway.log` (mặc định `~/.x-agents/logs/gateway.log`).
+
+Log có chứa **địa chỉ email** của các tài khoản trong pool — cũng như `status` và `/auth/status` vốn đã in ra.
+Đừng dán nguyên log vào issue công khai.
+
+### Cổng đã có người giữ
+
+Cổng mặc định là `1123`, chọn riêng để **không đụng** bridge của
+[Plugin-For-Hermes](https://github.com/donghanhcungban/Plugin-For-Hermes) — bridge đó nghe ở `127.0.0.1:8100`,
+và trước đây gateway cũng lấy 8100 nên hai bên tranh nhau cổng.
+
+Triệu chứng khi bị tranh cổng rất dễ đọc nhầm thành "gateway hỏng": `start` chờ hết 10 giây rồi báo
+*healthcheck quá hạn*, `status` báo **OFFLINE**, trong khi `curl` vào cổng đó vẫn trả `200`. Nghĩa là có
+người khác đang giữ cổng, không phải gateway lỗi. Xem ai đang giữ:
 
 ```bash
-curl -s http://127.0.0.1:8100/health     # gateway: {"service":"gateway"} — bridge Hermes: {"bridge":"antigravity"}
+curl -s http://127.0.0.1:1123/health     # gateway: {"service":"gateway"} — bridge Hermes: {"bridge":"antigravity"}
 ```
 
 Hai proxy chạy **song song** được, chỉ cần khác cổng:
 
 ```bash
-python -m gateway start --port 8101
-python -m gateway status --port 8101              # xác nhận ONLINE và số tài khoản sẵn sàng
-python -m gateway models --port 8101              # đối chiếu llm.yaml với ĐÚNG cổng đó
+python -m gateway start --port 1124
+python -m gateway status --port 1124              # xác nhận ONLINE và số tài khoản sẵn sàng
+python -m gateway models --port 1124              # đối chiếu llm.yaml với ĐÚNG cổng đó
 ```
 
 Rồi trỏ `base_url` của các công ty vào cổng mới — sửa tay trong `llm.yaml`, hoặc qua trang cài đặt của
-`console`. Lưu ý `python -m gateway models` mặc định đối chiếu backend trỏ vào `127.0.0.1:8100`; chạy sai
+`console`. Lưu ý `python -m gateway models` mặc định đối chiếu backend trỏ vào `127.0.0.1:1123`; chạy sai
 cổng thì nó báo "không có backend nào trỏ vào gateway" chứ không phải cấu hình sai.
 
 Hai proxy đọc **file token riêng** (`$XAGENTS_HOME/auth/antigravity_tokens.json` với gateway, `~/.hermes/auth/…`
@@ -89,7 +115,7 @@ Hoặc chỉ dùng biến môi trường, không cần `llm.yaml`:
 
 ```
 COMPANY_LLM_PROVIDER=openai
-COMPANY_LLM_BASE_URL=http://127.0.0.1:8100/v1
+COMPANY_LLM_BASE_URL=http://127.0.0.1:1123/v1
 COMPANY_MODEL_STRONG=claude-sonnet-4-6
 COMPANY_MODEL_STANDARD=gemini-3.8-flash-medium
 ```
