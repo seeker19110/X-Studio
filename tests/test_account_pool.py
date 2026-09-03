@@ -226,3 +226,161 @@ def test_home_dir_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv(gw_auth.ENV_HOME, str(tmp_path / "custom"))
     assert gw_auth.get_home_dir() == tmp_path / "custom"
     assert gw_auth.default_token_file() == tmp_path / "custom" / "auth" / "antigravity_tokens.json"
+
+
+def test_home_dir_defaults_to_user_home_without_env(monkeypatch, tmp_path):
+    monkeypatch.delenv(gw_auth.ENV_HOME, raising=False)
+    monkeypatch.setattr(gw_auth.Path, "home", classmethod(lambda cls: tmp_path))
+    assert gw_auth.get_home_dir() == tmp_path / ".x-agents"
+
+
+def test_gateway_dir_creates_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv(gw_auth.ENV_HOME, str(tmp_path / "custom"))
+    d = gw_auth.get_gateway_dir()
+    assert d == tmp_path / "custom" / "gateway"
+    assert d.is_dir()
+
+
+# ---------- AntigravityCredentials properties ----------
+
+
+def test_is_expired_true_without_access_token():
+    c = gw_auth.AntigravityCredentials(access_token="")
+    assert c.is_expired is True
+
+
+def test_is_cooling_down_reflects_unavailable_until():
+    import time
+
+    c = _creds("a")
+    assert c.is_cooling_down is False
+    c.unavailable_until = time.time() + 60
+    assert c.is_cooling_down is True
+
+
+# ---------- _read_file lỗi ----------
+
+
+def test_read_file_with_corrupt_json_returns_empty(manager, caplog):
+    manager.token_file.parent.mkdir(parents=True, exist_ok=True)
+    manager.token_file.write_text("{not valid json", encoding="utf-8")
+    assert manager.load_all_stored_credentials() == []
+    assert "Không đọc được" in caplog.text
+
+
+# ---------- load_stored_credentials ----------
+
+
+def test_load_stored_credentials_empty_pool_returns_none(manager):
+    assert manager.load_stored_credentials() is None
+
+
+def test_load_stored_credentials_finds_matching_email(manager):
+    manager.save_credentials(_creds("a"))
+    manager.save_credentials(_creds("b"))
+    manager.save_credentials(_creds("c"))
+    found = manager.load_stored_credentials(email="B@Example.com")
+    assert found is not None and found.email == "b@example.com"
+
+
+def test_load_stored_credentials_no_email_returns_first(manager):
+    manager.save_credentials(_creds("a"))
+    found = manager.load_stored_credentials()
+    assert found is not None and found.email == "a@example.com"
+
+
+def test_load_stored_credentials_unknown_email_falls_back_to_first(manager):
+    manager.save_credentials(_creds("a"))
+    found = manager.load_stored_credentials(email="nobody@example.com")
+    assert found is not None and found.email == "a@example.com"
+
+
+# ---------- _atomic_write ----------
+
+
+@pytest.mark.skipif(os.name == "nt", reason="os.chmod POSIX semantics")
+def test_atomic_write_chmods_tmp_file_on_posix(manager):
+    manager.save_credentials(_creds("a"))
+    assert stat.S_IMODE(manager.token_file.stat().st_mode) == 0o600
+
+
+def test_atomic_write_takes_posix_chmod_branch(manager, monkeypatch):
+    # Forcer nhánh `if os.name != "nt": os.chmod(...)` để chạy cả trên Windows CI —
+    # os.chmod vẫn hoạt động trên Windows (chỉ giới hạn hơn), không lỗi.
+    monkeypatch.setattr(gw_auth.os, "name", "posix")
+    manager.save_credentials(_creds("a"))
+    assert manager.token_file.is_file()
+
+
+def test_atomic_write_cleans_up_tmp_file_and_reraises_on_failure(manager, monkeypatch):
+    def boom(*a, **kw):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gw_auth.json, "dump", boom)
+    with pytest.raises(OSError, match="disk full"):
+        manager._atomic_write(manager.token_file, {"a": 1})
+    assert not manager.token_file.with_suffix(".tmp").exists()
+    assert not manager.token_file.exists()
+
+
+# ---------- save_credentials ----------
+
+
+def test_save_credentials_migrates_legacy_flat_file(manager):
+    manager.token_file.parent.mkdir(parents=True, exist_ok=True)
+    manager.token_file.write_text(json.dumps(_creds("old").to_dict()), encoding="utf-8")
+
+    manager.save_credentials(_creds("new"))
+
+    stored = json.loads(manager.token_file.read_text(encoding="utf-8"))["accounts"]
+    assert set(stored) == {"old@example.com", "new@example.com"}
+
+
+def test_save_credentials_logs_error_on_write_failure(manager, monkeypatch, caplog):
+    monkeypatch.setattr(
+        manager, "_atomic_write", lambda *a, **kw: (_ for _ in ()).throw(OSError("no space"))
+    )
+    manager.save_credentials(_creds("a"))
+    assert "Không ghi được" in caplog.text
+
+
+# ---------- _update_account_fields ----------
+
+
+def test_update_account_fields_falls_back_to_save_when_no_existing_file(manager):
+    c = _creds("a")
+    manager.mark_account_unavailable(c, 429, retry_after="10")
+    stored = json.loads(manager.token_file.read_text(encoding="utf-8"))["accounts"]["a@example.com"]
+    assert stored["last_failure_status"] == 429
+
+
+def test_update_account_fields_logs_error_on_write_failure(manager, monkeypatch, caplog):
+    c = _creds("a")
+    manager.save_credentials(c)
+    monkeypatch.setattr(
+        manager, "_atomic_write", lambda *a, **kw: (_ for _ in ()).throw(OSError("no space"))
+    )
+    manager.mark_account_unavailable(c, 429)
+    assert "Không ghi được" in caplog.text
+
+
+# ---------- clear_credentials ----------
+
+
+def test_clear_credentials_removes_file(manager):
+    manager.save_credentials(_creds("a"))
+    assert manager.clear_credentials() is True
+    assert not manager.token_file.exists()
+
+
+def test_clear_credentials_false_when_no_file(manager):
+    assert manager.clear_credentials() is False
+
+
+def test_clear_credentials_logs_warning_on_failure(manager, monkeypatch, caplog):
+    manager.save_credentials(_creds("a"))
+    monkeypatch.setattr(
+        type(manager.token_file), "unlink", lambda self, *a, **kw: (_ for _ in ()).throw(OSError("locked"))
+    )
+    assert manager.clear_credentials() is False
+    assert "Không xóa được" in caplog.text
