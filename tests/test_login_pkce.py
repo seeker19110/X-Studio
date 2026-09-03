@@ -243,7 +243,7 @@ def test_login_pkce_state_mismatch_raises(manager, monkeypatch):
     def run():
         try:
             manager.login_pkce(port=port, open_browser=True, timeout_seconds=10.0)
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             result["error"] = exc
 
     t = threading.Thread(target=run)
@@ -269,7 +269,7 @@ def test_login_pkce_google_error_param_raises(manager, monkeypatch):
     def run():
         try:
             manager.login_pkce(port=port, open_browser=True, timeout_seconds=10.0)
-        except BaseException as exc:  # noqa: BLE001
+        except BaseException as exc:
             result["error"] = exc
 
     t = threading.Thread(target=run)

@@ -12,7 +12,6 @@ không kiểm tra lại `python -m pytest --cov=gateway --cov-report=term-missin
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import types
@@ -21,7 +20,6 @@ import pytest
 
 from gateway import auth as gw_auth
 from gateway import manage
-
 
 # ---------- _pid_is_gateway ----------
 

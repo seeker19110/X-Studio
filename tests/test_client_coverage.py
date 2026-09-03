@@ -13,7 +13,6 @@ from gateway import auth as gw_auth
 from gateway import client as gw
 from gateway.client import AntigravityClient
 
-
 # ---------- _coerce_content_to_text / _coerce_content_to_parts ----------
 
 
