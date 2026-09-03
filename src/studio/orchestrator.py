@@ -363,9 +363,14 @@ class Orchestrator:
             for src in sorted(missing):
                 key = f"review:{vid}:{src}:{self.desk.review_since[vid].isoformat()}"
                 if fin is None or key in self.once: continue
+                route = next(
+                    (r for r in ROUTES if r.agent == REVIEW_AGENT.get(src) and r.topic_in == "media-assets"), None
+                )
+                if route is None:
+                    self._audit("review.reassign_skipped", {"video_id": vid, "source": src}, video_id=vid)
+                    continue
                 self._remember(key); self._audit("review.reassign", {"video_id": vid, "source": src}, video_id=vid)
                 res = StepResult(fin.event_id, fin.topic, fin.key)
-                route = next(r for r in ROUTES if r.agent == REVIEW_AGENT[src] and r.topic_in == "media-assets")
                 self._call(route, fin, res); results.append(res)
         active = {vid for vid, st in self.desk.state.items() if st in ACTIVE_STATES}
         self.supervisor.check_timeouts(now, active=active)

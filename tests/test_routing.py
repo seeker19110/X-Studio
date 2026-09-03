@@ -238,3 +238,10 @@ def test_claude_gateway_profile_loads_and_routes_as_documented(monkeypatch):
     assert [b.name for b in client.order("light", needs_tools=True)] == ["antigravity", "claude-1"]
     cc = client.backends[0].client
     assert cc.cfg.model_for("strong") == "claude-opus-5" and cc.cfg.model_for("light") == "claude-haiku-4-5"
+
+
+def test_complete_raises_when_no_backend_supports_tools_for_tier():
+    a = _Client("a")
+    r = _router(Backend("a", a, supports_tools=False))
+    with pytest.raises(LLMError, match="không backend nào hỗ trợ tool-use"):
+        r.complete(system="s", user="u", schema={}, model_tier="standard", tools=[_TOOL])

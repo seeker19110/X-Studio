@@ -96,6 +96,126 @@ def test_web_fetch_pretty_prints_json():
     assert '"a": [' in wt.web_fetch(url)
 
 
+def test_web_fetch_malformed_json_content_type_falls_back_to_raw_text():
+    url = "https://api.example.org/bad-json"
+    wt = WebTools(fetcher=fake_fetcher({url: (200, "application/json", b"khong phai json {")}), search_url="")
+    assert "khong phai json {" in wt.web_fetch(url)
+
+
+def test_toolbox_call_type_error_and_value_error_become_lỗi_tham_số():
+    tb = ToolBox()
+    tb.add(ToolSpec(name="chia", description="d", parameters={"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]}),
+          lambda x: str(1 / int(x)))
+    out = tb.call(ToolCall("1", "chia", {"x": "khong-phai-so"}))
+    assert out.startswith("lỗi tham số:") and tb.calls[-1]["ok"] is False
+
+    tb2 = ToolBox()
+
+    def raises_type_error(x): raise TypeError("thiếu đối số bắt buộc")
+    tb2.add(ToolSpec(name="loi", description="d", parameters={"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]}),
+           raises_type_error)
+    out2 = tb2.call(ToolCall("1", "loi", {"x": "a"}))
+    assert out2.startswith("lỗi tham số:")
+
+
+def test_resolve_returns_empty_on_dns_failure_and_blocks_host(monkeypatch):
+    import socket
+
+    from studio.tools import _blocked_host, _resolve
+
+    def raise_gaierror(host, *a, **k): raise socket.gaierror("khong phan giai duoc")
+    monkeypatch.setattr("studio.tools.socket.getaddrinfo", raise_gaierror)
+    assert _resolve("khong-ton-tai.invalid") == []
+    assert _blocked_host("khong-ton-tai.invalid") is True
+
+
+def test_default_fetcher_http_error_without_location_returns_status_and_network_error_raises(monkeypatch):
+    import io
+    import typing
+    import urllib.error
+
+    from studio.tools import default_fetcher
+
+    class Resp(io.BytesIO):
+        status = 200
+        headers: typing.ClassVar[dict[str, str]] = {"Content-Type": "text/plain"}
+
+    def opener_403(ip, req):
+        raise urllib.error.HTTPError(req.full_url, 403, "forbidden", None, None)  # không có Location
+
+    assert default_fetcher("https://example.org/x", opener_403) == (403, "", "https://example.org/x", b"")
+
+    def opener_network_error(ip, req):
+        raise urllib.error.URLError("mat mang that su")
+
+    with pytest.raises(ToolError, match="không lấy được"):
+        default_fetcher("https://example.org/y", opener_network_error)
+
+
+def test_open_pinned_and_pinned_connections_real_localhost_roundtrip(monkeypatch):
+    """`_open_pinned`/`_PinnedHTTPConnection` chưa test qua kết nối TCP thật (chỉ inject `opener` ở nơi khác) —
+    dựng server HTTP thật trên loopback rồi ghim đúng 127.0.0.1 để phủ code kết nối/mở opener thật, không cần DNS/mạng ngoài."""
+    import http.server
+    import threading
+
+    from studio.tools import _open_pinned
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.send_header("Content-Type", "text/plain"); self.end_headers()
+            self.wfile.write(b"pong")
+        def log_message(self, *a): pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True); t.start()
+    try:
+        import urllib.request
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/", headers={"User-Agent": "x"})
+        with _open_pinned("127.0.0.1", req) as r:
+            assert r.status == 200 and r.read() == b"pong"
+    finally:
+        srv.shutdown(); srv.server_close()
+
+
+def test_pinned_https_connection_connects_and_wraps_tls(monkeypatch):
+    from studio.tools import _PinnedHTTPSConnection
+
+    dialed: list[tuple[str, int]] = []
+    wrapped: dict[str, str] = {}
+
+    import ssl as ssl_mod
+
+    class FakeCtx(ssl_mod.SSLContext):
+        def wrap_socket(self, sock, server_hostname=None, **kw):
+            wrapped["server_hostname"] = server_hostname
+            return sock
+
+    monkeypatch.setattr("studio.tools.socket.create_connection", lambda addr, *a, **k: dialed.append(addr) or object())
+    c = _PinnedHTTPSConnection("a.example.org", 443, pinned_ip="93.184.216.34", context=FakeCtx(ssl_mod.PROTOCOL_TLS_CLIENT))
+    c.connect()
+    assert dialed == [("93.184.216.34", 443)] and wrapped["server_hostname"] == "a.example.org"
+
+
+def test_pinned_handler_https_open_uses_pinned_connection(monkeypatch):
+    """`_PinnedHandler.https_open` (dùng bởi `_open_pinned` khi URL là https://) chọn `_PinnedHTTPSConnection` ghim IP;
+    dùng server HTTP thật (không TLS) ở đây chỉ để phủ nhánh code chọn connection — kết nối TLS thật đã phủ ở test trên."""
+    from studio.tools import _PinnedHandler
+
+    h = _PinnedHandler("93.184.216.34")
+    calls = {}
+
+    def fake_do_open(conn_factory, req):
+        calls["factory"] = conn_factory
+        return "ok"
+
+    monkeypatch.setattr(h, "do_open", fake_do_open)
+    import urllib.request
+    req = urllib.request.Request("https://a.example.org/x")
+    assert h.https_open(req) == "ok"
+    assert calls["factory"].keywords["pinned_ip"] == "93.184.216.34"
+
+
 def test_html_to_text_keeps_block_structure():
     t = html_to_text("<div>Mot</div><ul><li>hai</li><li>ba</li></ul>&nbsp;<b>bon</b>")
     assert t.split("\n\n")[0] == "Mot" and "hai\nba" in t and "bon" in t
