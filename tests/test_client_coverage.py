@@ -535,3 +535,21 @@ async def test_stream_unparseable_sse_event_is_skipped(caplog):
         await client.close()
     assert any("ok" in c for c in chunks)
     assert any("không parse được" in r.getMessage() for r in caplog.records)
+
+
+# ---------- discovery_is_stale ----------
+
+
+def test_discovery_is_stale_empty_then_fresh_then_expired(monkeypatch):
+    """Chưa dò -> stale; vừa dò -> tươi; quá TTL -> stale lại. Test trực tiếp vì các test server
+    monkeypatch hàm này (tránh `asyncio.to_thread` làm coverage mất trace), nên thân hàm không
+    còn được chạm gián tiếp."""
+    monkeypatch.setattr(gw, "_discovered", {})
+    monkeypatch.setattr(gw, "_discovered_at", 0.0)
+    assert gw.discovery_is_stale() is True
+
+    gw.set_discovered_models([{"id": "m1", "name": "M1"}])
+    assert gw.discovery_is_stale() is False
+
+    monkeypatch.setattr(gw.time, "time", lambda: gw._discovered_at + gw.MODEL_CATALOG_TTL_S + 1)
+    assert gw.discovery_is_stale() is True

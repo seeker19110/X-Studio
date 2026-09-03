@@ -9,6 +9,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway import auth as gw_auth
 from gateway import client as gw_client
+from gateway import server as gw_server
 from gateway.server import (
     GatewayServer,
     _error_type,
@@ -46,6 +47,16 @@ class StubClient:
 @pytest.fixture
 def manager(tmp_path):
     return gw_auth.AntigravityAuthManager(auth_file=tmp_path / "tokens.json")
+
+
+@pytest.fixture(autouse=True)
+def _no_discovery(monkeypatch):
+    """coverage.py mất trace của frame coroutine sau khi resume từ future do executor thread hoàn
+    thành (`_refresh_catalog` -> `asyncio.to_thread`), khiến mọi dòng sau đó trong handler không
+    được đếm dù test PASS. Ép `discovery_is_stale()` -> False để không chạm to_thread; không test
+    nào ở file này cần dò model thật (test_server_coverage.py có test riêng cho `_refresh_catalog`).
+    Chi tiết nguyên nhân: xem ghi chú đầu phần stream trong test_server_coverage.py."""
+    monkeypatch.setattr(gw_server, "discovery_is_stale", lambda: False)
 
 
 async def _client(manager, stub) -> TestClient:
