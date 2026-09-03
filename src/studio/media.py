@@ -246,7 +246,12 @@ class FFmpegAssembler:
         self.binary = found
 
     def _run(self, args: list[str]) -> None:
-        r = subprocess.run([self.binary, "-y", "-loglevel", "error", *args], capture_output=True, text=True)
+        # encoding cố định: `text=True` trần sẽ giải mã theo bảng mã hệ thống, mà trên Windows đó là
+        # cp1252 — thông báo lỗi của ffmpeg có đường dẫn tiếng Việt sẽ thành ký tự rác, hoặc ném
+        # UnicodeDecodeError che mất chính lỗi cần đọc. `errors="replace"` để lỗi ffmpeg luôn tới
+        # được người dùng, kể cả khi ffmpeg trả ra byte không hợp lệ.
+        r = subprocess.run([self.binary, "-y", "-loglevel", "error", *args], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
         if r.returncode != 0:
             raise MediaError(f"ffmpeg lỗi: {r.stderr[-400:]}")
 
