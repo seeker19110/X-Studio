@@ -21,7 +21,13 @@ from pathlib import Path
 from aiohttp import web
 
 from gateway.auth import AntigravityAuthManager, get_gateway_dir, get_home_dir
-from gateway.client import ANTIGRAVITY_SUPPORTED_MODELS, AntigravityClient
+from gateway.client import (
+    AntigravityClient,
+    discovery_is_stale,
+    fetch_available_models,
+    serving_models,
+    set_discovered_models,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,15 +57,29 @@ def upstream_status(exc: Exception) -> int:
     return 500
 
 
+def _error_type(status: int) -> str:
+    """Phân loại theo chuẩn OpenAI để client phía trên xử lý đúng: 400 (model lạ, payload hỏng) là lỗi
+    cấu hình, không phải lỗi tạm thời — không được retry hay xoay tài khoản."""
+    if status == 429:
+        return "rate_limit_error"
+    if status in {401, 403}:
+        return "authentication_error"
+    if status == 404:
+        return "not_found_error"
+    if 400 <= status < 500:
+        return "invalid_request_error"
+    return "api_error"
+
+
 def _error_response(exc: Exception) -> web.Response:
     status = upstream_status(exc)
-    err_type = "rate_limit_error" if status == 429 else "api_error"
+    err_type = _error_type(status)
     return web.json_response({"error": {"message": str(exc), "type": err_type, "code": status}}, status=status)
 
 
 def _stream_error_chunk(exc: Exception) -> str:
     status = upstream_status(exc)
-    err_type = "rate_limit_error" if status == 429 else "api_error"
+    err_type = _error_type(status)
     payload = {"error": {"message": str(exc), "type": err_type, "code": status}}
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\ndata: [DONE]\n\n"
 
@@ -132,14 +152,36 @@ class GatewayServer:
         except Exception as e:
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
+    async def _refresh_catalog(self) -> None:
+        """Hỏi upstream danh sách model (TTL 1 giờ). Hỏng thì im lặng dùng bảng tĩnh —
+        không có model mới còn hơn là gateway chết vì một lần discovery lỗi."""
+        if not discovery_is_stale():
+            return
+        try:
+            candidates = await asyncio.to_thread(self.auth_manager.resolve_credential_candidates)
+        except Exception as e:
+            logger.warning("Không lấy được tài khoản để dò model: %s", e)
+            return
+        for creds in candidates:
+            try:
+                models = await asyncio.to_thread(fetch_available_models, creds.access_token, creds.project_id)
+            except Exception as e:
+                logger.warning("Dò model qua %s thất bại: %s", creds.email or "primary", e)
+                continue
+            if models:
+                set_discovered_models(models)
+                logger.info("Đã dò %d model từ upstream: %s", len(models), ", ".join(m["id"] for m in models))
+                return
+
     async def handle_list_models(self, request: web.Request) -> web.Response:
+        await self._refresh_catalog()
         created = int(time.time())
         return web.json_response(
             {
                 "object": "list",
                 "data": [
                     {"id": m["id"], "object": "model", "created": created, "owned_by": "antigravity", "name": m["name"]}
-                    for m in ANTIGRAVITY_SUPPORTED_MODELS
+                    for m in serving_models()
                 ],
             }
         )
@@ -156,6 +198,7 @@ class GatewayServer:
         if bearer in _DUMMY_BEARERS:
             bearer = ""
 
+        await self._refresh_catalog()
         if not payload.get("stream"):
             try:
                 return web.json_response(await self.client.create_chat_completion(payload, bearer_token=bearer))

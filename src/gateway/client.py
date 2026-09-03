@@ -29,58 +29,61 @@ logger = logging.getLogger(__name__)
 CODE_ASSIST_BASE_URL = "https://daily-cloudcode-pa.googleapis.com/v1internal"
 FALLBACK_CODE_ASSIST_BASE_URL = "https://cloudcode-pa.googleapis.com/v1internal"
 
-ANTIGRAVITY_SUPPORTED_MODELS = [
-    {"id": "gemini-3.7-flash", "name": "Gemini 3.7 Flash High", "code_assist_model": "gemini-3-flash-agent"},
-    {"id": "gemini-3.7-flash-medium", "name": "Gemini 3.7 Flash Medium", "code_assist_model": "gemini-3-flash-agent"},
-    {"id": "gemini-3.7-flash-low", "name": "Gemini 3.7 Flash Low", "code_assist_model": "gemini-3-flash-agent"},
-    {"id": "gemini-3.6-flash", "name": "Gemini 3.6 Flash Medium", "code_assist_model": "gemini-3.6-flash-medium"},
-    {"id": "gemini-3.5-flash", "name": "Gemini 3.5 Flash Medium", "code_assist_model": "gemini-3.5-flash-medium"},
-    {"id": "gemini-3.1-pro", "name": "Gemini 3.1 Pro Low", "code_assist_model": "gemini-3.1-pro-low"},
+# Code Assist ẨN model mới với client khai phiên bản cũ: cùng một tài khoản, `gemini-3.8-flash-medium`
+# trả 404 khi Client-Metadata không có ideVersion/pluginVersion, và trả 200 khi có (id bịa vẫn 404 —
+# đã đối chứng). Khai quá cũ là 3.7/3.8 vô hình mà không có lỗi nào báo.
+ANTIGRAVITY_CLIENT_VERSION = os.getenv("GATEWAY_ANTIGRAVITY_CLIENT_VERSION") or "2026.9.1"
+
+# Danh sách model THẬT do upstream tự khai qua `:fetchAvailableModels` (xem discovery bên dưới).
+# Đây chỉ là lưới an toàn cho lúc chưa dò được (mất mạng, pool trống): đủ để gateway còn phục vụ,
+# cố tình KHÔNG chép lại cả catalog — chép tay là lại lạc hậu như lần trước.
+FALLBACK_MODELS = [
+    {"id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)", "code_assist_model": "gemini-3.8-flash-medium"},
     {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (Thinking)", "code_assist_model": "claude-sonnet-4-6"},
-    {"id": "claude-opus-4-6", "name": "Claude Opus 4.6 (Thinking)", "code_assist_model": "claude-opus-4-6"},
-    {"id": "gpt-oss-120b", "name": "GPT-OSS 120B (Medium)", "code_assist_model": "gpt-oss-120b"},
 ]
 
 MODEL_ALIAS_MAP = {
-    "gemini-3.7-flash": "gemini-3-flash-agent",
-    "gemini-3-flash": "gemini-3-flash-agent",
-    "gemini-3.7-flash-high": "gemini-3-flash-agent",
-    "gemini-3.7-flash-medium": "gemini-3-flash-agent",
-    "gemini-3.7-flash-low": "gemini-3-flash-agent",
-    "gemini-3.7-pro": "gemini-3-flash-agent",
-    "gemini-3-pro": "gemini-3-flash-agent",
-    "gemini-pro": "gemini-3-flash-agent",
-    "gemini-3.6-flash": "gemini-3.6-flash-medium",
-    "gemini-3.6-flash-medium": "gemini-3.6-flash-medium",
-    "gemini-3.5-flash": "gemini-3-flash-agent",
-    "gemini-3.5-flash-medium": "gemini-3-flash-agent",
-    "gemini-2.5-flash": "gemini-3-flash-agent",
+    **{f"gemini-{v}-flash{suffix}": f"gemini-{v}-flash{eff}"
+       for v in ("3.8", "3.7", "3.6")
+       for suffix, eff in (("", "-high"), ("-high", "-high"), ("-medium", "-medium"), ("-low", "-low"))},
+    # Tên đã chết hoặc chưa từng có, giữ để llm.yaml cũ không gãy (probe: 404 hoặc "no longer available").
+    "gemini-3-flash": "gemini-3.8-flash-high",
+    "gemini-3-flash-agent": "gemini-3.8-flash-high",
+    "gemini-3.5-flash": "gemini-3.8-flash-medium",
+    "gemini-3.5-flash-medium": "gemini-3.8-flash-medium",
+    "gemini-2.5-flash": "gemini-3.8-flash-medium",
+    # Tên rút gọn hay gặp; id thật của upstream có hậu tố (đã đối chiếu :fetchAvailableModels).
+    "gpt-oss-120b": "gpt-oss-120b-medium",
+    "gpt-oss-120b-medium": "gpt-oss-120b-medium",
+    "gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
+    "gemini-pro-agent": "gemini-pro-agent",
     "gemini-3.1-pro": "gemini-3.1-pro-low",
     "gemini-3.1-pro-low": "gemini-3.1-pro-low",
+    "gemini-3-pro": "gemini-3.1-pro-low",
+    "gemini-3-pro-low": "gemini-3.1-pro-low",
+    "gemini-3.7-pro": "gemini-3.1-pro-low",
+    "gemini-3.8-pro": "gemini-3.1-pro-low",
     "gemini-2.5-pro": "gemini-3.1-pro-low",
+    "gemini-pro": "gemini-3.1-pro-low",
     "claude-sonnet-4-6": "claude-sonnet-4-6",
     "claude-sonnet-4.6": "claude-sonnet-4-6",
     "claude-3-7-sonnet": "claude-sonnet-4-6",
     "claude-3.7-sonnet": "claude-sonnet-4-6",
-    "claude-opus-4-6": "claude-sonnet-4-6",
-    "claude-opus-4.6": "claude-sonnet-4-6",
-    "claude-3-7-opus": "claude-sonnet-4-6",
-    "claude-3.7-opus": "claude-sonnet-4-6",
-    "gpt-oss-120b": "gemini-3-flash-agent",
+    "claude-opus-4-6": "claude-opus-4-6-thinking",
+    "claude-opus-4.6": "claude-opus-4-6-thinking",
+    "claude-opus-4-6-thinking": "claude-opus-4-6-thinking",
+    "claude-3-7-opus": "claude-opus-4-6-thinking",
+    "claude-3.7-opus": "claude-opus-4-6-thinking",
 }
 
-VALID_CODE_ASSIST_MODELS = {
-    "gemini-3-flash-agent",
-    "gemini-3.6-flash-medium",
-    "gemini-3.1-pro-low",
-    "claude-sonnet-4-6",
-}
+# Suy ra, không khai tay: mọi đích của alias phải hợp lệ, cộng với lưới an toàn ở trên.
+VALID_CODE_ASSIST_MODELS = {m["id"] for m in FALLBACK_MODELS} | set(MODEL_ALIAS_MAP.values())
+
+DEFAULT_CODE_ASSIST_MODEL = "gemini-3.8-flash-medium"
 
 # Gemini và Claude tính quota độc lập trên Antigravity: hết quota Gemini thì thử Claude
 # trên cùng tài khoản trước khi đốt sang tài khoản khác. Khóa theo id nội bộ (sau map_model_name).
-IN_ACCOUNT_MODEL_FALLBACK = {
-    "gemini-3-flash-agent": "claude-sonnet-4-6",
-}
+IN_ACCOUNT_MODEL_FALLBACK = {m: "claude-sonnet-4-6" for m in VALID_CODE_ASSIST_MODELS if m.startswith("gemini-")}
 
 _QUOTA_MARKERS = ("resource_exhausted", "rate limit", "quota", "invalid_grant", "token expired")
 
@@ -93,17 +96,164 @@ def _should_fail_over(response: httpx.Response) -> bool:
     return any(marker in body for marker in _QUOTA_MARKERS)
 
 
+class UnknownModelError(ValueError):
+    """Client xin một model gateway không biết. Trả 400 thay vì âm thầm chạy model khác:
+    cấu hình sai tên model phải nổ ngay, không được lặng lẽ tụt xuống flash."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.status_code = 400
+
+
+MODELS_ENDPOINT = f"{CODE_ASSIST_BASE_URL}:fetchAvailableModels"
+MODEL_CATALOG_TTL_S = 3600.0
+_MODEL_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{1,127}$")
+
+# Catalog động: id upstream tự khai. Rỗng cho tới lần discovery đầu tiên thành công — khi đó
+# bảng tĩnh ở trên chỉ còn là lưới an toàn cho lúc mạng hỏng.
+_discovered: dict[str, dict[str, str]] = {}
+_discovered_at: float = 0.0
+
+
+def parse_available_models(payload: Any) -> list[dict[str, str]]:
+    """Lọc catalog `:fetchAvailableModels` xuống những model thật sự chọn được.
+    Bỏ model nội bộ, id không hợp lệ, và mục không có mô tả trong `models`."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), dict):
+        return []
+    selectable: set[str] = set()
+    for sort in payload.get("agentModelSorts") or []:
+        for group in (sort or {}).get("groups") or []:
+            selectable.update(m for m in (group or {}).get("modelIds") or [] if isinstance(m, str))
+    for ids in (payload.get("tieredModelIds") or {}).values():
+        selectable.update(m for m in ids or [] if isinstance(m, str))
+    deprecated = {m for m in payload.get("deprecatedModelIds") or [] if isinstance(m, str)}
+
+    out: list[dict[str, str]] = []
+    for model_id in sorted(selectable - deprecated):
+        details = payload["models"].get(model_id)
+        if not _MODEL_ID_RE.fullmatch(model_id) or not isinstance(details, dict) or details.get("isInternal") is True:
+            continue
+        name = str(details.get("displayName") or "").strip()
+        if not name:   # mục không có tên hiển thị (vd. bí danh "-tiered") không phải model để người dùng chọn
+            continue
+        out.append({"id": model_id, "name": name, "code_assist_model": model_id})
+    return out
+
+
+def fetch_available_models(access_token: str, project_id: str, timeout: float = 30.0) -> list[dict[str, str]]:
+    """Hỏi thẳng upstream xem tài khoản này được dùng model nào."""
+    with httpx.Client(timeout=timeout) as http:
+        resp = http.post(
+            MODELS_ENDPOINT, json={"project": project_id}, headers=build_antigravity_headers(access_token, project_id)
+        )
+    resp.raise_for_status()
+    return parse_available_models(resp.json())
+
+
+def set_discovered_models(models: list[dict[str, str]]) -> None:
+    global _discovered_at
+    _discovered.clear()
+    _discovered.update({m["id"]: m for m in models})
+    _discovered_at = time.time()
+
+
+def discovered_models() -> list[dict[str, str]]:
+    return list(_discovered.values())
+
+
+def discovery_is_stale() -> bool:
+    return not _discovered or (time.time() - _discovered_at) > MODEL_CATALOG_TTL_S
+
+
+def serving_models() -> list[dict[str, str]]:
+    """Danh sách phục vụ `/v1/models`: catalog upstream nếu đã dò được, nếu chưa thì bảng tĩnh."""
+    return discovered_models() or list(FALLBACK_MODELS)
+
+
+def strict_models_enabled() -> bool:
+    """Mặc định BẬT. `GATEWAY_STRICT_MODELS=0` để quay lại hành vi cũ (fallback + warning)."""
+    return (os.getenv("GATEWAY_STRICT_MODELS") or "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def known_model_ids() -> list[str]:
+    """Tên model client được phép gửi: id upstream tự khai (nếu đã dò được) + bảng tĩnh + mọi alias."""
+    return sorted({m["id"] for m in serving_models()} | VALID_CODE_ASSIST_MODELS | set(MODEL_ALIAS_MAP))
+
+
 def map_model_name(requested_model: str) -> str:
     if not requested_model:
-        return "gemini-3-flash-agent"
+        return DEFAULT_CODE_ASSIST_MODEL
     normalized = requested_model.lower().strip()
     if "/" in normalized:
         normalized = normalized.split("/", 1)[1]
     mapped = MODEL_ALIAS_MAP.get(normalized, normalized)
+    # Id upstream vừa khai được chấp nhận ngay, không cần chờ ai sửa bảng tĩnh.
+    if mapped in _discovered:
+        return mapped
     if mapped not in VALID_CODE_ASSIST_MODELS:
-        logger.warning("Model lạ '%s', dùng gemini-3-flash-agent", requested_model)
-        return "gemini-3-flash-agent"
+        if strict_models_enabled():
+            raise UnknownModelError(
+                f"Model '{requested_model}' không được gateway hỗ trợ. "
+                f"Model hợp lệ: {', '.join(known_model_ids())}. "
+                "Xem `python -m gateway models --probe`; đặt GATEWAY_STRICT_MODELS=0 để tạm chấp nhận fallback."
+            )
+        logger.warning("Model lạ '%s', dùng %s", requested_model, DEFAULT_CODE_ASSIST_MODEL)
+        return DEFAULT_CODE_ASSIST_MODEL
     return mapped
+
+
+# Model đã nghỉ hưu vẫn trả 200 nhưng nội dung chỉ là một câu thông báo (không phải câu trả lời thật):
+# "Gemini 3.5 Flash is no longer available. Please switch to ...". Probe phải bắt được ca này,
+# nếu không sẽ tưởng model còn sống.
+_RETIRED_MARKERS = ("no longer available", "please switch to")
+
+PROBE_OK = "OK"
+PROBE_RETIRED = "NGHỈ HƯU"
+PROBE_MISSING = "KHÔNG TỒN TẠI"
+PROBE_QUOTA = "HẾT QUOTA"
+PROBE_ERROR = "LỖI"
+
+
+def classify_probe(status: int, body: str) -> tuple[str, str]:
+    """(kết luận, ghi chú) từ một lần gọi thử generateContent."""
+    text = (body or "")
+    low = text.lower()
+    if status == 200:
+        if any(m in low for m in _RETIRED_MARKERS):
+            snippet = " ".join(text.split())
+            i = low.find("no longer available")
+            start = max(0, i - 60)
+            return PROBE_RETIRED, snippet[start : start + 160].strip()
+        return PROBE_OK, ""
+    if status == 404:
+        return PROBE_MISSING, ""
+    if status in {429, 402, 403}:
+        return PROBE_QUOTA, f"HTTP {status} — không kết luận được, thử lại sau"
+    return PROBE_ERROR, f"HTTP {status}: {' '.join(text.split())[:120]}"
+
+
+def build_probe_envelope(code_assist_model: str, project_id: str) -> dict[str, Any]:
+    """Request nhỏ nhất có thể để hỏi upstream 'model này có tồn tại không'."""
+    return {
+        "model": code_assist_model,
+        "project": project_id,
+        "request": {
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "generationConfig": {"maxOutputTokens": 1},
+        },
+    }
+
+
+def probe_code_assist_model(code_assist_model: str, access_token: str, project_id: str, timeout: float = 60.0) -> tuple[int, str]:
+    """Gọi thật một request 1 token lên Code Assist để biết model có tồn tại không.
+    Google không có endpoint liệt kê model, nên đây là cách duy nhất kiểm chứng."""
+    with httpx.Client(timeout=timeout) as http:
+        resp = http.post(
+            f"{CODE_ASSIST_BASE_URL}:generateContent",
+            json=build_probe_envelope(code_assist_model, project_id),
+            headers=build_antigravity_headers(access_token, project_id),
+        )
+    return resp.status_code, resp.text
 
 
 def build_antigravity_headers(access_token: str, project_id: str = "") -> dict[str, str]:
@@ -111,10 +261,17 @@ def build_antigravity_headers(access_token: str, project_id: str = "") -> dict[s
         "Content-Type": "application/json",
         "Accept": "application/json",
         "Authorization": f"Bearer {access_token}",
-        "User-Agent": "Antigravity/1.0.0 (Windows NT 10.0; Win64; x64) Code-Assist/2026.x",
+        "User-Agent": f"Antigravity/{ANTIGRAVITY_CLIENT_VERSION} (Windows NT 10.0; Win64; x64) Code-Assist/2026.x",
         "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1 gccl/antigravity-ide",
         "Client-Metadata": json.dumps(
-            {"ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"},
+            {
+                "ideType": "ANTIGRAVITY",
+                "platform": "PLATFORM_UNSPECIFIED",
+                "pluginType": "GEMINI",
+                # Thiếu hai khoá này là server giấu Gemini 3.7/3.8 và trả 404 như thể model không tồn tại.
+                "ideVersion": ANTIGRAVITY_CLIENT_VERSION,
+                "pluginVersion": ANTIGRAVITY_CLIENT_VERSION,
+            },
             separators=(",", ":"),
         ),
         "x-activity-request-id": str(uuid.uuid4()),
@@ -332,7 +489,7 @@ def _truncate_tool_result(text: str) -> str:
 def build_code_assist_request(openai_payload: dict[str, Any], project_id: str) -> dict[str, Any]:
     """OpenAI /v1/chat/completions payload → envelope Code Assist."""
     messages = openai_payload.get("messages") or []
-    model_name = map_model_name(openai_payload.get("model") or "gemini-3.7-flash")
+    model_name = map_model_name(openai_payload.get("model") or DEFAULT_CODE_ASSIST_MODEL)
     system_parts: list[str] = []
     contents: list[dict[str, Any]] = []
     tool_call_names: dict[str, str] = {}  # tool_call_id → tên hàm, để functionResponse khớp functionCall
@@ -587,8 +744,9 @@ class AntigravityClient:
         return await asyncio.to_thread(self.auth_manager.resolve_credential_candidates, bearer_token=bearer_token)
 
     async def create_chat_completion(self, openai_payload: dict[str, Any], bearer_token: str = "") -> dict[str, Any]:
+        requested_model = openai_payload.get("model") or DEFAULT_CODE_ASSIST_MODEL
+        map_model_name(requested_model)  # model lạ → 400 ngay, trước khi chạm tài khoản/mạng
         candidates = await self._candidates(bearer_token)
-        requested_model = openai_payload.get("model") or "gemini-3.7-flash"
         url = f"{CODE_ASSIST_BASE_URL}:generateContent"
         last_response: httpx.Response | None = None
 
@@ -642,8 +800,9 @@ class AntigravityClient:
 
     async def stream_chat_completion(self, openai_payload: dict[str, Any], bearer_token: str = "") -> AsyncGenerator[str, None]:
         """Stream SSE; chỉ xoay tài khoản TRƯỚC khi phát chunk đầu tiên."""
+        requested_model = openai_payload.get("model") or DEFAULT_CODE_ASSIST_MODEL
+        map_model_name(requested_model)  # model lạ → 400 ngay, trước khi chạm tài khoản/mạng
         candidates = await self._candidates(bearer_token)
-        requested_model = openai_payload.get("model") or "gemini-3.7-flash"
         url = f"{CODE_ASSIST_BASE_URL}:streamGenerateContent?alt=sse"
         last_error = "Không có tài khoản Antigravity nào sẵn sàng."
         last_status = 500

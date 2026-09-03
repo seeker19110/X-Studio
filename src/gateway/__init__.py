@@ -15,11 +15,11 @@ trỏ vào gateway, không đổi code hay prompt (xem `software-company/llm.py`
 from __future__ import annotations
 
 from gateway.auth import AntigravityAuthManager, AntigravityCredentials, UpstreamError
-from gateway.client import ANTIGRAVITY_SUPPORTED_MODELS, AntigravityClient
+from gateway.client import FALLBACK_MODELS, AntigravityClient
 from gateway.server import GatewayServer, run_server
 
 __all__ = [
-    "ANTIGRAVITY_SUPPORTED_MODELS",
+    "FALLBACK_MODELS",
     "AntigravityAuthManager",
     "AntigravityClient",
     "AntigravityCredentials",

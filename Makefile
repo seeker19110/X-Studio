@@ -1,4 +1,4 @@
-.PHONY: test cov lint types fix login start stop status setup
+.PHONY: test cov lint types fix login start stop status setup models
 test:
 	uv run pytest -q
 cov:
@@ -20,3 +20,5 @@ status:
 	PYTHONPATH=src uv run python -m gateway status
 setup:      # ghi software-company/llm.yaml trỏ vào gateway
 	PYTHONPATH=src uv run python -m gateway setup
+models:     # model gateway hỗ trợ + đối chiếu llm.yaml của các công ty (exit 1 nếu lệch)
+	PYTHONPATH=src uv run python -m gateway models

@@ -55,7 +55,7 @@ async def test_in_account_model_fallback_before_rotating():
     def handler(request):
         token, model = _token(request), json.loads(request.content).get("model", "")
         seen.append((token, model))
-        if token == "token-a" and model == "gemini-3-flash-agent":
+        if token == "token-a" and model == "gemini-3.7-flash-high":
             return httpx.Response(429, headers={"Retry-After": "60"}, json={"error": {"message": "RESOURCE_EXHAUSTED"}})
         if token == "token-a" and model == "claude-sonnet-4-6":
             return _ok("SAME_ACCOUNT_CLAUDE_OK")
@@ -67,7 +67,7 @@ async def test_in_account_model_fallback_before_rotating():
     finally:
         await client.close()
     assert result["choices"][0]["message"]["content"] == "SAME_ACCOUNT_CLAUDE_OK"
-    assert seen == [("token-a", "gemini-3-flash-agent"), ("token-a", "claude-sonnet-4-6")]
+    assert seen == [("token-a", "gemini-3.7-flash-high"), ("token-a", "claude-sonnet-4-6")]
     assert auth.marked == []
 
 

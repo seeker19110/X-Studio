@@ -8,6 +8,7 @@
   python -m gateway reset [EMAIL]          xóa cooldown (một hoặc mọi tài khoản)
   python -m gateway logout EMAIL           gỡ tài khoản khỏi pool
   python -m gateway setup [--target ...]   ghi llm.yaml của software-company trỏ vào gateway
+  python -m gateway models [--check ...]   model gateway hỗ trợ + đối chiếu llm.yaml của các công ty
 """
 
 from __future__ import annotations
@@ -23,6 +24,20 @@ from pathlib import Path
 from typing import Any
 
 from gateway.auth import AntigravityAuthManager
+from gateway.client import (
+    FALLBACK_MODELS,
+    MODEL_ALIAS_MAP,
+    PROBE_MISSING,
+    PROBE_OK,
+    PROBE_QUOTA,
+    PROBE_RETIRED,
+    classify_probe,
+    fetch_available_models,
+    known_model_ids,
+    map_model_name,
+    probe_code_assist_model,
+    set_discovered_models,
+)
 from gateway.server import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -35,7 +50,11 @@ from gateway.server import (
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SETUP_TARGET = REPO_ROOT / "software-company" / "llm.yaml"
 DEFAULT_STRONG_MODEL = "claude-sonnet-4-6"
-DEFAULT_STANDARD_MODEL = "gemini-3.7-flash"
+DEFAULT_STANDARD_MODEL = "gemini-3.6-flash-medium"
+DEFAULT_CHECK_TARGETS = [
+    REPO_ROOT / "software-company" / "llm.yaml",
+    REPO_ROOT / "Studio-creators" / "llm.yaml",
+]
 
 
 def _pid_is_gateway(pid: int) -> bool:
@@ -237,6 +256,210 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _gateway_backends(data: dict, base_url_marker: str) -> list[tuple[str, dict]]:
+    """Các backend trong llm.yaml thực sự trỏ vào gateway này (provider openai + base_url khớp host:port).
+    Backend claude-code/codex đi CLI riêng, tên model của chúng không phải việc của gateway."""
+    found: list[tuple[str, dict]] = []
+    backends = data.get("backends")
+    if isinstance(backends, list):
+        for b in backends:
+            if not isinstance(b, dict):
+                continue
+            if str(b.get("provider") or "") == "openai" and base_url_marker in str(b.get("base_url") or ""):
+                models = b.get("models")
+                found.append((str(b.get("name") or "?"), models if isinstance(models, dict) else {}))
+        return found
+    # Dạng một provider duy nhất (bản `setup` ghi ra).
+    if str(data.get("provider") or "") == "openai" and base_url_marker in str(data.get("base_url") or ""):
+        models = data.get("models")
+        found.append(("(provider đơn)", models if isinstance(models, dict) else {}))
+    return found
+
+
+CLI_PROVIDERS = {"claude-code": ["claude", "-p", "--model"], "codex": ["codex", "exec", "--model"]}
+
+
+def _cli_backends(data: dict) -> list[tuple[str, str, dict]]:
+    """(tên backend, provider, models) cho backend chạy CLI subscription — gateway không đứng giữa,
+    nhưng `models --probe-cli` vẫn kiểm tra được bằng cách gọi thử CLI."""
+    out: list[tuple[str, str, dict]] = []
+    for b in data.get("backends") or []:
+        if not isinstance(b, dict):
+            continue
+        provider = str(b.get("provider") or "")
+        if provider in CLI_PROVIDERS:
+            models = b.get("models")
+            out.append((str(b.get("name") or "?"), provider, models if isinstance(models, dict) else {}))
+    return out
+
+
+def _probe_antigravity(ids: list[str]) -> int:
+    """Gọi thử từng model lên Code Assist. Trả số model hỏng (nghỉ hưu / không tồn tại) trong danh sách."""
+    mgr = AntigravityAuthManager()
+    candidates = mgr.resolve_credential_candidates()
+    if not candidates:
+        print("  Pool trống hoặc mọi tài khoản đang cooldown — không probe được. `python -m gateway login`")
+        return 1
+    print(f"  Dò bằng {len(candidates)} tài khoản trong pool (mỗi model = 1 request thật, tốn quota)")
+    broken = 0
+    for model_id in ids:
+        verdict, note, who = PROBE_QUOTA, "", ""
+        for creds in candidates:
+            # 429 không kết luận được model sống hay chết — sang tài khoản khác trước khi bỏ cuộc.
+            try:
+                status, body = probe_code_assist_model(model_id, creds.access_token, creds.project_id)
+            except Exception as e:
+                verdict, note, who = "LỖI MẠNG", str(e), creds.email
+                continue
+            verdict, note = classify_probe(status, body)
+            who = creds.email or "primary"
+            if verdict != PROBE_QUOTA:
+                break
+        if verdict in {PROBE_RETIRED, PROBE_MISSING}:
+            broken += 1
+        suffix = f"[{who}] {note}" if verdict == PROBE_QUOTA else note
+        print(f"      {model_id:<28} {verdict:<14} {suffix}")
+    return broken
+
+
+def _probe_cli(provider: str, model: str, timeout: float = 120.0) -> tuple[str, str]:
+    """Gọi thử CLI subscription một lượt cực ngắn. Không có CLI trên PATH → báo rõ, không coi là model sai."""
+    import shutil
+    import subprocess
+
+    args = CLI_PROVIDERS[provider]
+    exe = shutil.which(args[0])
+    if not exe:
+        return "THIẾU CLI", f"không thấy `{args[0]}` trên PATH"
+    try:
+        r = subprocess.run(
+            [exe, *args[1:], model], input="hi", capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return "LỖI", f"quá {timeout:.0f}s"
+    if r.returncode == 0:
+        return PROBE_OK, ""
+    err = " ".join((r.stderr or r.stdout or "").split())[:140]
+    return "LỖI", f"exit {r.returncode}: {err}"
+
+
+def _discover_catalog() -> list[dict[str, str]]:
+    """Hỏi upstream danh sách model (`:fetchAvailableModels`). Không có tài khoản / lỗi mạng → rỗng."""
+    mgr = AntigravityAuthManager()
+    try:
+        candidates = mgr.resolve_credential_candidates()
+    except Exception as e:
+        print(f"  Không lấy được tài khoản để dò: {e}")
+        return []
+    for creds in candidates:
+        try:
+            models = fetch_available_models(creds.access_token, creds.project_id)
+        except Exception as e:
+            print(f"  Dò qua {creds.email or 'primary'} lỗi: {e}")
+            continue
+        if models:
+            return models
+    return []
+
+
+def cmd_models(args: argparse.Namespace) -> int:
+    """In model gateway hỗ trợ và đối chiếu với llm.yaml của các công ty. Exit 1 nếu có tên model
+    mà gateway không biết (nếu để im, request sẽ bị từ chối 400 lúc chạy)."""
+    live = [] if args.offline else _discover_catalog()
+    if live:
+        set_discovered_models(live)
+    known = set(known_model_ids())
+    print("=" * 72)
+    header = "upstream tự khai" if live else "bảng tĩnh trong client.py (chưa dò được upstream)"
+    print(f"  GATEWAY — model hỗ trợ · nguồn: {header}")
+    print("=" * 72)
+    for m in live or FALLBACK_MODELS:
+        # Cột phải là model upstream THẬT sau alias map (vd. gemini-3.7-flash thật ra chạy gemini-3.7-flash-high).
+        print(f"  {m['id']:<26} → {map_model_name(m['id']):<26} {m['name']}")
+    if live:
+        # Alias trỏ vào id upstream không còn khai = alias chết, request sẽ hỏng lúc chạy.
+        live_ids = {m["id"] for m in live}
+        dangling = sorted({f"{a} → {t}" for a, t in MODEL_ALIAS_MAP.items() if t not in live_ids})
+        if dangling:
+            print("-" * 72)
+            print(f"  Alias trỏ vào model upstream không còn khai: {', '.join(dangling)}")
+    extra = sorted(set(MODEL_ALIAS_MAP) - {m["id"] for m in (live or FALLBACK_MODELS)})
+    if extra:
+        print("-" * 72)
+        print("  Alias cũng chấp nhận: " + ", ".join(extra))
+
+    problems = 0   # tên model trong llm.yaml gateway không biết
+    dead = 0       # model gateway khai là hợp lệ nhưng upstream đã bỏ
+    if args.probe:
+        print("=" * 72)
+        print("  Dò upstream Code Assist (Google KHÔNG có endpoint liệt kê model — phải gọi thử)")
+        print("-" * 72)
+        probe_ids = args.probe_id or sorted({m["id"] for m in (live or FALLBACK_MODELS)})
+        custom = bool(args.probe_id)   # id do người dùng đưa: chết chỉ nghĩa là "chưa có", không phải lỗi cấu hình
+        broken = _probe_antigravity(probe_ids)
+        dead = 0 if custom else broken
+        if broken and custom:
+            print(f"  {broken}/{len(probe_ids)} id dò không có trên kênh Antigravity của pool này.")
+        elif broken:
+            print(f"  {broken} model gateway đang coi là hợp lệ nhưng upstream đã bỏ/nghỉ hưu → sửa client.py.")
+
+    base_url_marker = f"{args.host}:{args.port}"
+    targets = [Path(t).expanduser() for t in (args.check or [str(p) for p in DEFAULT_CHECK_TARGETS])]
+    print("=" * 72)
+    print(f"  Đối chiếu llm.yaml (backend trỏ vào {base_url_marker})")
+    print("-" * 72)
+    for target in targets:
+        if not target.exists():
+            print(f"  {target}: không có file, bỏ qua")
+            continue
+        import yaml
+
+        try:
+            data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+        except Exception as e:
+            print(f"  {target}: đọc lỗi ({e})")
+            problems += 1
+            continue
+        data = data if isinstance(data, dict) else {}
+        backends = _gateway_backends(data, base_url_marker)
+        cli_backends = _cli_backends(data)
+        if not backends and not cli_backends:
+            print(f"  {target}: không có backend nào để đối chiếu")
+            continue
+        print(f"  {target}")
+        for name, models in backends:
+            for tier in ("strong", "standard", "light"):
+                model = str(models.get(tier) or "")
+                if not model:
+                    continue
+                ok = model.lower().split("/")[-1] in known
+                if not ok:
+                    problems += 1
+                print(f"      backend {name:<14} {tier:<9} {model:<24} {'OK' if ok else 'KHÔNG HỖ TRỢ'}")
+        for name, provider, models in cli_backends:
+            seen: set[str] = set()
+            for tier in ("strong", "standard", "light"):
+                model = str(models.get(tier) or "")
+                if not model or model in seen:
+                    continue
+                seen.add(model)
+                if args.probe_cli:
+                    verdict, note = _probe_cli(provider, model)
+                    if verdict == "LỖI":
+                        problems += 1
+                    print(f"      backend {name:<14} {tier:<9} {model:<24} {verdict}  {note}")
+                else:
+                    print(f"      backend {name:<14} {tier:<9} {model:<24} CLI {provider} — dùng --probe-cli để gọi thử")
+    print("=" * 72)
+    if problems:
+        print(f"  {problems} tên model gateway không biết → request sẽ bị trả 400 lúc chạy.")
+        print("  Sửa llm.yaml, hoặc thêm alias vào MODEL_ALIAS_MAP trong src/gateway/client.py.")
+    elif not dead:
+        print("  Mọi model trong llm.yaml đều được gateway hỗ trợ.")
+    return 1 if (problems or dead) else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # Console Windows mặc định cp1252 không in được tiếng Việt.
     for stream in (sys.stdout, sys.stderr):
@@ -268,6 +491,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--target", default=str(DEFAULT_SETUP_TARGET))
     p.add_argument("--strong", default=DEFAULT_STRONG_MODEL)
     p.add_argument("--standard", default=DEFAULT_STANDARD_MODEL)
+    p = sub.add_parser("models", help="model gateway hỗ trợ + đối chiếu llm.yaml của các công ty")
+    add_hostport(p)
+    p.add_argument("--check", action="append", help="đường dẫn llm.yaml cần đối chiếu (lặp lại được)")
+    p.add_argument("--offline", action="store_true",
+                   help="không hỏi upstream, chỉ in bảng tĩnh trong client.py")
+    p.add_argument("--probe", action="store_true",
+                   help="gọi thử upstream Code Assist để xem model còn sống không (tốn quota thật)")
+    p.add_argument("--probe-id", action="append",
+                   help="id ứng viên cần dò, lặp lại được (mặc định: các id gateway đang coi là hợp lệ)")
+    p.add_argument("--probe-cli", action="store_true",
+                   help="gọi thử CLI subscription (claude -p / codex) cho backend claude-code, codex")
 
     args = parser.parse_args(argv)
     handlers = {
@@ -278,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
         "reset": cmd_reset,
         "logout": cmd_logout,
         "setup": cmd_setup,
+        "models": cmd_models,
     }
     return handlers[args.action](args)
 

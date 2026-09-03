@@ -4,15 +4,33 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from gateway import client as gw
 
 
-def test_map_model_name_aliases_and_unknown():
-    assert gw.map_model_name("gemini-3.7-flash") == "gemini-3-flash-agent"
+def test_map_model_name_aliases_and_unknown(monkeypatch):
+    assert gw.map_model_name("gemini-3.7-flash") == "gemini-3.7-flash-high"   # alias giữ nguyên đời model, chỉ thêm mức effort
     assert gw.map_model_name("antigravity/claude-sonnet-4.6") == "claude-sonnet-4-6"
     assert gw.map_model_name("gemini-3.1-pro") == "gemini-3.1-pro-low"
-    assert gw.map_model_name("totally-unknown") == "gemini-3-flash-agent"
-    assert gw.map_model_name("") == "gemini-3-flash-agent"
+    assert gw.map_model_name("") == gw.DEFAULT_CODE_ASSIST_MODEL
+
+    # Model lạ: mặc định nổ 400, không âm thầm tụt xuống flash.
+    with pytest.raises(gw.UnknownModelError) as exc:
+        gw.map_model_name("totally-unknown")
+    assert exc.value.status_code == 400
+    assert "gemini-3.8-flash-medium" in str(exc.value)   # thông báo liệt kê model hợp lệ
+
+    monkeypatch.setenv("GATEWAY_STRICT_MODELS", "0")
+    assert gw.map_model_name("totally-unknown") == gw.DEFAULT_CODE_ASSIST_MODEL
+
+
+def test_known_model_ids_covers_published_and_alias():
+    ids = gw.known_model_ids()
+    assert {m["id"] for m in gw.FALLBACK_MODELS} <= set(ids)
+    assert set(gw.MODEL_ALIAS_MAP.values()) <= set(ids)   # mọi đích của alias phải hợp lệ
+    assert "claude-sonnet-4.6" in ids          # alias cũng được chấp nhận
+    assert ids == sorted(ids)
 
 
 def test_nullable_schema_is_sanitized():
@@ -68,7 +86,7 @@ def test_request_builder_system_tools_and_role_merge():
         "tools": [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}],
     }
     env = gw.build_code_assist_request(payload, "proj")
-    assert env["project"] == "proj" and env["model"] == "gemini-3-flash-agent"
+    assert env["project"] == "proj" and env["model"] == "gemini-3.7-flash-high"
     req = env["request"]
     assert req["systemInstruction"]["parts"][0]["text"] == "Bạn là trợ lý."
     assert req["generationConfig"] == {"temperature": 0.2, "maxOutputTokens": 100}
@@ -178,3 +196,54 @@ def test_response_translation_extracts_action_style_textual_tool_call():
     calls = out["choices"][0]["message"]["tool_calls"]
     assert calls[0]["function"]["name"] == "search"
     assert out["choices"][0]["finish_reason"] == "tool_calls"
+
+
+def test_classify_probe_catches_retired_model():
+    """Model nghỉ hưu vẫn trả 200 — nội dung mới là thứ tố cáo, không phải mã HTTP."""
+    retired = '{"response":{"candidates":[{"content":{"parts":[{"text":"Gemini 3.5 Flash is no longer available. Please switch to Gemini 3.7 Flash."}]}}]}}'
+    verdict, note = gw.classify_probe(200, retired)
+    assert verdict == gw.PROBE_RETIRED and "no longer available" in note
+    assert gw.classify_probe(200, '{"response":{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}}')[0] == gw.PROBE_OK
+    assert gw.classify_probe(404, '{"error":{"code":404}}')[0] == gw.PROBE_MISSING
+    assert gw.classify_probe(429, "quota")[0] == gw.PROBE_QUOTA
+    assert gw.classify_probe(500, "boom")[0] == gw.PROBE_ERROR
+
+
+def test_build_probe_envelope_is_minimal():
+    env = gw.build_probe_envelope("gemini-3.8-flash-high", "proj")
+    assert env["model"] == "gemini-3.8-flash-high" and env["project"] == "proj"
+    assert env["request"]["generationConfig"]["maxOutputTokens"] == 1
+
+
+def test_parse_available_models_filters_noise():
+    """Catalog upstream lẫn nhiều thứ không chọn được: model nội bộ, id xấu, mục không có tên, model đã khai tử."""
+    payload = {
+        "models": {
+            "gemini-3.8-flash-medium": {"displayName": "Gemini 3.8 Flash (Medium)"},
+            "gemini-3.8-flash-tiered": {"displayName": ""},
+            "secret-one": {"displayName": "Nội bộ", "isInternal": True},
+            "BAD ID": {"displayName": "Tên xấu"},
+            "gemini-3-flash-agent": {"displayName": "Gemini 3.5 Flash"},
+        },
+        "agentModelSorts": [{"groups": [{"modelIds": ["gemini-3.8-flash-medium", "secret-one", "BAD ID"]}]}],
+        "tieredModelIds": {"fast": ["gemini-3.8-flash-tiered", "gemini-3-flash-agent"]},
+        "deprecatedModelIds": ["gemini-3-flash-agent"],
+    }
+    assert gw.parse_available_models(payload) == [
+        {"id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)", "code_assist_model": "gemini-3.8-flash-medium"}
+    ]
+    assert gw.parse_available_models({"models": "sai kiểu"}) == []
+
+
+def test_discovered_model_is_accepted_without_touching_static_table(monkeypatch):
+    """Model upstream mới khai phải dùng được NGAY, không chờ ai sửa MODEL_ALIAS_MAP."""
+    monkeypatch.setattr(gw, "_discovered", {}, raising=False)
+    with pytest.raises(gw.UnknownModelError):
+        gw.map_model_name("gemini-4.0-flash-high")
+    gw.set_discovered_models([{"id": "gemini-4.0-flash-high", "name": "Gemini 4", "code_assist_model": "gemini-4.0-flash-high"}])
+    try:
+        assert gw.map_model_name("gemini-4.0-flash-high") == "gemini-4.0-flash-high"
+        assert "gemini-4.0-flash-high" in gw.known_model_ids()
+        assert {m["id"] for m in gw.serving_models()} == {"gemini-4.0-flash-high"}
+    finally:
+        gw.set_discovered_models([])

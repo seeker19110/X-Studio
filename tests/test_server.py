@@ -8,7 +8,14 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway import auth as gw_auth
-from gateway.server import GatewayServer, is_loopback_host, upstream_status, warn_if_public_host
+from gateway import client as gw_client
+from gateway.server import (
+    GatewayServer,
+    _error_type,
+    is_loopback_host,
+    upstream_status,
+    warn_if_public_host,
+)
 
 
 class StubClient:
@@ -54,7 +61,7 @@ async def test_health_and_models(manager):
     try:
         assert (await (await tc.get("/health")).json())["service"] == "gateway"
         models = await (await tc.get("/v1/models")).json()
-        assert "gemini-3.7-flash" in {m["id"] for m in models["data"]}
+        assert "gemini-3.8-flash-medium" in {m["id"] for m in models["data"]}
     finally:
         await tc.close()
 
@@ -172,3 +179,28 @@ def test_public_host_warning(caplog):
         assert "loopback" not in caplog.text
         warn_if_public_host("0.0.0.0")
     assert "không phải loopback" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unknown_model_is_400_invalid_request(manager):
+    """Model lạ phải nổ 400 (lỗi cấu hình), không phải 500 hay im lặng chạy model khác."""
+    stub = StubClient(error=gw_client.UnknownModelError("Model 'gemini-9' không được gateway hỗ trợ."))
+    tc = await _client(manager, stub)
+    try:
+        r = await tc.post("/v1/chat/completions", json={"model": "gemini-9", "messages": []})
+        assert r.status == 400
+        body = await r.json()
+        assert body["error"]["type"] == "invalid_request_error"
+        assert "gemini-9" in body["error"]["message"]
+        r = await tc.post("/v1/chat/completions", json={"model": "gemini-9", "messages": [], "stream": True})
+        assert r.status == 400
+    finally:
+        await tc.close()
+
+
+def test_error_type_classification():
+    assert _error_type(400) == "invalid_request_error"
+    assert _error_type(401) == "authentication_error"
+    assert _error_type(404) == "not_found_error"
+    assert _error_type(429) == "rate_limit_error"
+    assert _error_type(503) == "api_error"

@@ -36,9 +36,39 @@ uv sync
 make login        # mở trình duyệt, đăng nhập Google; chạy lại để thêm tài khoản thứ 2, 3...   (login --no-browser: chỉ in URL, không mở trình duyệt)
 make start        # daemon tại 127.0.0.1:8100   (start --foreground/-f chạy tiền cảnh; --host/--port)
 make status       # server + từng tài khoản: sẵn sàng / cooldown / hạn token; exit 1 nếu server tắt hoặc 0 tài khoản sẵn sàng
+make models       # model gateway hỗ trợ + đối chiếu llm.yaml (thêm --probe để gọi thử upstream)
 make setup        # ghi ../software-company/llm.yaml: provider openai, base_url trỏ gateway (--target, --strong, --standard)
 make fix          # ruff --fix
 ```
+
+### Cổng 8100 đã có người giữ
+
+Bridge của [Plugin-For-Hermes](https://github.com/donghanhcungban/Plugin-For-Hermes) cũng nghe ở `127.0.0.1:8100`.
+Xem ai đang giữ cổng:
+
+```bash
+curl -s http://127.0.0.1:8100/health     # gateway: {"service":"gateway"} — bridge Hermes: {"bridge":"antigravity"}
+```
+
+Hai proxy chạy **song song** được, chỉ cần khác cổng:
+
+```bash
+python -m gateway start --port 8101
+python -m gateway status --port 8101              # xác nhận ONLINE và số tài khoản sẵn sàng
+python -m gateway models --port 8101              # đối chiếu llm.yaml với ĐÚNG cổng đó
+```
+
+Rồi trỏ `base_url` của các công ty vào cổng mới — sửa tay trong `llm.yaml`, hoặc qua trang cài đặt của
+`console`. Lưu ý `python -m gateway models` mặc định đối chiếu backend trỏ vào `127.0.0.1:8100`; chạy sai
+cổng thì nó báo "không có backend nào trỏ vào gateway" chứ không phải cấu hình sai.
+
+Hai proxy đọc **file token riêng** (`$XAGENTS_HOME/auth/antigravity_tokens.json` với gateway, `~/.hermes/auth/…`
+với bridge) tuy định dạng giống nhau — copy file sang là dùng được cùng bộ tài khoản. Nhưng khi đó:
+
+- **Quota là chung** vì cùng tài khoản Google: hai proxy cùng bắn thì cùng ăn 429.
+- **Cooldown thì KHÔNG chung**: proxy này ghi cooldown vào file của nó, proxy kia không biết và vẫn thử tiếp
+  tài khoản vừa hết quota. Nếu muốn dùng nặng cả hai, cho chúng dùng chung một file token
+  (`XAGENTS_HOME`/`HERMES_HOME` trỏ về cùng chỗ) hoặc chia mỗi proxy một tập tài khoản riêng.
 
 Không có `make`: `PYTHONPATH=src uv run python -m gateway <lệnh>`. OAuth loopback dùng cổng cố định `127.0.0.1:51121`
 (`/oauth-callback`), chờ tối đa 300s; máy VPS không có trình duyệt thì đăng nhập ở máy cá nhân rồi copy file token.
@@ -61,7 +91,7 @@ Hoặc chỉ dùng biến môi trường, không cần `llm.yaml`:
 COMPANY_LLM_PROVIDER=openai
 COMPANY_LLM_BASE_URL=http://127.0.0.1:8100/v1
 COMPANY_MODEL_STRONG=claude-sonnet-4-6
-COMPANY_MODEL_STANDARD=gemini-3.7-flash
+COMPANY_MODEL_STANDARD=gemini-3.8-flash-medium
 ```
 
 Lệnh khác: `python -m gateway reset [EMAIL]` (xóa cooldown), `python -m gateway logout EMAIL`, `python -m gateway stop`.
@@ -76,16 +106,35 @@ Lệnh khác: `python -m gateway reset [EMAIL]` (xóa cooldown), `python -m gate
 | POST | `/auth/login` | mở trình duyệt thêm tài khoản |
 | GET | `/health` | |
 
-Model: `gemini-3.7-flash` (+ `-medium`, `-low`), `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.1-pro`,
-`claude-sonnet-4-6`, `claude-opus-4-6`, `gpt-oss-120b`. Alias được map về id nội bộ của Code Assist trong
-`src/gateway/client.py` (`MODEL_ALIAS_MAP`); upstream thật chỉ có 4 model: `gemini-3-flash-agent` (nhận `gemini-3.7-flash*`,
-`gemini-3.5-flash`, `gpt-oss-120b`), `gemini-3.6-flash-medium`, `gemini-3.1-pro-low`, `claude-sonnet-4-6` (nhận cả
-`claude-opus-4-6`). Tên model lạ rơi về `gemini-3-flash-agent` kèm cảnh báo trong log, không báo lỗi.
+**Gateway tự cập nhật danh sách model.** `POST …/v1internal:fetchAvailableModels` trả nguyên catalog của tài
+khoản (`models`, `agentModelSorts`, `tieredModelIds`, `deprecatedModelIds`); `/v1/models` và mọi request chat làm
+mới catalog này (TTL 1 giờ). Model upstream vừa khai dùng được NGAY, không cần ai sửa code. `client.py` **không
+còn danh sách model viết tay**: chỉ giữ `FALLBACK_MODELS` (2 mục, để gateway còn phục vụ khi chưa dò được) và
+`MODEL_ALIAS_MAP` (tên cũ → id thật, cho `llm.yaml` cũ không gãy); `VALID_CODE_ASSIST_MODELS` suy ra từ hai thứ đó.
+`python -m gateway models` báo alias nào trỏ vào id upstream không còn khai.
+
+**Code Assist ẩn model mới với client khai phiên bản cũ.** Cùng một tài khoản, `gemini-3.8-flash-medium` trả 404
+khi `Client-Metadata` thiếu `ideVersion`/`pluginVersion`, và trả 200 khi có (id bịa vẫn 404 — đã đối chứng).
+Gateway khai `ANTIGRAVITY_CLIENT_VERSION` (mặc định `2026.9.1`, đổi bằng `GATEWAY_ANTIGRAVITY_CLIENT_VERSION`).
+
+Model đã chết vẫn trả HTTP 200 kèm câu "no longer available" (`gemini-3-flash-agent`, `gemini-3-pro-low`) —
+`--probe` bắt được ca này, mã HTTP thì không.
+
+```bash
+python -m gateway models                # catalog upstream tự khai (không tốn quota)
+python -m gateway models --offline      # chỉ in bảng tĩnh trong client.py
+python -m gateway models --probe        # gọi thử thật: model nào còn chạy (tốn quota, xoay tài khoản khi 429)
+python -m gateway models --probe-id ID  # dò một id ứng viên bất kỳ khi nhà cung cấp ra model mới
+python -m gateway models --probe-cli    # gọi thử backend claude-code/codex trong llm.yaml (dùng quota subscription)
+```
 
 ## Dữ liệu và biến môi trường
 
 - Token: `$XAGENTS_HOME/auth/antigravity_tokens.json` (mặc định `~/.x-agents/`), quyền 600, ghi nguyên tử. Không commit.
 - PID/log: `~/.x-agents/gateway/gateway.pid`, `~/.x-agents/logs/gateway.log`.
+- `GATEWAY_STRICT_MODELS` (mặc định `1`): `0` để model lạ rơi về `gemini-3-flash-agent` thay vì trả 400.
+- `GATEWAY_ANTIGRAVITY_CLIENT_VERSION` (mặc định `2026.9.1`): phiên bản client khai với Code Assist; khai quá cũ
+  thì server giấu model mới bằng cách trả 404.
 - `GATEWAY_HOST`, `GATEWAY_PORT`; `GATEWAY_ANTIGRAVITY_CLIENT_ID/SECRET/PROJECT_ID` ghi đè OAuth client (hiếm khi cần).
   `.env.example` chỉ là tài liệu: gateway không đọc file `.env`, phải export biến trong shell.
 
@@ -95,5 +144,5 @@ Triển khai VPS: copy file token từ máy cá nhân lên, chạy `make start`;
 
 ```bash
 make lint
-make test        # 42 ca, không gọi mạng: httpx MockTransport + aiohttp TestClient
+make test        # 78 ca (76 chạy, 2 skip), không gọi mạng: httpx MockTransport + aiohttp TestClient
 ```
