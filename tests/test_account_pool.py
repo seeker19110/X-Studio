@@ -167,6 +167,16 @@ def test_bearer_email_prefix_does_not_match(manager):
     assert manager.resolve_credential_candidates(bearer_token="b")[0].email == "b@example.com"
 
 
+def test_round_robin_survives_coarse_clock(manager, monkeypatch):
+    # Đồng hồ đứng yên (mô phỏng độ phân giải thô của Windows): LRU vẫn phải xoay vòng,
+    # không được hòa mốc rồi rơi về thứ tự lưu file. Đây là nguồn của test trượt ngẫu nhiên.
+    monkeypatch.setattr(gw_auth.time, "time", lambda: 1_700_000_000.0)
+    manager.save_credentials(_creds("a"))
+    manager.save_credentials(_creds("b"))
+    seen = [manager.resolve_credential_candidates()[0].email for _ in range(4)]
+    assert seen == ["a@example.com", "b@example.com", "a@example.com", "b@example.com"]
+
+
 def test_round_robin_least_recently_used(manager):
     manager.save_credentials(_creds("a"))
     manager.save_credentials(_creds("b"))

@@ -360,7 +360,11 @@ class AntigravityAuthManager:
                 wait = max(0, int(earliest - now)) if earliest else 0
                 suffix = f" Thử lại sau khoảng {wait}s." if wait else ""
                 raise UpstreamError("Mọi tài khoản Antigravity đều đang cooldown hoặc hết hạn." + suffix, 429)
-            self._update_account_fields(candidates[0], last_used_at=now)
+            # Đồng hồ hệ thống có thể thô hơn khoảng cách giữa hai lượt (Windows: ~15ms). Hai tài khoản
+            # cùng mốc thì khóa sắp xếp LRU hòa nhau và thứ tự quay về thứ tự lưu file — hết xoay vòng.
+            # Luôn đóng dấu lớn hơn hẳn mốc lớn nhất đang có để LRU đơn điệu bất kể độ phân giải đồng hồ.
+            newest = max((c.last_used_at for c in all_creds), default=0.0)
+            self._update_account_fields(candidates[0], last_used_at=max(now, newest + 1e-3))
             return candidates
 
     def mark_account_unavailable(
