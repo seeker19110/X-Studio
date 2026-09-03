@@ -247,3 +247,87 @@ def test_discovered_model_is_accepted_without_touching_static_table(monkeypatch)
         assert {m["id"] for m in gw.serving_models()} == {"gemini-4.0-flash-high"}
     finally:
         gw.set_discovered_models([])
+
+
+# ---------- response_format ----------
+
+def test_response_format_json_schema_thanh_response_schema():
+    """Trước đây `response_format` bị bỏ qua im lặng: gateway trả 200 nên client tưởng structured
+    output đã được ép, model tự do bịa hình dạng và lỗi chỉ hiện ra ở tầng validate schema."""
+    payload = {
+        "model": "gemini-3.8-flash-medium",
+        "messages": [{"role": "user", "content": "x"}],
+        "response_format": {"type": "json_schema", "json_schema": {
+            "name": "payload", "strict": True,
+            "schema": {"type": "object", "title": "bỏ", "additionalProperties": False,
+                       "properties": {"kind": {"type": "string", "enum": ["a", "b"]}},
+                       "required": ["kind"]},
+        }},
+    }
+    cfg = gw.build_code_assist_request(payload, "p")["request"]["generationConfig"]
+    assert cfg["responseMimeType"] == "application/json"
+    # Khoá Code Assist không nhận bị gỡ; phần ràng buộc thật giữ nguyên.
+    assert cfg["responseSchema"] == {
+        "type": "object",
+        "properties": {"kind": {"type": "string", "enum": ["a", "b"]}},
+        "required": ["kind"],
+    }
+
+
+def test_response_format_json_object_va_text():
+    base = {"model": "gemini-3.8-flash-medium", "messages": [{"role": "user", "content": "x"}]}
+    cfg = gw.build_code_assist_request({**base, "response_format": {"type": "json_object"}}, "p")["request"]["generationConfig"]
+    assert cfg == {"responseMimeType": "application/json"}
+    req = gw.build_code_assist_request({**base, "response_format": {"type": "text"}}, "p")["request"]
+    assert "generationConfig" not in req
+
+
+@pytest.mark.parametrize("rf, moc", [
+    ({"type": "json_schema", "json_schema": {}}, "thiếu"),
+    ({"type": "lạ"}, "không được hỗ trợ"),
+    ({"type": "json_schema", "json_schema": {"schema": {"$ref": "#/$defs/x"}}}, "$ref"),
+])
+def test_response_format_khong_dich_duoc_thi_400(rf, moc):
+    """400 chứ không im lặng: client chuẩn OpenAI lùi về nhúng schema vào prompt khi BỊ TỪ CHỐI."""
+    payload = {"model": "gemini-3.8-flash-medium", "messages": [{"role": "user", "content": "x"}], "response_format": rf}
+    with pytest.raises(gw.ResponseFormatError) as exc:
+        gw.build_code_assist_request(payload, "p")
+    assert exc.value.status_code == 400 and moc in str(exc.value)
+
+
+def test_response_schema_khong_di_chung_voi_tools():
+    """Code Assist không nhận responseSchema cùng function calling → 400 để client lùi, không gửi cả hai."""
+    payload = {
+        "model": "gemini-3.8-flash-medium",
+        "messages": [{"role": "user", "content": "x"}],
+        "tools": [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}],
+        "response_format": {"type": "json_schema", "json_schema": {"schema": {"type": "object"}}},
+    }
+    with pytest.raises(gw.ResponseFormatError) as exc:
+        gw.build_code_assist_request(payload, "p")
+    assert "tools" in str(exc.value)
+
+
+def test_response_schema_khong_lam_mat_property_trung_ten_tu_khoa():
+    """Property tên `default`/`title` là tên field do người dùng đặt, không phải từ khoá schema.
+    Lọc nhầm thì nó biến mất khỏi `properties` mà vẫn còn trong `required` → upstream 400
+    "property is not defined" (clarifier có câu hỏi kèm trường `default`)."""
+    schema = {
+        "type": "object", "title": "gỡ", "additionalProperties": False,
+        "properties": {
+            "questions": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False,
+                "properties": {"text": {"type": "string"}, "default": {"type": "string"},
+                               "title": {"type": "string"}},
+                "required": ["text", "default", "title"],
+            }},
+        },
+        "required": ["questions"],
+    }
+    payload = {"model": "gemini-3.8-flash-medium", "messages": [{"role": "user", "content": "x"}],
+               "response_format": {"type": "json_schema", "json_schema": {"schema": schema}}}
+    out = gw.build_code_assist_request(payload, "p")["request"]["generationConfig"]["responseSchema"]
+    item = out["properties"]["questions"]["items"]
+    assert set(item["properties"]) == {"text", "default", "title"}, "property trùng tên từ khoá phải còn"
+    assert item["required"] == ["text", "default", "title"]
+    assert "additionalProperties" not in item and "title" not in out

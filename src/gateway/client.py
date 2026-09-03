@@ -405,6 +405,71 @@ def _sanitize_gemini_schema_node(node: Any) -> Any:
     return out
 
 
+# Khoá JSON Schema mà `responseSchema` của Code Assist không nhận. Gửi kèm là 400 cả request, nên gỡ sạch.
+_RESPONSE_SCHEMA_DROP = frozenset({
+    "$schema", "$id", "$comment", "additionalProperties", "unevaluatedProperties",
+    "patternProperties", "definitions", "$defs", "examples", "default", "title",
+})
+
+
+class ResponseFormatError(ValueError):
+    """`response_format` client gửi không dịch được sang Code Assist. Trả 400 thay vì bỏ qua:
+    client theo chuẩn OpenAI (vd. software-company/src/company/llm.py) lùi về `json_object` + schema
+    nhúng trong prompt khi bị từ chối, nhưng chỉ khi CÓ từ chối. Nuốt im lặng thì structured output
+    không được ép mà không ai biết — model tự do bịa hình dạng và lỗi hiện ra ở tầng validate schema."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.status_code = 400
+
+
+def _strip_for_response_schema(node: Any) -> Any:
+    """Gỡ từ khoá schema Code Assist không nhận. Chỉ lọc ở vị trí TỪ KHOÁ: dưới `properties` là tên
+    field do người dùng đặt, một property tên `default` hay `title` bị lọc nhầm sẽ biến mất khỏi
+    `properties` mà vẫn còn trong `required` → upstream 400 "property is not defined"."""
+    if isinstance(node, list):
+        return [_strip_for_response_schema(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for k, v in node.items():
+        if k in _RESPONSE_SCHEMA_DROP:
+            continue
+        if k == "properties" and isinstance(v, dict):
+            out[k] = {name: _strip_for_response_schema(sub) for name, sub in v.items()}
+        else:
+            out[k] = _strip_for_response_schema(v)
+    return out
+
+
+def _translate_response_format_to_gemini(response_format: Any, has_tools: bool) -> dict[str, Any]:
+    """`response_format` của OpenAI → phần `generationConfig` tương ứng. Rỗng nghĩa là không cần ép gì.
+
+    `$ref`/`$defs` không dịch được (Code Assist không giải ref) và `responseSchema` không dùng chung
+    được với function calling — cả hai đều ném 400 để client lùi về đường nhúng schema vào prompt."""
+    if response_format is None:
+        return {}
+    if not isinstance(response_format, dict):
+        raise ResponseFormatError("response_format phải là object")
+    kind = response_format.get("type")
+    if kind in (None, "text"):
+        return {}
+    if kind == "json_object":
+        return {"responseMimeType": "application/json"}
+    if kind != "json_schema":
+        raise ResponseFormatError(f"response_format.type '{kind}' không được hỗ trợ (text | json_object | json_schema)")
+
+    schema = (response_format.get("json_schema") or {}).get("schema")
+    if not isinstance(schema, dict):
+        raise ResponseFormatError("response_format.json_schema.schema thiếu hoặc không phải object")
+    if has_tools:
+        raise ResponseFormatError("response_format json_schema không dùng chung được với tools trên Code Assist")
+    if '"$ref"' in json.dumps(schema, ensure_ascii=False):
+        raise ResponseFormatError("response_format json_schema còn $ref — Code Assist không giải được, hãy inline")
+    cleaned = _strip_for_response_schema(_sanitize_gemini_schema_node(schema))
+    return {"responseMimeType": "application/json", "responseSchema": cleaned}
+
+
 def _translate_tools_to_gemini(tools: Any) -> list[dict[str, Any]]:
     if not isinstance(tools, list) or not tools:
         return []
@@ -555,12 +620,16 @@ def build_code_assist_request(openai_payload: dict[str, Any], project_id: str) -
     elif openai_payload.get("max_completion_tokens") is not None:
         generation_config["maxOutputTokens"] = int(openai_payload["max_completion_tokens"])
 
+    gemini_tools = _translate_tools_to_gemini(openai_payload.get("tools"))
+    generation_config.update(
+        _translate_response_format_to_gemini(openai_payload.get("response_format"), bool(gemini_tools))
+    )
+
     inner: dict[str, Any] = {"contents": contents}
     if generation_config:
         inner["generationConfig"] = generation_config
     if joined_system:
         inner["systemInstruction"] = {"role": "system", "parts": [{"text": joined_system}]}
-    gemini_tools = _translate_tools_to_gemini(openai_payload.get("tools"))
     if gemini_tools:
         inner["tools"] = gemini_tools
     tool_config = _translate_tool_choice_to_gemini(openai_payload.get("tool_choice"))
