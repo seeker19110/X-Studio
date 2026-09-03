@@ -41,12 +41,20 @@ class PersistentGate(HumanGate):
         a = AuditLog.model_validate(env.payload)
         if a.action not in {"gate.request", "gate.decide"}:
             return
-        d = json.loads(a.evidence or "{}"); sid = d["subject_id"]
+        # Bản ghi dị thường (evidence hỏng hoặc thiếu khoá) chỉ bị bỏ qua: một dòng log xấu
+        # không được làm sập replay của cả gate — `gate_cli list` và console đều đi qua đây.
+        try: d = json.loads(a.evidence or "{}")
+        except (ValueError, TypeError): return
+        if not isinstance(d, dict): return
+        sid = d.get("subject_id")
+        if not isinstance(sid, str) or not sid: return
         if a.action == "gate.request":
+            if not isinstance(d.get("kind"), str): return
             if sid not in self.pending and not any(r.subject_id == sid and r.created_at == env.ts for r in self.history):
                 super().request(GateRequest(kind=d["kind"], subject_id=sid, checklist=d.get("checklist", []),
                                             created_by=d.get("created_by"), triggered_by=d.get("triggered_by"), created_at=env.ts))
         elif sid in self.pending:
+            if not isinstance(d.get("decision"), str) or not isinstance(d.get("by"), str): return
             super().decide(sid, d["decision"], by=d["by"], reason=d.get("reason", ""), enforce=False)
 
     def _log(self, actor: str, action: str, data: dict) -> None:

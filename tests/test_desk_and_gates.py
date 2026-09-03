@@ -1,10 +1,11 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from studio.bus import InMemoryBus
 from studio.desk import DeskError, ProductionDesk
-from studio.events import Envelope, Provenance, VideoBrief, can_transition
+from studio.events import AuditLog, Envelope, Provenance, VideoBrief, can_transition
 from studio.gate_cli import PersistentGate
 from studio.gates import GateRequest
 from studio.sqlite_bus import SQLiteBus
@@ -136,3 +137,54 @@ def test_gate_approver_allowlist_and_triggered_by(tmp_path, monkeypatch):
     bus3 = SQLiteBus(db); PersistentGate(bus3).request(GateRequest(kind="publish", subject_id="PUB-V3", checklist=[], created_by="desk")); bus3.close()
     assert gate_main(["--db", str(db), "approve", "PUB-V3", "--by", "human:intern"]) == 3
     assert gate_main(["--db", str(db), "approve", "PUB-V3", "--by", "human:editor"]) == 0
+
+
+# ---------- replay gate chịu được bản ghi audit-log dị thường ----------
+
+def _raw_gate_log(bus, action, evidence, actor="human:editor"):
+    """Ghi thẳng một bản ghi gate.* vào audit-log (log hỏng do phiên bản cũ hoặc sửa tay)."""
+    bus.publish(Envelope(topic="audit-log", key=actor, actor=actor,
+                         payload=AuditLog(actor=actor, action=action, evidence=evidence).model_dump()))
+
+
+def test_replay_bo_qua_ban_ghi_gate_thieu_subject_id_va_giu_lai_gate_lanh(tmp_path):
+    """Một dòng log xấu ở giữa không được làm mất gate publish trước *và* sau nó."""
+    db = tmp_path / "s.sqlite"; bus = SQLiteBus(db); gate = PersistentGate(bus)
+    gate.request(GateRequest(kind="publish", subject_id="PUB-V1", checklist=[], created_by="desk"))
+    gate.decide("PUB-V1", "approve", by="human:editor")
+    _raw_gate_log(bus, "gate.request", json.dumps({"kind": "publish"}))  # thiếu subject_id
+    _raw_gate_log(bus, "gate.request", json.dumps({"kind": "publish", "subject_id": ""}))  # rỗng
+    _raw_gate_log(bus, "gate.request", json.dumps({"kind": "publish", "subject_id": 7}))  # không phải chuỗi
+    gate.request(GateRequest(kind="publish", subject_id="PUB-V2", checklist=[], created_by="desk"))
+    bus.close()
+
+    bus2 = SQLiteBus(db); gate2 = PersistentGate(bus2)  # dựng lại: cả hai gate lành vẫn còn
+    assert gate2.is_approved("PUB-V1") and list(gate2.pending) == ["PUB-V2"]
+    bus2.close()
+
+
+def test_replay_bo_qua_evidence_hong_json_hoac_khong_phai_object():
+    bus = InMemoryBus(); gate = PersistentGate(bus)
+    gate.request(GateRequest(kind="publish", subject_id="PUB-V1", checklist=[], created_by="desk"))
+    _raw_gate_log(bus, "gate.request", "{không phải json")
+    _raw_gate_log(bus, "gate.request", json.dumps("PUB-VX"))  # scalar
+    _raw_gate_log(bus, "gate.request", json.dumps([{"kind": "publish", "subject_id": "PUB-VX"}]))  # list
+    _raw_gate_log(bus, "gate.decide", json.dumps(["approve"]))
+    assert list(PersistentGate(bus).pending) == ["PUB-V1"]
+
+
+def test_replay_bo_qua_gate_request_co_kind_khong_phai_chuoi():
+    bus = InMemoryBus(); PersistentGate(bus)
+    _raw_gate_log(bus, "gate.request", json.dumps({"kind": 3, "subject_id": "PUB-V9"}))
+    _raw_gate_log(bus, "gate.request", json.dumps({"subject_id": "PUB-V8"}))  # thiếu hẳn kind
+    assert not PersistentGate(bus).pending
+
+
+def test_replay_gate_decide_thieu_decision_hoac_by_de_gate_o_trang_thai_cho():
+    bus = InMemoryBus(); gate = PersistentGate(bus)
+    gate.request(GateRequest(kind="publish", subject_id="PUB-V1", checklist=[], created_by="desk"))
+    _raw_gate_log(bus, "gate.decide", json.dumps({"subject_id": "PUB-V1", "by": "human:editor"}))  # thiếu decision
+    _raw_gate_log(bus, "gate.decide", json.dumps({"subject_id": "PUB-V1", "decision": "approve"}))  # thiếu by
+    _raw_gate_log(bus, "gate.decide", json.dumps({"subject_id": "PUB-V1", "decision": 1, "by": "human:editor"}))
+    gate2 = PersistentGate(bus)
+    assert list(gate2.pending) == ["PUB-V1"] and not gate2.is_approved("PUB-V1")
