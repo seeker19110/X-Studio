@@ -1,0 +1,3 @@
+# Miễn trừ cho `python -m company.assetscan scan` — mỗi dòng: đường/dẫn::rule::lý do.
+# Lý do là bắt buộc. Waiver không còn khớp gì sẽ bị báo `waiver-unused`; thấy thì xoá dòng đó đi.
+skills/ai-governance.md::injection::Skill dạy agent nhận diện mẫu điều khiển; ví dụ "ignore previous instructions" là bình luận độc mà runner phải chặn, không phải chỉ thị cho agent.

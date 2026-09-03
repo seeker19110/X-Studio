@@ -150,6 +150,10 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
 - **Preflight** (`preflight.py`, ADR-0005): giới hạn nền tảng (block: tiêu đề ≤ 100, mô tả ≤ 5000, tag ≤ 500 ký tự, cụm cấm)
   + quy tắc chất lượng (warn: tiêu đề ≤ 70, mô tả ≥ 200, ≥ 3 chapter bắt đầu 00:00 mỗi chapter ≥ 10s), seo-optimizer sửa block
   một lần, finding còn lại vào checklist gate.
+- **Tài sản prompt qua cổng quét**: `agents/ skills/ templates/ gates/ topics/` của công ty này được job CI
+  `asset-scan` quét cùng lúc với software-company (mẫu injection, ký tự vô hình, lệnh nguy hiểm, khóa lộ —
+  ADR-0022 bên `software-company/docs/adr/`). Chạy tay: `cd ../software-company && make assetscan`.
+  Miễn trừ của công ty này nằm ở `assetscan-waivers.txt` tại thư mục gốc của nó.
 - **Analytics bằng code**: điểm rơi retention map vào `scene_id`; A/B thumbnail z-test hai tỷ lệ, tin cậy ≥ 0.95, guard giữ chân.
 - **Desk** (`desk.py`): trạng thái video, gom 3 review, `ready_for_publish`, rework có hint, block/reopen, review quá hạn.
 - **Orchestrator** (`orchestrator.py`): bảng ROUTES khớp front matter (kiểm lúc khởi tạo); kế hoạch → gate plan → dispatch;
