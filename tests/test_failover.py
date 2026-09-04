@@ -409,6 +409,9 @@ def test_reset_hint_parses_code_assist_wording():
     assert reset_hint_seconds("Resets in 45s.") == 45
     assert reset_hint_seconds("resets in 1h5m") == 3900
     assert reset_hint_seconds("Resets in 2m") == 120
+    # thông điệp gateway tự sinh khi cả pool cooldown (tiếng Việt) cũng phải đọc được
+    assert reset_hint_seconds("Mọi tài khoản Antigravity đều đang cooldown. Thử lại sau khoảng 1543s.") == 1543
+    assert reset_hint_seconds("thử lại sau 2m30s") == 150
     assert reset_hint_seconds("hết quota, không nói khi nào") is None
     assert reset_hint_seconds("") is None
 

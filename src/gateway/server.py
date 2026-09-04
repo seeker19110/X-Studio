@@ -27,6 +27,7 @@ from gateway.client import (
     AntigravityClient,
     discovery_is_stale,
     fetch_available_models,
+    reset_hint_seconds,
     serving_models,
     set_discovered_models,
 )
@@ -89,7 +90,15 @@ def _error_type(status: int) -> str:
 def _error_response(exc: Exception) -> web.Response:
     status = upstream_status(exc)
     err_type = _error_type(status)
-    return web.json_response({"error": {"message": error_message(exc), "type": err_type, "code": status}}, status=status)
+    msg = error_message(exc)
+    headers = {}
+    # Gateway BIẾT chính xác còn phải chờ bao lâu (nó tự tính "Thử lại sau khoảng 1543s") nhưng trước đây chỉ
+    # nhét vào câu tiếng Việt, buộc client phải regex trên văn bản người-đọc. Đổi từ ngữ thông điệp là cơ chế
+    # chờ của client hỏng ngay và không test nào bắt được. Gửi đúng header chuẩn.
+    if status == 429 and (secs := reset_hint_seconds(msg)) is not None:
+        headers["Retry-After"] = str(secs)
+    return web.json_response({"error": {"message": msg, "type": err_type, "code": status}},
+                             status=status, headers=headers)
 
 
 def _stream_error_chunk(exc: Exception) -> str:

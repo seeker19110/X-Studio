@@ -174,6 +174,19 @@ def test_error_message_never_empty():
 
 
 @pytest.mark.asyncio
+async def test_429_gui_header_retry_after(manager):
+    """Gateway BIẾT còn phải chờ bao lâu nhưng trước đây chỉ nhét vào câu tiếng Việt, buộc client regex trên
+    văn bản người-đọc — đổi từ ngữ là cơ chế chờ hỏng ngay, không test nào bắt. Phải gửi header chuẩn."""
+    exc = gw_auth.UpstreamError("Mọi tài khoản Antigravity đều đang cooldown. Thử lại sau khoảng 1543s.", 429)
+    tc = await _client(manager, StubClient(error=exc))
+    try:
+        r = await tc.post("/v1/chat/completions", json={"model": "m", "messages": []})
+        assert r.status == 429 and r.headers.get("Retry-After") == "1543"
+    finally:
+        await tc.close()
+
+
+@pytest.mark.asyncio
 async def test_timeout_reaches_client_as_504_with_message(manager):
     """Toàn tuyến: timeout của httpx → thân phản hồi có mã 504 và thông điệp đọc được."""
     tc = await _client(manager, StubClient(error=httpx.ReadTimeout("")))

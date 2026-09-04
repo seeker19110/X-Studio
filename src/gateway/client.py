@@ -101,17 +101,23 @@ def _should_fail_over(response: httpx.Response) -> bool:
 # "Individual quota reached. ... Resets in 7m29s." Không đọc chỗ này thì rơi vào mặc định
 # `COOLDOWN_DEFAULTS[429] = 3600`, tức cho tài khoản nghỉ 1 tiếng trong khi 7 phút nữa đã dùng lại
 # được — lãng phí hạn mức gấp nhiều lần trên pool nhiều tài khoản.
-_RESETS_IN = re.compile(r"resets?\s+in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?", re.I)
+_RESET_HINTS = (
+    re.compile(r"resets?\s+in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?", re.I),   # Code Assist (tiếng Anh)
+    re.compile(r"thử lại sau(?:\s+khoảng)?\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)", re.I),  # gateway tự sinh
+)
 
 
 def reset_hint_seconds(text: str) -> int | None:
-    """Số giây tới khi hạn mức hồi, đọc từ thân lỗi của Code Assist. None nếu không có."""
-    m = _RESETS_IN.search(text or "")
-    if not m or not any(m.groups()):
-        return None
-    h, mi, s = (int(g) if g else 0 for g in m.groups())
-    total = h * 3600 + mi * 60 + s
-    return total or None
+    """Số giây tới khi hạn mức hồi. Đọc được cả thân lỗi của Code Assist ("Resets in 7m29s") lẫn thông điệp
+    gateway tự sinh khi cả pool đang cooldown ("Thử lại sau khoảng 1543s"). None nếu không có."""
+    for pat in _RESET_HINTS:
+        m = pat.search(text or "")
+        if not m or not any(m.groups()):
+            continue
+        h, mi, s = (int(g) if g else 0 for g in m.groups())
+        if total := h * 3600 + mi * 60 + s:
+            return total
+    return None
 
 
 def cooldown_hint(response: httpx.Response) -> str | None:
