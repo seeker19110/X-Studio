@@ -18,10 +18,12 @@ import os
 import time
 from pathlib import Path
 
+import httpx
 from aiohttp import web
 
 from gateway.auth import AntigravityAuthManager, get_gateway_dir, get_home_dir
 from gateway.client import (
+    UPSTREAM_TIMEOUT_S,
     AntigravityClient,
     discovery_is_stale,
     fetch_available_models,
@@ -51,10 +53,23 @@ def upstream_status(exc: Exception) -> int:
     status = getattr(exc, "status_code", None)
     if isinstance(status, int) and 400 <= status < 600:
         return status
+    if isinstance(exc, httpx.TimeoutException):
+        return 504   # hết giờ chờ upstream, KHÔNG phải upstream trả 500 — client cần phân biệt để chờ lâu hơn
     text = str(exc).lower()
     if "429" in text or "exhausted" in text or "cooldown" in text:
         return 429
     return 500
+
+
+def error_message(exc: Exception) -> str:
+    """Thông điệp lỗi luôn có nội dung. `str(httpx.ReadTimeout(""))` là chuỗi RỖNG, nên lỗi hết giờ trước đây
+    tới client dưới dạng `{"message": "", "code": 500}` — không phân biệt được với upstream hỏng thật, khiến
+    người vận hành mò rất lâu. Luôn kèm tên lớp ngoại lệ khi không có nội dung."""
+    text = str(exc).strip()
+    if isinstance(exc, httpx.TimeoutException):
+        return (f"hết giờ chờ upstream sau {UPSTREAM_TIMEOUT_S:.0f}s ({type(exc).__name__}"
+                + (f": {text}" if text else "") + "); lượt gọi model nặng có thể lâu hơn mức này")
+    return text or f"{type(exc).__name__} (không có mô tả)"
 
 
 def _error_type(status: int) -> str:
@@ -74,13 +89,13 @@ def _error_type(status: int) -> str:
 def _error_response(exc: Exception) -> web.Response:
     status = upstream_status(exc)
     err_type = _error_type(status)
-    return web.json_response({"error": {"message": str(exc), "type": err_type, "code": status}}, status=status)
+    return web.json_response({"error": {"message": error_message(exc), "type": err_type, "code": status}}, status=status)
 
 
 def _stream_error_chunk(exc: Exception) -> str:
     status = upstream_status(exc)
     err_type = _error_type(status)
-    payload = {"error": {"message": str(exc), "type": err_type, "code": status}}
+    payload = {"error": {"message": error_message(exc), "type": err_type, "code": status}}
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\ndata: [DONE]\n\n"
 
 
@@ -203,7 +218,7 @@ class GatewayServer:
             try:
                 return web.json_response(await self.client.create_chat_completion(payload, bearer_token=bearer))
             except Exception as e:
-                logger.error("Chat completion lỗi: %s", e)
+                logger.error("Chat completion lỗi (%s): %s", upstream_status(e), error_message(e))
                 return _error_response(e)
 
         gen = self.client.stream_chat_completion(payload, bearer_token=bearer)

@@ -798,10 +798,18 @@ def _upstream_error_message(status_code: int, body: str | bytes, *, stream: bool
 # ---------- client ----------
 
 
+# Trần thời gian chờ upstream. 120s cũ quá ngắn cho lượt gọi agent thật (model mạnh suy luận trên prompt
+# lớn thường 2-5 phút): mọi lượt như vậy đều hết giờ, và vì `str(httpx.ReadTimeout(""))` rỗng nên nó tới
+# client dưới dạng `{"message": "", "code": 500}` — không phân biệt được với upstream hỏng thật. Đặt bằng
+# mức các client của công ty đang dùng (900s) và cho phép chỉnh bằng biến môi trường.
+UPSTREAM_TIMEOUT_S = float(os.environ.get("GATEWAY_UPSTREAM_TIMEOUT_S", "900"))
+
+
 class AntigravityClient:
     """Gọi Google Code Assist với pool tài khoản xoay vòng."""
 
-    def __init__(self, auth_manager: AntigravityAuthManager | None = None, timeout: float = 120.0) -> None:
+    def __init__(self, auth_manager: AntigravityAuthManager | None = None,
+                 timeout: float = UPSTREAM_TIMEOUT_S) -> None:
         self.auth_manager = auth_manager or AntigravityAuthManager()
         self._http = httpx.AsyncClient(timeout=timeout)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -13,6 +14,7 @@ from gateway import server as gw_server
 from gateway.server import (
     GatewayServer,
     _error_type,
+    error_message,
     is_loopback_host,
     upstream_status,
     warn_if_public_host,
@@ -152,6 +154,36 @@ def test_upstream_status_guesses():
     assert upstream_status(gw_auth.UpstreamError("x", 403)) == 403
     assert upstream_status(RuntimeError("quota exhausted")) == 429
     assert upstream_status(RuntimeError("boom")) == 500
+
+
+def test_timeout_is_504_not_500():
+    """Hết giờ chờ upstream KHÁC upstream trả 500: client phải phân biệt được để chờ lâu hơn thay vì
+    coi là lỗi vận chuyển rồi cooldown-retry-timeout vô tận."""
+    assert upstream_status(httpx.ReadTimeout("")) == 504
+    assert upstream_status(httpx.ConnectTimeout("")) == 504
+
+
+def test_error_message_never_empty():
+    """`str(httpx.ReadTimeout(""))` là chuỗi RỖNG. Nếu để nguyên thì lỗi tới client thành
+    `{"message": "", "code": 500}` — không phân biệt được với upstream hỏng thật, người vận hành
+    phải mò rất lâu. Thông điệp luôn phải nói được chuyện gì đã xảy ra."""
+    msg = error_message(httpx.ReadTimeout(""))
+    assert msg and "ReadTimeout" in msg and "hết giờ chờ" in msg
+    assert error_message(ValueError("")) == "ValueError (không có mô tả)"
+    assert error_message(RuntimeError("boom")) == "boom"
+
+
+@pytest.mark.asyncio
+async def test_timeout_reaches_client_as_504_with_message(manager):
+    """Toàn tuyến: timeout của httpx → thân phản hồi có mã 504 và thông điệp đọc được."""
+    tc = await _client(manager, StubClient(error=httpx.ReadTimeout("")))
+    try:
+        r = await tc.post("/v1/chat/completions", json={"model": "m", "messages": []})
+        assert r.status == 504
+        err = (await r.json())["error"]
+        assert err["code"] == 504 and err["message"].strip()
+    finally:
+        await tc.close()
 
 
 @pytest.mark.asyncio
