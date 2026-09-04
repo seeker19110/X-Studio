@@ -331,3 +331,41 @@ def test_response_schema_khong_lam_mat_property_trung_ten_tu_khoa():
     assert set(item["properties"]) == {"text", "default", "title"}, "property trùng tên từ khoá phải còn"
     assert item["required"] == ["text", "default", "title"]
     assert "additionalProperties" not in item and "title" not in out
+
+
+# ---------- structured output: JSON phải về `content`, không phải `tool_calls` ----------
+
+
+def _fc_resp(args: str):
+    """Phản hồi Code Assist khi client xin `responseSchema`: JSON nằm trong functionCall."""
+    return {"response": {"candidates": [{"finishReason": "STOP", "content": {"parts": [
+        {"functionCall": {"name": "payload", "args": json.loads(args)}}]}}]}}
+
+
+def test_structured_only_nhan_dien_dung():
+    assert gw.structured_only({"response_format": {"type": "json_schema"}}) is True
+    assert gw.structured_only({"response_format": {"type": "json_object"}}) is True
+    assert gw.structured_only({"response_format": {"type": "json_schema"}, "tools": [{"x": 1}]}) is False
+    assert gw.structured_only({"tools": [{"x": 1}]}) is False
+    assert gw.structured_only({}) is False
+    assert gw.structured_only(None) is False
+
+
+def test_json_schema_tra_ve_content_chu_khong_phai_tool_calls():
+    """Đo được khi chạy thật (2026-09-04): client gửi `response_format: json_schema` KHÔNG kèm tool, upstream
+    trả functionCall mang đúng JSON đã xin. Client đọc `message.content` thấy RỖNG rồi `json.loads("")` hỏng và
+    báo "đầu ra không phải JSON" — trong khi dữ liệu vẫn nằm nguyên trong `tool_calls[0].function.arguments`.
+    Tệ hơn: đó là 200 chứ không phải lỗi, nên client không bao giờ biết để đổi cách hỏi."""
+    out = gw.translate_gemini_to_openai_response(_fc_resp('{"verdict": "pass"}'), "m", as_content=True)
+    msg = out["choices"][0]["message"]
+    assert "tool_calls" not in msg, "client không khai tool nào thì không được trả tool_calls"
+    assert json.loads(msg["content"]) == {"verdict": "pass"}
+    assert out["choices"][0]["finish_reason"] == "stop"
+
+
+def test_co_tool_that_thi_van_tra_tool_calls():
+    """Client CÓ khai tool thì functionCall là lời gọi tool thật — không được biến thành content."""
+    out = gw.translate_gemini_to_openai_response(_fc_resp('{"path": "a.py"}'), "m", as_content=False)
+    msg = out["choices"][0]["message"]
+    assert msg["tool_calls"] and msg["content"] is None
+    assert out["choices"][0]["finish_reason"] == "tool_calls"

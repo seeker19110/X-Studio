@@ -734,7 +734,19 @@ def _parts_to_openai(parts: list[Any], *, with_index: bool) -> tuple[str, str, l
     return content_text, reasoning_text, tool_calls
 
 
-def translate_gemini_to_openai_response(gemini_resp: dict[str, Any], requested_model: str) -> dict[str, Any]:
+def structured_only(openai_payload: dict[str, Any] | None) -> bool:
+    """Client xin structured output và KHÔNG khai tool nào?
+
+    Khi đó mọi `functionCall` trong phản hồi là cách Code Assist hiện thực `responseSchema`, không phải lời
+    gọi tool của client — client không có tool nào để mà gọi. Trả nó ra dạng `tool_calls` là đúng chữ nhưng
+    sai nghĩa: client hỏi structured output theo chuẩn OpenAI thì phải nhận JSON ở `message.content`."""
+    if not isinstance(openai_payload, dict): return False
+    return bool(openai_payload.get("response_format")) and not openai_payload.get("tools")
+
+
+def translate_gemini_to_openai_response(gemini_resp: dict[str, Any], requested_model: str,
+                                        as_content: bool = False) -> dict[str, Any]:
+    """`as_content`: đưa functionCall về `message.content` (xem `structured_only`)."""
     inner: dict[str, Any] = gemini_resp["response"] if isinstance(gemini_resp.get("response"), dict) else gemini_resp
     candidates = inner.get("candidates") or []
     content_text, reasoning_text = "", ""
@@ -750,6 +762,16 @@ def translate_gemini_to_openai_response(gemini_resp: dict[str, Any], requested_m
         extracted, cleaned = _extract_tool_calls_from_text(content_text)
         if extracted:
             tool_calls, content_text = extracted, cleaned
+
+    # Đo được khi chạy thật (2026-09-04): client gửi `response_format: json_schema` không kèm tool, upstream trả
+    # về functionCall mang đúng JSON đã xin. Client đọc `message.content` thấy RỖNG rồi `json.loads("")` hỏng, báo
+    # "đầu ra không phải JSON" — trong khi dữ liệu vẫn nằm nguyên trong `tool_calls[0].function.arguments`, chỉ là
+    # không ai đọc. Và vì đó là 200 chứ không phải lỗi, client không bao giờ biết để đổi cách hỏi: nó kẹt vĩnh
+    # viễn ở chế độ hỏng. Đưa về đúng chỗ mà chuẩn OpenAI quy định.
+    if as_content and tool_calls and not content_text:
+        args = (tool_calls[0].get("function") or {}).get("arguments")
+        if isinstance(args, str) and args.strip():
+            content_text, tool_calls = args, []
 
     message: dict[str, Any] = {"role": "assistant", "content": content_text if content_text or not tool_calls else None}
     if reasoning_text:
@@ -857,6 +879,7 @@ class AntigravityClient:
 
     async def create_chat_completion(self, openai_payload: dict[str, Any], bearer_token: str = "") -> dict[str, Any]:
         requested_model = openai_payload.get("model") or DEFAULT_CODE_ASSIST_MODEL
+        want_content = structured_only(openai_payload)
         map_model_name(requested_model)  # model lạ → 400 ngay, trước khi chạm tài khoản/mạng
         candidates = await self._candidates(bearer_token)
         url = f"{CODE_ASSIST_BASE_URL}:generateContent"
@@ -875,7 +898,7 @@ class AntigravityClient:
                 # cố định của tài khoản: pool đã sắp lại theo LRU nên lượt trơn tru luôn là 1/n, và
                 # 2/n trở lên nghĩa là đã phải bỏ qua tài khoản nào đó. Danh tính nằm ở email.
                 logger.info("%s → %s (lần thử %d/%d)", requested_model, creds.email, index, len(candidates))
-                return translate_gemini_to_openai_response(resp.json(), requested_model)
+                return translate_gemini_to_openai_response(resp.json(), requested_model, as_content=want_content)
 
             account_level_failure = resp.status_code < 500 and _should_fail_over(resp)
             if account_level_failure:
@@ -887,7 +910,7 @@ class AntigravityClient:
                     if sibling_resp.status_code == 200:
                         logger.info("%s → %s qua model anh em %s (lần thử %d/%d)",
                                     requested_model, creds.email, sibling, index, len(candidates))
-                        return translate_gemini_to_openai_response(sibling_resp.json(), requested_model)
+                        return translate_gemini_to_openai_response(sibling_resp.json(), requested_model, as_content=want_content)
                     if _should_fail_over(sibling_resp):
                         logger.warning("tài khoản %s trả %s cả ở model anh em, cho nghỉ và xoay",
                                        creds.email, sibling_resp.status_code)
@@ -913,7 +936,7 @@ class AntigravityClient:
             if resp.status_code == 200:
                 logger.info("%s → %s qua endpoint dự phòng (lần thử %d/%d)",
                             requested_model, creds.email, index, len(candidates))
-                return translate_gemini_to_openai_response(resp.json(), requested_model)
+                return translate_gemini_to_openai_response(resp.json(), requested_model, as_content=want_content)
             if _should_fail_over(resp):
                 logger.warning("tài khoản %s trả %s ở cả endpoint dự phòng, cho nghỉ và xoay",
                                creds.email, resp.status_code)
