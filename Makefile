@@ -9,7 +9,7 @@ cov:
 types:
 	uv run mypy src/studio --ignore-missing-imports
 demo:
-	PYTHONPATH=src uv run python -m studio.demo
+	uv run python -m studio.demo
 lint:
 	uv run ruff check src tests
 	uv run mypy src/studio --ignore-missing-imports
@@ -18,16 +18,16 @@ fix:
 golden:
 	UPDATE_GOLDEN=1 uv run pytest -q tests/test_golden_agents.py
 gate:
-	PYTHONPATH=src uv run python -m studio.gate_cli list
+	uv run python -m studio.gate_cli list
 eval:
-	PYTHONPATH=src uv run python -m studio.evals $(AGENT)
+	uv run python -m studio.evals $(AGENT)
 eval-record:   # chạy model thật, lưu evals/recordings/$(AGENT).json — bắt buộc sau khi đổi prompt/skill
-	PYTHONPATH=src uv run python -m studio.evals $(AGENT) --record
+	uv run python -m studio.evals $(AGENT) --record
 eval-replay:   # như CI: phát lại từ bản ghi, không gọi model
-	PYTHONPATH=src uv run python -m studio.evals all --replay --strict
+	uv run python -m studio.evals all --replay --strict
 run:
-	PYTHONPATH=src uv run python -m studio.orchestrator run
+	uv run python -m studio.orchestrator run
 watch:
-	PYTHONPATH=src uv run python -m studio.orchestrator run --watch 5
+	uv run python -m studio.orchestrator run --watch 5
 status:
-	PYTHONPATH=src uv run python -m studio.orchestrator status
+	uv run python -m studio.orchestrator status

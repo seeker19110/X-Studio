@@ -76,21 +76,21 @@ make lint                                  # ruff (make fix = ruff --fix); make 
 #   (fallback OPENAI_API_KEY) STUDIO_MEDIA_BASE_URL=... STUDIO_MEDIA_OUTPUT_DIR=output
 #   Tool web cho trend-researcher / fact-checker (ADR-0007): STUDIO_SEARCH_URL=http://localhost:8080/search  (SearXNG JSON;
 #   không đặt thì web_search báo "chưa cấu hình", web_fetch vẫn chạy; provider claude-code dùng WebSearch/WebFetch của CLI)
-PYTHONPATH=src uv run python -m studio.orchestrator publish channel-briefs brief.json --actor human:owner [--key K]
-PYTHONPATH=src uv run python -m studio.orchestrator run --watch 5      # hoặc: make watch ; một lượt: make run ; --max-steps N
+uv run python -m studio.orchestrator publish channel-briefs brief.json --actor human:owner [--key K]
+uv run python -m studio.orchestrator run --watch 5      # hoặc: make watch ; một lượt: make run ; --max-steps N
 #   mọi CLI (orchestrator, gate_cli, runner, youtube) nhận --db studio.sqlite (mặc định) trước subcommand
-PYTHONPATH=src uv run python -m studio.runner script-writer scripts input.json   # chạy một agent, một topic (không qua orchestrator)
-PYTHONPATH=src uv run python -m studio.gate_cli list                    # hoặc: make gate
-PYTHONPATH=src uv run python -m studio.gate_cli approve PLAN-CH1-1 --by human:owner
-PYTHONPATH=src uv run python -m studio.gate_cli approve PUB-CH1-V1 --by human:editor --reason "đăng 12:00 thứ 6"
+uv run python -m studio.runner script-writer scripts input.json   # chạy một agent, một topic (không qua orchestrator)
+uv run python -m studio.gate_cli list                    # hoặc: make gate
+uv run python -m studio.gate_cli approve PLAN-CH1-1 --by human:owner
+uv run python -m studio.gate_cli approve PUB-CH1-V1 --by human:editor --reason "đăng 12:00 thứ 6"
 #   quyết định: approve | request_changes | reject | hold | rollback; `request KIND SUBJECT --by --checklist` mở gate tay;
 #   gate hạn 24h, nhắc 12h (`list` in remind/OVERDUE; `list --full` in nguyên văn checklist thay vì cắt 80 ký tự)
 #   four-eyes: --by phải khác người tạo gate; gate ghi `trigger=` người đã kích hoạt bước đó (vd. người duyệt plan) khi biết.
 #   Giới hạn ai được duyệt: STUDIO_GATE_APPROVERS=human:owner,human:editor (hoặc media.yaml `gate: {approvers: [...]}`);
 #   đặt rồi thì --by ngoài danh sách bị từ chối (mã 3). Checklist gate publish kèm final_video, thumbnail đã chọn, title.
-PYTHONPATH=src uv run python -m studio.orchestrator publish publish-events published.json      # nền tảng đã công khai (tay)
-PYTHONPATH=src uv run python -m studio.orchestrator publish performance-snapshots stats.json   # số liệu thật (nạp tay)
-PYTHONPATH=src uv run python -m studio.orchestrator publish audience-comments comments.json    # bình luận (nạp tay)
+uv run python -m studio.orchestrator publish publish-events published.json      # nền tảng đã công khai (tay)
+uv run python -m studio.orchestrator publish performance-snapshots stats.json   # số liệu thật (nạp tay)
+uv run python -m studio.orchestrator publish audience-comments comments.json    # bình luận (nạp tay)
 #   `publish` chỉ nhận 4 topic do người/adapter nạp ở trên; audit-log (quyết định gate) và topic của agent bị từ chối (mã 2).
 #   STUDIO_SYNC_EVERY=300 → `run --watch` tự gọi sync-metrics/sync-comments cho video scheduled/published mỗi 300 s (audit `sync.tick`)
 
@@ -98,18 +98,18 @@ PYTHONPATH=src uv run python -m studio.orchestrator publish audience-comments co
 # hoặc STUDIO_PLATFORM=youtube. Đăng nhập là việc của NGƯỜI DÙNG (OAuth Desktop app, loopback 127.0.0.1, mở trình duyệt);
 # token lưu ~/.x-agents/auth/youtube_tokens.json (0600, hoặc STUDIO_YOUTUBE_TOKENS), tự refresh; không bao giờ commit.
 #   Google Cloud Console → bật YouTube Data API v3 + YouTube Analytics API → OAuth client "Desktop app" → tải client_secret.json
-PYTHONPATH=src uv run python -m studio.youtube login --client-secrets client_secret.json [--port 8765] [--no-browser]
+uv run python -m studio.youtube login --client-secrets client_secret.json [--port 8765] [--no-browser]
 #   cờ chung: --tokens PATH (thay STUDIO_YOUTUBE_TOKENS)
-PYTHONPATH=src uv run python -m studio.youtube status                                          # có token? hết hạn? scopes? (không in secret)
+uv run python -m studio.youtube status                                          # có token? hết hạn? scopes? (không in secret)
 #   Gate publish approve → publisher quyết định lịch, CODE upload private + thumbnail chosen + publishAt → publish-events có id thật.
 #   Gate replies approve → CODE đăng từng reply đã duyệt (comments.insert) → publish-events kind=reply có id thật.
-STUDIO_PLATFORM=youtube PYTHONPATH=src uv run python -m studio.youtube sync-comments CH1-V1 [--ref YT_ID] [--since 2026-09-01T00:00:00Z]  # → audience-comments
-STUDIO_PLATFORM=youtube PYTHONPATH=src uv run python -m studio.youtube sync-metrics CH1-V1 --window 7 [--variant A] [--ref] [--channel]  # → performance-snapshots
-PYTHONPATH=src uv run python -m studio.orchestrator status              # hoặc: make status
-PYTHONPATH=src uv run python -m studio.orchestrator report
-PYTHONPATH=src uv run python -m studio.evals script-writer            # make eval AGENT=... (model thật)
-PYTHONPATH=src uv run python -m studio.evals script-writer --record   # make eval-record — sau khi đổi prompt/skill
-PYTHONPATH=src uv run python -m studio.evals all --replay [--strict]  # make eval-replay — như CI, không gọi model; --strict: thiếu bản ghi cũng fail
+STUDIO_PLATFORM=youtube uv run python -m studio.youtube sync-comments CH1-V1 [--ref YT_ID] [--since 2026-09-01T00:00:00Z]  # → audience-comments
+STUDIO_PLATFORM=youtube uv run python -m studio.youtube sync-metrics CH1-V1 --window 7 [--variant A] [--ref] [--channel]  # → performance-snapshots
+uv run python -m studio.orchestrator status              # hoặc: make status
+uv run python -m studio.orchestrator report
+uv run python -m studio.evals script-writer            # make eval AGENT=... (model thật)
+uv run python -m studio.evals script-writer --record   # make eval-record — sau khi đổi prompt/skill
+uv run python -m studio.evals all --replay [--strict]  # make eval-replay — như CI, không gọi model; --strict: thiếu bản ghi cũng fail
 UPDATE_GOLDEN=1 uv run pytest tests/test_golden_agents.py             # make golden — sau khi cố ý sửa agents/ hoặc skills/
 ```
 
