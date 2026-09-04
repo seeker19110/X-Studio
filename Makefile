@@ -11,14 +11,14 @@ lint:
 fix:
 	uv run ruff check --fix src tests
 login:      # thêm một tài khoản Google vào pool (chạy nhiều lần để thêm nhiều tài khoản)
-	PYTHONPATH=src uv run python -m gateway login
+	uv run python -m gateway login
 start:
-	PYTHONPATH=src uv run python -m gateway start
+	uv run python -m gateway start
 stop:
-	PYTHONPATH=src uv run python -m gateway stop
+	uv run python -m gateway stop
 status:
-	PYTHONPATH=src uv run python -m gateway status
+	uv run python -m gateway status
 setup:      # ghi software-company/llm.yaml trỏ vào gateway
-	PYTHONPATH=src uv run python -m gateway setup
+	uv run python -m gateway setup
 models:     # model gateway hỗ trợ + đối chiếu llm.yaml của các công ty (exit 1 nếu lệch)
-	PYTHONPATH=src uv run python -m gateway models
+	uv run python -m gateway models

@@ -96,7 +96,7 @@ với bridge) tuy định dạng giống nhau — copy file sang là dùng đư�
   tài khoản vừa hết quota. Nếu muốn dùng nặng cả hai, cho chúng dùng chung một file token
   (`XAGENTS_HOME`/`HERMES_HOME` trỏ về cùng chỗ) hoặc chia mỗi proxy một tập tài khoản riêng.
 
-Không có `make`: `PYTHONPATH=src uv run python -m gateway <lệnh>`. OAuth loopback dùng cổng cố định `127.0.0.1:51121`
+Không có `make`: `uv run python -m gateway <lệnh>`. OAuth loopback dùng cổng cố định `127.0.0.1:51121`
 (`/oauth-callback`), chờ tối đa 300s; máy VPS không có trình duyệt thì đăng nhập ở máy cá nhân rồi copy file token.
 
 `setup` chỉ ghi dạng **một provider** (`provider: openai`, `base_url`, `models.strong/standard`, `max_tokens`), không có tier
