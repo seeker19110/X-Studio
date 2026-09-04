@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -94,6 +95,34 @@ def _should_fail_over(response: httpx.Response) -> bool:
         return True
     body = response.text.lower()
     return any(marker in body for marker in _QUOTA_MARKERS)
+
+
+# Code Assist KHÔNG gửi header `Retry-After`; nó nói thời điểm hồi trong THÂN thông điệp, ví dụ
+# "Individual quota reached. ... Resets in 7m29s." Không đọc chỗ này thì rơi vào mặc định
+# `COOLDOWN_DEFAULTS[429] = 3600`, tức cho tài khoản nghỉ 1 tiếng trong khi 7 phút nữa đã dùng lại
+# được — lãng phí hạn mức gấp nhiều lần trên pool nhiều tài khoản.
+_RESETS_IN = re.compile(r"resets?\s+in\s+(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?", re.I)
+
+
+def reset_hint_seconds(text: str) -> int | None:
+    """Số giây tới khi hạn mức hồi, đọc từ thân lỗi của Code Assist. None nếu không có."""
+    m = _RESETS_IN.search(text or "")
+    if not m or not any(m.groups()):
+        return None
+    h, mi, s = (int(g) if g else 0 for g in m.groups())
+    total = h * 3600 + mi * 60 + s
+    return total or None
+
+
+def cooldown_hint(response: httpx.Response) -> str | None:
+    """Thời gian nghỉ cho tài khoản: ưu tiên header `Retry-After` chuẩn, không có thì đọc
+    "Resets in ..." trong thân. Trả chuỗi giây để dùng chung đường với `Retry-After`."""
+    if (ra := response.headers.get("Retry-After")):
+        return ra
+    with contextlib.suppress(Exception):
+        if (secs := reset_hint_seconds(response.text)) is not None:
+            return str(secs)
+    return None
 
 
 class UnknownModelError(ValueError):
@@ -857,7 +886,7 @@ class AntigravityClient:
                         logger.warning("tài khoản %s trả %s cả ở model anh em, cho nghỉ và xoay",
                                        creds.email, sibling_resp.status_code)
                         self.auth_manager.mark_account_unavailable(
-                            creds, sibling_resp.status_code, sibling_resp.headers.get("Retry-After")
+                            creds, sibling_resp.status_code, cooldown_hint(sibling_resp)
                         )
                         continue
                     raise UpstreamError(
@@ -865,7 +894,7 @@ class AntigravityClient:
                     )
                 logger.warning("tài khoản %s trả %s, cho nghỉ và xoay sang tài khoản kế",
                                creds.email, resp.status_code)
-                self.auth_manager.mark_account_unavailable(creds, resp.status_code, resp.headers.get("Retry-After"))
+                self.auth_manager.mark_account_unavailable(creds, resp.status_code, cooldown_hint(resp))
                 continue
 
             if resp.status_code < 500:
@@ -882,7 +911,7 @@ class AntigravityClient:
             if _should_fail_over(resp):
                 logger.warning("tài khoản %s trả %s ở cả endpoint dự phòng, cho nghỉ và xoay",
                                creds.email, resp.status_code)
-                self.auth_manager.mark_account_unavailable(creds, resp.status_code, resp.headers.get("Retry-After"))
+                self.auth_manager.mark_account_unavailable(creds, resp.status_code, cooldown_hint(resp))
                 continue
             raise UpstreamError(_upstream_error_message(resp.status_code, resp.text), resp.status_code)
 
@@ -922,7 +951,7 @@ class AntigravityClient:
                         logger.warning("tài khoản %s trả %s khi mở stream, cho nghỉ và xoay",
                                        creds.email, response.status_code)
                         self.auth_manager.mark_account_unavailable(
-                            creds, response.status_code, response.headers.get("Retry-After")
+                            creds, response.status_code, cooldown_hint(response)
                         )
                         continue
                     raise UpstreamError(last_error, response.status_code)

@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from gateway import auth as gw_auth
-from gateway.client import AntigravityClient
+from gateway.client import AntigravityClient, cooldown_hint, reset_hint_seconds
 
 
 class FakeAuthManager:
@@ -18,12 +18,14 @@ class FakeAuthManager:
             gw_auth.AntigravityCredentials(access_token="token-b", email="b@example.com", project_id="project-b"),
         ]
         self.marked: list[tuple[str, int]] = []
+        self.hints: list[str | None] = []
 
     def resolve_credential_candidates(self, bearer_token: str = ""):
         return list(self.accounts)
 
     def mark_account_unavailable(self, creds, status_code: int, retry_after=None) -> None:
         self.marked.append((creds.email, status_code))
+        self.hints.append(retry_after)
 
 
 def _ok(text: str) -> httpx.Response:
@@ -394,3 +396,43 @@ async def test_log_stream_cung_ghi_tai_khoan(caplog):
         await gen.aclose()
     dong = [r.getMessage() for r in caplog.records if r.levelname == "INFO"]
     assert any("a@example.com" in d and "stream" in d for d in dong), dong
+
+
+# ---------- cooldown: đọc "Resets in ..." từ thân lỗi, không chỉ header Retry-After ----------
+
+
+def test_reset_hint_parses_code_assist_wording():
+    """Chuỗi thật Code Assist trả về khi hết hạn mức cá nhân (bắt được lúc chạy thật 2026-09-04)."""
+    real = ("Code Assist lỗi HTTP 429: Individual quota reached. Please upgrade your "
+            "subscription to increase your limits. Resets in 7m29s.")
+    assert reset_hint_seconds(real) == 7 * 60 + 29
+    assert reset_hint_seconds("Resets in 45s.") == 45
+    assert reset_hint_seconds("resets in 1h5m") == 3900
+    assert reset_hint_seconds("Resets in 2m") == 120
+    assert reset_hint_seconds("hết quota, không nói khi nào") is None
+    assert reset_hint_seconds("") is None
+
+
+def test_cooldown_hint_prefers_header_then_body():
+    with_header = httpx.Response(429, headers={"Retry-After": "30"}, text="Resets in 7m29s.")
+    assert cooldown_hint(with_header) == "30"
+    body_only = httpx.Response(429, text="Individual quota reached. Resets in 7m29s.")
+    assert cooldown_hint(body_only) == "449"
+    assert cooldown_hint(httpx.Response(429, text="hết quota")) is None
+
+
+@pytest.mark.asyncio
+async def test_429_cooldown_uses_reset_hint_instead_of_one_hour_default():
+    """Không đọc "Resets in" thì rơi vào COOLDOWN_DEFAULTS[429] = 3600s: tài khoản nghỉ 1 tiếng
+    trong khi 7 phút nữa đã dùng lại được — lãng phí hạn mức gấp 8 lần trên pool nhiều tài khoản."""
+    auth = FakeAuthManager()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if _token(request) == "token-a":
+            return httpx.Response(429, text="Individual quota reached. Resets in 7m29s.")
+        return _ok("từ tài khoản b")
+
+    client = _client(auth, handler)
+    await client.create_chat_completion(_payload())
+    assert auth.marked == [("a@example.com", 429)]
+    assert auth.hints == ["449"], "phải truyền 449s xuống cooldown, không để mặc định 3600s"
