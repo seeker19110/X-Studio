@@ -73,7 +73,11 @@ make lint                                  # ruff (make fix = ruff --fix); make 
 #   Biến môi trường thắng llm.yaml và bỏ qua `backends:`. Bảng agent → tier: ../docs/DIEU-PHOI-MODEL.md
 #   Media (media.yaml: tts.model/voice/base_url, image.model/size, video.fps/resolution, output_dir, platform; mặc định cả ba `fake`):
 #   STUDIO_MEDIA_TTS_PROVIDER=openai STUDIO_MEDIA_IMAGE_PROVIDER=openai STUDIO_MEDIA_VIDEO_PROVIDER=ffmpeg STUDIO_MEDIA_API_KEY=...
-#   (fallback OPENAI_API_KEY) STUDIO_MEDIA_BASE_URL=... STUDIO_MEDIA_OUTPUT_DIR=output
+#   (fallback OPENAI_API_KEY) STUDIO_MEDIA_BASE_URL=... (chỉ cho provider openai) STUDIO_MEDIA_OUTPUT_DIR=output
+#   TTS: openai | gemini | elevenlabs | azure (vi-VN-HoaiMyNeural) | google (vi-VN-Neural2) | command (Piper/Kokoro/edge-tts cục bộ) | fake
+#   Ảnh: openai | gemini (gemini-2.5-flash-image hoặc imagen-*) | stability | replicate (Flux, SDXL…) | fake — mẫu đủ tham số ở media.example.yaml
+#   Key từng kênh: <kênh>.api_key_env, hoặc biến quen thuộc GEMINI_API_KEY / ELEVENLABS_API_KEY / AZURE_SPEECH_KEY / GOOGLE_API_KEY /
+#   STABILITY_API_KEY / REPLICATE_API_TOKEN; `tts.voices: {alloy: vi-VN-HoaiMyNeural}` dịch voice_id của manifest sang giọng provider.
 #   Tool web cho trend-researcher / fact-checker (ADR-0007): STUDIO_SEARCH_URL=http://localhost:8080/search  (SearXNG JSON;
 #   không đặt thì web_search báo "chưa cấu hình", web_fetch vẫn chạy; provider claude-code dùng WebSearch/WebFetch của CLI)
 uv run python -m studio.orchestrator publish channel-briefs brief.json --actor human:owner [--key K]
@@ -144,8 +148,12 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
   trend-researcher, fact-checker. Tool-use trung lập provider (`tools`/`messages` trong `ModelClient`, adapter Anthropic,
   OpenAI-compat, fake); provider `claude-code` uỷ quyền vòng tool cho CLI (`--tools WebFetch,WebSearch`). Vòng lặp tool
   trong runner có trần lượt + ngân sách token, audit `tools_used`; eval phát lại bỏ qua lượt tool (CI offline).
-- **Media trung lập provider** (`media.py`, ADR-0003): TTS/ảnh qua endpoint OpenAI-compatible, ghép video bằng ffmpeg,
-  `fake` offline sinh WAV/PNG/MP4 giả hợp lệ. **Renderer** biến scene manifest thành asset có checksum + provenance.
+- **Media trung lập provider** (`media.py`, ADR-0003): TTS `openai` | `gemini` (PCM → WAV, thời lượng đo chính xác) |
+  `elevenlabs` | `azure` | `google` | `command` (lệnh cục bộ: Piper, Kokoro, edge-tts); ảnh `openai` | `gemini` (Gemini Image /
+  Imagen) | `stability` | `replicate`; ghép video bằng ffmpeg; `fake` offline sinh WAV/PNG/MP4 giả hợp lệ. Tất cả `urllib`
+  thuần, khóa theo kênh (`api_key_env`), bảng `tts.voices` dịch voice_id của manifest, `pace` map sang tốc độ từng provider,
+  thời lượng audio đo từ file (WAV header / ffprobe) thay cho ước lượng theo số từ. **Renderer** biến scene manifest thành
+  asset có checksum + provenance.
 - **Scene repair** (`renderer.apply_cutlist`, ADR-0004): sinh lại đúng cảnh, khoá cảnh, thay asset, đổi thứ tự, ≤ 3 vòng.
 - **Preflight** (`preflight.py`, ADR-0005): giới hạn nền tảng (block: tiêu đề ≤ 100, mô tả ≤ 5000, tag ≤ 500 ký tự, cụm cấm)
   + quy tắc chất lượng (warn: tiêu đề ≤ 70, mô tả ≥ 200, ≥ 3 chapter bắt đầu 00:00 mỗi chapter ≥ 10s), seo-optimizer sửa block
@@ -178,7 +186,9 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
   (hiện gọi tay/cron `sync-*`), đo quota còn lại; adapter nền tảng khác (TikTok, Facebook) — interface `Platform` đã sẵn.
 - **Allowlist domain theo kênh** và cache trang đã đọc cho tool web; tool web chỉ có ở trend-researcher và fact-checker
   (script-writer, community-manager cố ý không có).
-- **Provider media khác** (ElevenLabs, Stability, Runway…): interface có, adapter chưa; chuẩn hoá âm lượng -14 LUFS trong ffmpeg.
+- **Sinh video/footage** (Runway, Kling, Veo; b-roll Pexels/Pixabay) và **thư viện nhạc có license**: interface chưa có;
+  chuẩn hoá âm lượng -14 LUFS, chuyển động/chuyển cảnh, phụ đề, QC bằng code trên file thật, reviewer thấy ảnh — xem
+  `docs/DANH-GIA-NANG-CAP-XUONG-VIDEO.md`.
 - **Shorts repurposing** từ video dài đã duyệt (brief format=short đã hỗ trợ, cắt tự động từ long chưa).
 - **Giao diện web** cho gate và xem bản nháp; thông báo khi gate quá hạn.
 - Bus Redis/Kafka khi chạy nhiều máy (orchestrator hiện tuần tự một tiến trình).

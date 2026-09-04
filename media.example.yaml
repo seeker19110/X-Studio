@@ -1,20 +1,83 @@
 # Cấu hình lớp MEDIA (ADR-0003): giọng đọc (TTS), ảnh cảnh, ghép video. Sao chép thành `media.yaml` (bị gitignore)
 # hoặc dùng biến môi trường STUDIO_MEDIA_*. Mỗi kênh chọn provider độc lập; `fake` sinh file giữ chỗ để chạy offline.
+#
+# Khóa API mỗi kênh: `api_key_env: TEN_BIEN` (khuyên dùng) hoặc `api_key` (file dễ lộ, chỉ khi thử nhanh). Không khai thì dùng
+# biến quen thuộc của provider (GEMINI_API_KEY, ELEVENLABS_API_KEY, AZURE_SPEECH_KEY, GOOGLE_API_KEY, STABILITY_API_KEY,
+# REPLICATE_API_TOKEN), cuối cùng là STUDIO_MEDIA_API_KEY (dùng chung khi tts/ảnh cùng một nhà cung cấp).
+# Giọng: `voice_id`, `pace` (slow|medium|fast), `language` trong scene manifest là ý định của production-manager; bảng `voices`
+# dịch voice_id sang giọng của provider đang dùng; `pace` tự map sang tham số tốc độ của từng provider.
 
 tts:
-  provider: openai          # openai (POST {base_url}/audio/speech, mọi server tương thích) | fake
+  provider: openai          # openai | gemini | elevenlabs | azure | google | command | fake
+  # --- openai: POST {base_url}/audio/speech — OpenAI hoặc mọi server tương thích
   base_url: https://api.openai.com/v1
   model: gpt-4o-mini-tts
-  voice: alloy
+  voice: alloy              # dùng khi manifest không có voice_id (hoặc id không có trong `voices`)
+  # instructions: "Giọng kể chuyện tiếng Việt tự nhiên, ấm, không đọc như máy"   # model hỗ trợ (gpt-4o-mini-tts)
+  # voices: {alloy: coral, nova: sage}        # dịch voice_id của manifest → giọng provider; id không có trong bảng → `voice`
+  #
+  # --- gemini: Gemini TTS (nhiều giọng, có tiếng Việt), trả PCM → WAV nên thời lượng đo chính xác. Key: GEMINI_API_KEY
+  # provider: gemini
+  # model: gemini-2.5-flash-preview-tts       # hoặc gemini-2.5-pro-preview-tts
+  # voice: Kore                               # Kore, Puck, Charon, Zephyr, Aoede, Leda…
+  # style: "Giọng kể chuyện ấm, tự nhiên"     # câu dẫn phong cách (Gemini điều khiển ngữ điệu bằng lời; pace slow/fast tự thêm)
+  #
+  # --- elevenlabs: id giọng riêng của ElevenLabs — bắt buộc `voice` hoặc bảng `voices`. Key: ELEVENLABS_API_KEY
+  # provider: elevenlabs
+  # model: eleven_multilingual_v2             # hoặc eleven_flash_v2_5 (rẻ, nhanh)
+  # voice: <voice_id>
+  # voice_settings: {stability: 0.5, similarity_boost: 0.75}
+  # output_format: mp3_44100_128
+  #
+  # --- azure: Azure AI Speech, giọng tiếng Việt vi-VN-HoaiMyNeural (nữ) / vi-VN-NamMinhNeural (nam). Key: AZURE_SPEECH_KEY
+  # provider: azure
+  # region: southeastasia
+  # voice: vi-VN-HoaiMyNeural
+  # voices: {alloy: vi-VN-HoaiMyNeural, onyx: vi-VN-NamMinhNeural}
+  # output_format: audio-24khz-96kbitrate-mono-mp3
+  #
+  # --- google: Cloud Text-to-Speech (vi-VN-Neural2-A/D, vi-VN-Wavenet-A…D). Key: GOOGLE_API_KEY, bật API trong Cloud Console
+  # provider: google
+  # voice: vi-VN-Neural2-A
+  # language: vi
+  #
+  # --- command: lệnh cục bộ, không tốn tiền, không gửi văn bản ra ngoài (Piper, Kokoro, edge-tts…). Không qua shell.
+  #     Chỗ giữ: {text} {out} {voice} {lang} {pace}; văn bản cũng được đưa vào stdin. File {out} phải có sau khi lệnh xong.
+  # provider: command
+  # command: "piper -m vi_VN-vais1000-medium.onnx -f {out}"
+  # command: "edge-tts --voice {voice} --text {text} --write-media {out}"
+  # voice: vi-VN-HoaiMyNeural
+  # suffix: .wav                              # edge-tts ghi mp3 → đặt .mp3
+  # timeout_s: 300
 
 image:
-  provider: openai          # openai (POST {base_url}/images/generations) | fake
+  provider: openai          # openai | gemini | stability | replicate | fake
+  # --- openai: POST {base_url}/images/generations. KÍCH THƯỚC THEO MODEL: gpt-image-1 nhận 1024x1024 | 1536x1024 | 1024x1536
+  #     (sai kích thước → HTTP 400 ngay lượt render thật đầu tiên); dall-e-3 nhận 1792x1024 | 1024x1792.
   base_url: https://api.openai.com/v1
   model: gpt-image-1
-  size: 1792x1024
+  size: 1536x1024
+  #
+  # --- gemini: `gemini-2.5-flash-image` (generateContent) hoặc `imagen-4.0-generate-001` (predict) theo tên model;
+  #     `size` được đổi sang tỷ lệ gần nhất (16:9 / 9:16 / 1:1…). Key: GEMINI_API_KEY
+  # provider: gemini
+  # model: gemini-2.5-flash-image
+  #
+  # --- stability: Stable Image `core` | `sd3` | `ultra` (đoạn đường dẫn); tham số thêm qua `extra`. Key: STABILITY_API_KEY
+  # provider: stability
+  # model: core
+  # negative_prompt: "text, watermark, logo, real person"
+  # extra: {style_preset: photographic}       # sd3: {model: sd3.5-large}
+  #
+  # --- replicate: Flux, SDXL… dạng `owner/name`; tham số riêng của model qua `input`. Key: REPLICATE_API_TOKEN
+  # provider: replicate
+  # model: black-forest-labs/flux-schnell
+  # input: {num_inference_steps: 4}
+  # poll_s: 2
+  # poll_max: 60
 
 video:
-  provider: ffmpeg          # ffmpeg (ghép ảnh + audio thành MP4, cần ffmpeg trên PATH) | fake
+  provider: ffmpeg          # ffmpeg (ghép ảnh + audio thành MP4, cần ffmpeg trên PATH; có ffprobe thì thời lượng audio đo thật) | fake
   fps: 30
   resolution: 1920x1080
 
@@ -27,4 +90,4 @@ platform:
 
 # thư mục đặt asset sinh ra (bị gitignore)
 output_dir: output
-# api key cho tts/image đặt qua STUDIO_MEDIA_API_KEY (hoặc STUDIO_LLM_API_KEY nếu cùng nhà cung cấp)
+# api key dùng chung cho tts/image khi cùng nhà cung cấp: STUDIO_MEDIA_API_KEY; khác nhà cung cấp → `api_key_env` từng kênh ở trên

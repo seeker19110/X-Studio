@@ -1,26 +1,46 @@
 """Lớp MEDIA trung lập provider (ADR-0003): giọng đọc (TTS), ảnh cảnh, ghép video.
 
 Ba interface nhỏ (`TTS`, `ImageGen`, `VideoAssembler`), mỗi kênh chọn provider độc lập trong `media.yaml` hoặc
-biến môi trường `STUDIO_MEDIA_*`. `fake` sinh file giữ chỗ hợp lệ để chạy offline/test; `openai` gọi endpoint
-OpenAI-compatible (`/audio/speech`, `/images/generations`) nên dùng được với OpenAI hay bất kỳ server tương thích;
-`ffmpeg` ghép ảnh + audio thành MP4 bằng ffmpeg trên PATH. Thêm provider = thêm một class, không chạm renderer.
+biến môi trường `STUDIO_MEDIA_*`. `fake` sinh file giữ chỗ hợp lệ để chạy offline/test.
+
+- TTS: `openai` (`/audio/speech`, mọi server OpenAI-compatible), `gemini` (Gemini TTS: PCM → WAV, thời lượng đo từ số mẫu),
+  `elevenlabs`, `azure` (Azure Speech, giọng vi-VN-HoaiMyNeural/NamMinhNeural), `google` (Cloud Text-to-Speech, vi-VN-Neural2),
+  `command` (lệnh cục bộ: Piper, Kokoro, edge-tts… — self-hosted, không tốn tiền).
+- Ảnh: `openai` (`/images/generations`), `gemini` (Gemini Image `gemini-*-image` hoặc Imagen `imagen-*` theo tên model),
+  `stability` (Stable Image core/sd3/ultra), `replicate` (Flux, SDXL… qua predictions có `Prefer: wait`).
+- Video: `ffmpeg` ghép ảnh + audio thành MP4 bằng ffmpeg trên PATH.
+
+Thêm provider = thêm một class + một dòng trong `TTS_PROVIDERS` / `IMAGE_PROVIDERS`, không chạm renderer. Tất cả dùng
+`urllib` thuần, không SDK. Khóa API: `<kênh>.api_key` hoặc `<kênh>.api_key_env` trong media.yaml → biến môi trường quen thuộc
+của provider (GEMINI_API_KEY, ELEVENLABS_API_KEY, AZURE_SPEECH_KEY, GOOGLE_API_KEY, STABILITY_API_KEY, REPLICATE_API_TOKEN)
+→ STUDIO_MEDIA_API_KEY. Giọng: `voice_id` trong manifest là tên của provider nào không ai biết trước, nên `tts.voices:
+{alloy: vi-VN-HoaiMyNeural}` dịch sang provider đang dùng; `pace` (slow|medium|fast) map sang tham số tốc độ tương ứng.
 
 Mọi kết quả là `MediaResult(path, provider, model, duration_s)` — renderer đóng gói thành `media-assets` có checksum
-và provenance. Không có model text nào gọi được lớp này: chỉ code gọi.
+và provenance. Thời lượng audio đo từ file thật (WAV: header; khác: ffprobe nếu có), chỉ ước lượng theo số từ khi không đo được.
+Không có model text nào gọi được lớp này: chỉ code gọi.
 """
 from __future__ import annotations
 
 import base64
+import html
 import json
 import os
+import re
+import shlex
 import shutil
 import subprocess
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import wave
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 import yaml
 
@@ -28,7 +48,12 @@ from .tools import ToolError, check_url
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT / "media.yaml"
-WORDS_PER_SECOND = 2.5  # ~150 từ/phút: ước lượng thời lượng khi provider không trả về
+WORDS_PER_SECOND = 2.5  # ~150 từ/phút: ước lượng thời lượng khi không đo được từ file
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
+PACE_SPEED = {"slow": 0.9, "medium": 1.0, "fast": 1.15}  # pace của manifest → hệ số tốc độ (openai speed, google speakingRate)
+LANG_CODES = {"vi": "vi-VN", "en": "en-US", "ja": "ja-JP", "ko": "ko-KR", "zh": "cmn-CN", "fr": "fr-FR", "de": "de-DE",
+              "es": "es-ES", "th": "th-TH", "id": "id-ID"}
+ASPECTS = {"1:1": 1.0, "16:9": 16 / 9, "9:16": 9 / 16, "4:3": 4 / 3, "3:4": 3 / 4, "3:2": 1.5, "2:3": 2 / 3}
 
 
 class MediaError(Exception): ...
@@ -83,8 +108,9 @@ def load_media_config(path: Path | None = None) -> MediaConfig:
         v = env.get(f"STUDIO_MEDIA_{k.upper()}_PROVIDER")
         if v: getattr(cfg, k)["provider"] = v
     if env.get("STUDIO_PLATFORM"): cfg.platform["provider"] = env["STUDIO_PLATFORM"]
-    if env.get("STUDIO_MEDIA_BASE_URL"):
-        cfg.tts["base_url"] = cfg.image["base_url"] = env["STUDIO_MEDIA_BASE_URL"]
+    if env.get("STUDIO_MEDIA_BASE_URL"):  # chỉ cho server OpenAI-compatible; provider khác có endpoint riêng
+        for section in (cfg.tts, cfg.image):
+            if section.get("provider") == "openai": section["base_url"] = env["STUDIO_MEDIA_BASE_URL"]
     if env.get("STUDIO_MEDIA_OUTPUT_DIR"): cfg.output_dir = Path(env["STUDIO_MEDIA_OUTPUT_DIR"])
     if env.get("STUDIO_MEDIA_UPLOAD_DIR"): cfg.upload_dir = Path(env["STUDIO_MEDIA_UPLOAD_DIR"])
     cfg.api_key = env.get("STUDIO_MEDIA_API_KEY") or env.get("STUDIO_LLM_API_KEY") or env.get("OPENAI_API_KEY")
@@ -105,11 +131,21 @@ class MediaSuite:
 
 def make_media(cfg: MediaConfig | None = None) -> MediaSuite:
     cfg = cfg or load_media_config()
-    tts: TTS = OpenAITTS(cfg) if cfg.tts.get("provider") == "openai" else _require_fake("tts", cfg.tts, FakeTTS(cfg))
-    img: ImageGen = OpenAIImage(cfg) if cfg.image.get("provider") == "openai" else _require_fake("image", cfg.image, FakeImage(cfg))
+    tts: TTS = _pick("tts", cfg.tts, TTS_PROVIDERS, cfg, lambda: FakeTTS(cfg))
+    img: ImageGen = _pick("image", cfg.image, IMAGE_PROVIDERS, cfg, lambda: FakeImage(cfg))
     vp = cfg.video.get("provider")
     vid: VideoAssembler = FFmpegAssembler() if vp == "ffmpeg" else _require_fake("video", cfg.video, FakeVideo())
     return MediaSuite(tts=tts, image=img, video=vid, cfg=cfg)
+
+
+def _pick(kind: str, section: dict[str, Any], table: dict[str, Callable[[MediaConfig], Any]], cfg: MediaConfig,
+          fake: Callable[[], Any]) -> Any:
+    prov = str(section.get("provider") or "fake")
+    if prov == "fake": return fake()
+    cls = table.get(prov)
+    if cls is None:
+        raise MediaError(f"{kind}: provider lạ `{prov}` (có: fake, {', '.join(table)})")
+    return cls(cfg)
 
 
 def _require_fake(kind: str, section: dict[str, Any], fake: Any) -> Any:
@@ -120,6 +156,102 @@ def _require_fake(kind: str, section: dict[str, Any], fake: Any) -> Any:
 
 def estimate_duration(text: str) -> float:
     return round(max(1.0, len(text.split()) / WORDS_PER_SECOND), 2)
+
+
+def audio_duration(path: Path, text: str) -> float:
+    """Thời lượng THẬT của file audio: WAV đọc header (stdlib), định dạng khác hỏi ffprobe nếu có trên PATH;
+    không đo được thì ước lượng theo số từ. Thời lượng đúng là điều kiện để ffmpeg không cắt giữa câu (`-t`)."""
+    try:
+        if path.suffix.lower() == ".wav":
+            with wave.open(str(path), "rb") as w:
+                if w.getframerate() > 0: return round(w.getnframes() / w.getframerate(), 2)
+        probe = shutil.which("ffprobe")
+        if probe:
+            r = subprocess.run([probe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+            if r.returncode == 0 and r.stdout.strip(): return round(float(r.stdout.strip()), 2)
+    except (OSError, ValueError, EOFError, wave.Error, subprocess.SubprocessError):
+        pass
+    return estimate_duration(text)
+
+
+def write_wav(out: Path, pcm: bytes, rate: int, channels: int = 1, sample_width: int = 2) -> None:
+    with wave.open(str(out), "wb") as w:
+        w.setnchannels(channels); w.setsampwidth(sample_width); w.setframerate(rate); w.writeframes(pcm)
+
+
+# ---------- tiện ích chung cho provider ----------
+
+def section_api_key(section: dict[str, Any], cfg: MediaConfig, *env_names: str) -> str | None:
+    """Khóa API của một kênh: `api_key` → `api_key_env` → biến môi trường quen thuộc của provider → STUDIO_MEDIA_API_KEY."""
+    if section.get("api_key"): return str(section["api_key"])
+    env = os.environ
+    if section.get("api_key_env") and env.get(str(section["api_key_env"])): return env[str(section["api_key_env"])]
+    for n in env_names:
+        if env.get(n): return env[n]
+    return cfg.api_key
+
+
+def require_key(kind: str, provider: str, key: str | None, hint: str) -> str:
+    if not key:
+        raise MediaError(f"{kind}: provider `{provider}` cần API key (đặt {hint}, hoặc {kind}.api_key / {kind}.api_key_env trong media.yaml)")
+    return key
+
+
+def pace_of(voice: dict[str, Any]) -> str:
+    p = str(voice.get("pace") or "medium").lower()
+    return p if p in PACE_SPEED else "medium"
+
+
+def pick_voice(section: dict[str, Any], voice: dict[str, Any], default: str, trust_manifest: bool = True) -> str:
+    """Giọng gửi cho provider. `tts.voices: {<voice_id manifest>: <giọng provider>}` dịch id của manifest; có bảng mà id
+    không có trong bảng → `tts.voice`. Không có bảng: provider dùng tên giọng ngắn (openai, gemini) thì tin id của manifest
+    (`trust_manifest`), provider có id riêng (elevenlabs, azure, google, command) thì chỉ dùng `tts.voice`."""
+    vid = str(voice.get("voice_id") or "")
+    table = section.get("voices") or {}
+    if table: return str(table.get(vid) or section.get("voice") or default)
+    if trust_manifest and vid: return vid
+    return str(section.get("voice") or default)
+
+
+def language_code(voice: dict[str, Any], section: dict[str, Any], voice_name: str = "") -> str:
+    """`vi` → `vi-VN`; đã có vùng thì giữ; không có gì thì lấy từ tên giọng dạng `vi-VN-...`, mặc định vi-VN."""
+    lang = str(voice.get("language") or section.get("language") or "")
+    if not lang and re.match(r"^[a-z]{2,3}-[A-Z]{2}-", voice_name): return voice_name.split("-", 2)[0] + "-" + voice_name.split("-", 2)[1]
+    return LANG_CODES.get(lang.lower(), lang or "vi-VN")
+
+
+def aspect_of(size: str, allowed: dict[str, float] | None = None) -> str:
+    """`1792x1024` → tỷ lệ gần nhất trong bảng cho phép (provider nhận aspectRatio, không nhận pixel)."""
+    table = allowed or ASPECTS
+    try:
+        w, h = (int(x) for x in size.lower().split("x")); ratio = w / h
+    except (ValueError, ZeroDivisionError):
+        return "16:9"
+    return min(table, key=lambda k: abs(table[k] - ratio))
+
+
+def _multipart(fields: dict[str, str]) -> tuple[bytes, str]:
+    boundary = "----studio-" + uuid4().hex
+    buf = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k, v in fields.items())
+    return buf + f"--{boundary}--\r\n".encode(), f"multipart/form-data; boundary={boundary}"
+
+
+def _download(url: str) -> bytes:
+    """URL do server trả về = dữ liệu không tin cậy: cùng ranh giới với web_fetch (chặn IP riêng/loopback)."""
+    try:
+        safe = check_url(url)
+    except ToolError as e:
+        raise MediaError(f"URL ảnh bị chặn: {e}") from e
+    try:
+        with urllib.request.urlopen(safe, timeout=120) as r: return r.read()
+    except urllib.error.URLError as e:
+        raise MediaError(f"lỗi tải ảnh: {e.reason}") from e
+
+
+class _SafeMap(dict[str, str]):
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
 
 
 # ---------- provider giả (offline) ----------
@@ -175,17 +307,20 @@ class FakeVideo:
         return MediaResult(out, "fake", "fake-video", round(sum(d for _, _, d in segments), 2))
 
 
-# ---------- provider OpenAI-compatible ----------
+# ---------- HTTP chung ----------
 
 class _HTTP:
-    def __init__(self, section: dict[str, Any], api_key: str | None, timeout: float = 300.0):
-        self.base_url = str(section.get("base_url") or "https://api.openai.com/v1").rstrip("/")
-        self.api_key, self.timeout = api_key, timeout
+    """urllib thuần. Khóa gửi trong `key_header` (Authorization: Bearer … mặc định; x-goog-api-key, xi-api-key,
+    Ocp-Apim-Subscription-Key cho provider khác). Lỗi HTTP/mạng → MediaError có mã và 300 ký tự đầu của thân."""
+    def __init__(self, base_url: str, api_key: str | None, timeout: float = 300.0,
+                 key_header: str = "Authorization", key_prefix: str = "Bearer "):
+        self.base_url = base_url.rstrip("/")
+        self.api_key, self.timeout, self.key_header, self.key_prefix = api_key, timeout, key_header, key_prefix
 
-    def post(self, path: str, body: dict[str, Any]) -> bytes:
-        req = urllib.request.Request(f"{self.base_url}{path}", data=json.dumps(body).encode("utf-8"),
-                                     headers={"Content-Type": "application/json",
-                                              **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})})
+    def request(self, method: str, path_or_url: str, body: bytes | None, headers: dict[str, str] | None = None) -> bytes:
+        url = path_or_url if path_or_url.startswith(("http://", "https://")) else f"{self.base_url}{path_or_url}"
+        auth = {self.key_header: f"{self.key_prefix}{self.api_key}"} if self.api_key else {}
+        req = urllib.request.Request(url, data=body, headers={**auth, **(headers or {})}, method=method)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return r.read()
@@ -194,25 +329,195 @@ class _HTTP:
         except urllib.error.URLError as e:
             raise MediaError(f"lỗi mạng: {e.reason}") from e
 
+    def post(self, path: str, body: dict[str, Any]) -> bytes:
+        return self.request("POST", path, json.dumps(body).encode("utf-8"), {"Content-Type": "application/json"})
+
+    def post_raw(self, path: str, body: bytes, headers: dict[str, str]) -> bytes:
+        return self.request("POST", path, body, headers)
+
+    def get(self, url: str) -> bytes:
+        return self.request("GET", url, None)
+
+
+# ---------- TTS: OpenAI-compatible ----------
 
 class OpenAITTS:
-    """POST /audio/speech {model, voice, input} → mp3."""
+    """POST /audio/speech {model, voice, input[, speed, instructions]} → mp3."""
     def __init__(self, cfg: MediaConfig):
-        self.cfg = cfg; self.http = _HTTP(cfg.tts, cfg.api_key)
+        self.cfg = cfg
+        self.http = _HTTP(str(cfg.tts.get("base_url") or "https://api.openai.com/v1"), section_api_key(cfg.tts, cfg))
         self.model = str(cfg.tts.get("model") or "gpt-4o-mini-tts")
 
     def synthesize(self, text: str, voice: dict[str, Any], out: Path) -> MediaResult:
         out.parent.mkdir(parents=True, exist_ok=True)
-        body = {"model": self.model, "voice": voice.get("voice_id") or self.cfg.tts.get("voice", "alloy"), "input": text,
-                "response_format": "mp3"}
-        out.with_suffix(".mp3").write_bytes(self.http.post("/audio/speech", body))
-        return MediaResult(out.with_suffix(".mp3"), "openai", self.model, estimate_duration(text))
+        body: dict[str, Any] = {"model": self.model, "voice": pick_voice(self.cfg.tts, voice, "alloy"), "input": text,
+                                "response_format": "mp3"}
+        pace = pace_of(voice)
+        if pace != "medium": body["speed"] = PACE_SPEED[pace]
+        if self.cfg.tts.get("instructions"): body["instructions"] = str(self.cfg.tts["instructions"])
+        p = out.with_suffix(".mp3"); p.write_bytes(self.http.post("/audio/speech", body))
+        return MediaResult(p, "openai", self.model, audio_duration(p, text))
 
+
+# ---------- TTS: Gemini ----------
+
+def _gemini_inline(data: dict[str, Any]) -> dict[str, Any]:
+    for c in data.get("candidates") or []:
+        for part in (c.get("content") or {}).get("parts") or []:
+            if isinstance(part, dict) and part.get("inlineData"): return dict(part["inlineData"])
+    why = data.get("promptFeedback") or (data.get("candidates") or [{}])[0].get("finishReason")
+    raise MediaError("phản hồi Gemini không có inlineData" + (f" ({json.dumps(why, ensure_ascii=False)[:200]})" if why else ""))
+
+
+GEMINI_PACE = {"slow": "Đọc chậm rãi, rõ từng chữ", "fast": "Đọc nhanh, dứt khoát"}
+
+
+class GeminiTTS:
+    """generateContent với responseModalities AUDIO → PCM 16-bit mono (audio/L16;rate=24000) → WAV.
+    Thời lượng = số mẫu / rate: đo thật, không ước lượng. Phong cách/nhịp điều khiển bằng câu dẫn (theo tài liệu Gemini TTS):
+    `tts.style` (vd. "Giọng kể chuyện ấm, tự nhiên") + pace slow/fast của manifest."""
+    def __init__(self, cfg: MediaConfig):
+        self.cfg = cfg; s = cfg.tts
+        key = require_key("tts", "gemini", section_api_key(s, cfg, "GEMINI_API_KEY", "GOOGLE_API_KEY"), "GEMINI_API_KEY")
+        self.http = _HTTP(str(s.get("base_url") or GEMINI_BASE), key, key_header="x-goog-api-key", key_prefix="")
+        self.model = str(s.get("model") or "gemini-2.5-flash-preview-tts")
+
+    def synthesize(self, text: str, voice: dict[str, Any], out: Path) -> MediaResult:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        s = self.cfg.tts; pace = pace_of(voice)
+        style = ([str(s["style"])] if s.get("style") else []) + ([GEMINI_PACE[pace]] if pace in GEMINI_PACE else [])
+        prompt = f"{', '.join(style)}: {text}" if style else text
+        body = {"contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {"voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": pick_voice(s, voice, "Kore")}}}}}
+        part = _gemini_inline(json.loads(self.http.post(f"/models/{self.model}:generateContent", body)))
+        raw = base64.b64decode(part.get("data") or ""); mime = str(part.get("mimeType") or "audio/L16;codec=pcm;rate=24000").lower()
+        if not raw: raise MediaError("phản hồi Gemini TTS rỗng")
+        if "l16" in mime or "pcm" in mime:
+            m = re.search(r"rate=(\d+)", mime); rate = int(m.group(1)) if m else 24000
+            p = out.with_suffix(".wav"); write_wav(p, raw, rate)
+            return MediaResult(p, "gemini", self.model, round(len(raw) / (rate * 2), 2))
+        p = out.with_suffix(".wav" if "wav" in mime else ".mp3"); p.write_bytes(raw)
+        return MediaResult(p, "gemini", self.model, audio_duration(p, text))
+
+
+# ---------- TTS: ElevenLabs ----------
+
+class ElevenLabsTTS:
+    """POST /text-to-speech/{voice_id}?output_format=mp3_44100_128 {text, model_id, voice_settings} → mp3.
+    voice_id là id riêng của ElevenLabs: khai `tts.voice` hoặc bảng `tts.voices`."""
+    def __init__(self, cfg: MediaConfig):
+        self.cfg = cfg; s = cfg.tts
+        key = require_key("tts", "elevenlabs", section_api_key(s, cfg, "ELEVENLABS_API_KEY", "ELEVEN_API_KEY"), "ELEVENLABS_API_KEY")
+        self.http = _HTTP(str(s.get("base_url") or "https://api.elevenlabs.io/v1"), key, key_header="xi-api-key", key_prefix="")
+        self.model = str(s.get("model") or "eleven_multilingual_v2")
+
+    def synthesize(self, text: str, voice: dict[str, Any], out: Path) -> MediaResult:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        s = self.cfg.tts; vid = pick_voice(s, voice, "", trust_manifest=False)
+        if not vid: raise MediaError("elevenlabs: cần voice_id ElevenLabs (tts.voice hoặc bảng tts.voices)")
+        settings: dict[str, Any] = dict(s.get("voice_settings") or {"stability": 0.5, "similarity_boost": 0.75})
+        pace = pace_of(voice)
+        if pace != "medium": settings["speed"] = {"slow": 0.9, "fast": 1.1}[pace]
+        body = {"text": text, "model_id": self.model, "voice_settings": settings}
+        fmt = str(s.get("output_format") or "mp3_44100_128")
+        raw = self.http.post_raw(f"/text-to-speech/{urllib.parse.quote(vid)}?output_format={urllib.parse.quote(fmt)}",
+                                 json.dumps(body).encode("utf-8"), {"Content-Type": "application/json", "Accept": "audio/mpeg"})
+        p = out.with_suffix(".mp3"); p.write_bytes(raw)
+        return MediaResult(p, "elevenlabs", self.model, audio_duration(p, text))
+
+
+# ---------- TTS: Azure Speech ----------
+
+AZURE_RATE = {"slow": "-10%", "fast": "+15%"}
+
+
+class AzureTTS:
+    """Azure AI Speech REST: POST https://{region}.tts.speech.microsoft.com/cognitiveservices/v1 với SSML → mp3.
+    Giọng tiếng Việt: vi-VN-HoaiMyNeural (nữ), vi-VN-NamMinhNeural (nam). pace → <prosody rate>."""
+
+    def __init__(self, cfg: MediaConfig):
+        self.cfg = cfg; s = cfg.tts
+        key = require_key("tts", "azure", section_api_key(s, cfg, "AZURE_SPEECH_KEY", "SPEECH_KEY"), "AZURE_SPEECH_KEY")
+        region = str(s.get("region") or "southeastasia")
+        self.http = _HTTP(str(s.get("base_url") or f"https://{region}.tts.speech.microsoft.com"), key,
+                          key_header="Ocp-Apim-Subscription-Key", key_prefix="")
+        self.fmt = str(s.get("output_format") or "audio-24khz-96kbitrate-mono-mp3"); self.model = "azure-speech"
+
+    def synthesize(self, text: str, voice: dict[str, Any], out: Path) -> MediaResult:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        s = self.cfg.tts; name = pick_voice(s, voice, "vi-VN-HoaiMyNeural", trust_manifest=False)
+        lang = language_code(voice, s, name); pace = pace_of(voice); inner = html.escape(text, quote=False)
+        if pace in AZURE_RATE: inner = f'<prosody rate="{AZURE_RATE[pace]}">{inner}</prosody>'
+        ssml = (f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="{lang}">'
+                f'<voice name="{html.escape(name)}">{inner}</voice></speak>')
+        raw = self.http.post_raw("/cognitiveservices/v1", ssml.encode("utf-8"),
+                                 {"Content-Type": "application/ssml+xml", "X-Microsoft-OutputFormat": self.fmt,
+                                  "User-Agent": "studio-creators"})
+        p = out.with_suffix(".wav" if "riff" in self.fmt else ".mp3"); p.write_bytes(raw)
+        return MediaResult(p, "azure", name, audio_duration(p, text))
+
+
+# ---------- TTS: Google Cloud Text-to-Speech ----------
+
+class GoogleTTS:
+    """POST https://texttospeech.googleapis.com/v1/text:synthesize → {audioContent: base64 mp3}.
+    Giọng tiếng Việt: vi-VN-Neural2-A/D, vi-VN-Wavenet-A…D, vi-VN-Standard-A…D. pace → speakingRate."""
+    def __init__(self, cfg: MediaConfig):
+        self.cfg = cfg; s = cfg.tts
+        key = require_key("tts", "google", section_api_key(s, cfg, "GOOGLE_API_KEY", "GEMINI_API_KEY"), "GOOGLE_API_KEY")
+        self.http = _HTTP(str(s.get("base_url") or "https://texttospeech.googleapis.com/v1"), key,
+                          key_header="x-goog-api-key", key_prefix="")
+
+    def synthesize(self, text: str, voice: dict[str, Any], out: Path) -> MediaResult:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        s = self.cfg.tts; name = pick_voice(s, voice, "vi-VN-Neural2-A", trust_manifest=False)
+        body = {"input": {"text": text}, "voice": {"languageCode": language_code(voice, s, name), "name": name},
+                "audioConfig": {"audioEncoding": "MP3", "speakingRate": PACE_SPEED[pace_of(voice)]}}
+        data = json.loads(self.http.post("/text:synthesize", body))
+        if not data.get("audioContent"): raise MediaError("phản hồi Google TTS không có audioContent")
+        p = out.with_suffix(".mp3"); p.write_bytes(base64.b64decode(data["audioContent"]))
+        return MediaResult(p, "google", name, audio_duration(p, text))
+
+
+# ---------- TTS: lệnh cục bộ (Piper, Kokoro, edge-tts…) ----------
+
+class CommandTTS:
+    """`tts.command` là dòng lệnh có chỗ giữ {text} {out} {voice} {lang} {pace}; văn bản cũng đưa vào stdin. Không qua shell.
+    Ví dụ: "piper -m vi_VN-vais1000-medium.onnx -f {out}" · "edge-tts --voice {voice} --text {text} --write-media {out}"
+    (đặt `suffix: .mp3` cho edge-tts). File {out} phải có sau khi lệnh kết thúc; stderr của lệnh nằm trong lỗi."""
+    def __init__(self, cfg: MediaConfig):
+        self.cfg = cfg; s = cfg.tts
+        cmd = str(s.get("command") or "")
+        if not cmd: raise MediaError('tts: provider `command` cần tts.command (vd. "piper -m vi.onnx -f {out}")')
+        self.argv = shlex.split(cmd)
+        self.model = str(s.get("model") or Path(self.argv[0]).name)
+        self.suffix = str(s.get("suffix") or ".wav"); self.timeout = float(s.get("timeout_s") or 300)
+
+    def synthesize(self, text: str, voice: dict[str, Any], out: Path) -> MediaResult:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        s = self.cfg.tts; p = out.with_suffix(self.suffix)
+        fields = _SafeMap(text=text, out=str(p), voice=pick_voice(s, voice, "", trust_manifest=False),
+                          lang=language_code(voice, s), pace=pace_of(voice))
+        argv = [a.format_map(fields) for a in self.argv]
+        try:
+            r = subprocess.run(argv, input=text, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=self.timeout)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise MediaError(f"lệnh TTS không chạy được: {e}") from e
+        if r.returncode != 0: raise MediaError(f"lệnh TTS lỗi ({r.returncode}): {r.stderr[-400:]}")
+        if not p.is_file() or p.stat().st_size == 0: raise MediaError(f"lệnh TTS không tạo file {p.name}")
+        return MediaResult(p, "command", self.model, audio_duration(p, text))
+
+
+# ---------- Ảnh: OpenAI-compatible ----------
 
 class OpenAIImage:
-    """POST /images/generations {model, prompt, size, n=1} → b64_json (hoặc url)."""
+    """POST /images/generations {model, prompt, size, n=1} → b64_json (hoặc url).
+    Lưu ý kích thước theo model: gpt-image-1 nhận 1024x1024 | 1536x1024 | 1024x1536 | auto; dall-e-3 nhận 1792x1024 | 1024x1792."""
     def __init__(self, cfg: MediaConfig):
-        self.cfg = cfg; self.http = _HTTP(cfg.image, cfg.api_key)
+        self.cfg = cfg
+        self.http = _HTTP(str(cfg.image.get("base_url") or "https://api.openai.com/v1"), section_api_key(cfg.image, cfg))
         self.model = str(cfg.image.get("model") or "gpt-image-1")
 
     def generate(self, prompt: str, size: str, out: Path) -> MediaResult:
@@ -222,14 +527,110 @@ class OpenAIImage:
         if item.get("b64_json"):
             out.write_bytes(base64.b64decode(item["b64_json"]))
         elif item.get("url"):
-            try:  # URL do server trả về = dữ liệu không tin cậy: cùng ranh giới với web_fetch
-                url = check_url(item["url"])
-            except ToolError as e:
-                raise MediaError(f"URL ảnh bị chặn: {e}") from e
-            with urllib.request.urlopen(url, timeout=120) as r: out.write_bytes(r.read())
+            out.write_bytes(_download(item["url"]))
         else:
             raise MediaError("phản hồi ảnh không có b64_json/url")
         return MediaResult(out, "openai", self.model)
+
+
+# ---------- Ảnh: Gemini Image / Imagen ----------
+
+class GeminiImage:
+    """Model `imagen-*` → POST /models/{model}:predict {instances, parameters{aspectRatio}} → bytesBase64Encoded.
+    Model khác (gemini-2.5-flash-image, gemini-*-image-*) → generateContent với responseModalities IMAGE + imageConfig.aspectRatio.
+    Kích thước pixel của cấu hình được đổi sang tỷ lệ gần nhất; renderer/ffmpeg scale về khung video."""
+    def __init__(self, cfg: MediaConfig):
+        self.cfg = cfg; s = cfg.image
+        key = require_key("image", "gemini", section_api_key(s, cfg, "GEMINI_API_KEY", "GOOGLE_API_KEY"), "GEMINI_API_KEY")
+        self.http = _HTTP(str(s.get("base_url") or GEMINI_BASE), key, key_header="x-goog-api-key", key_prefix="")
+        self.model = str(s.get("model") or "gemini-2.5-flash-image")
+
+    def generate(self, prompt: str, size: str, out: Path) -> MediaResult:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        aspect = aspect_of(size)
+        if self.model.startswith("imagen"):
+            data = json.loads(self.http.post(f"/models/{self.model}:predict", {
+                "instances": [{"prompt": prompt}], "parameters": {"sampleCount": 1, "aspectRatio": aspect}}))
+            preds = data.get("predictions") or [{}]
+            if not preds[0].get("bytesBase64Encoded"): raise MediaError("phản hồi Imagen không có bytesBase64Encoded")
+            raw = base64.b64decode(preds[0]["bytesBase64Encoded"]); mime = str(preds[0].get("mimeType") or "image/png")
+        else:
+            modalities = list(self.cfg.image.get("response_modalities") or ["IMAGE"])
+            part = _gemini_inline(json.loads(self.http.post(f"/models/{self.model}:generateContent", {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"responseModalities": modalities, "imageConfig": {"aspectRatio": aspect}}})))
+            raw = base64.b64decode(part.get("data") or ""); mime = str(part.get("mimeType") or "image/png")
+        if not raw: raise MediaError("phản hồi Gemini ảnh rỗng")
+        p = out.with_suffix(".jpg") if "jpeg" in mime or "jpg" in mime else out
+        p.write_bytes(raw)
+        return MediaResult(p, "gemini", self.model)
+
+
+# ---------- Ảnh: Stability AI ----------
+
+STABILITY_ASPECTS = {"16:9": 16 / 9, "1:1": 1.0, "21:9": 21 / 9, "2:3": 2 / 3, "3:2": 1.5, "4:5": 0.8, "5:4": 1.25,
+                     "9:16": 9 / 16, "9:21": 9 / 21}
+
+
+class StabilityImage:
+    """Stable Image v2beta: POST /stable-image/generate/{core|sd3|ultra} (multipart) với Accept: image/* → PNG.
+    `image.model` = đoạn đường dẫn (core mặc định); `image.extra` (vd. {model: sd3.5-large, style_preset: photographic})
+    được nối vào form."""
+    def __init__(self, cfg: MediaConfig):
+        self.cfg = cfg; s = cfg.image
+        key = require_key("image", "stability", section_api_key(s, cfg, "STABILITY_API_KEY"), "STABILITY_API_KEY")
+        self.http = _HTTP(str(s.get("base_url") or "https://api.stability.ai/v2beta"), key)
+        self.model = str(s.get("model") or "core")
+
+    def generate(self, prompt: str, size: str, out: Path) -> MediaResult:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        fields = {"prompt": prompt, "aspect_ratio": aspect_of(size, STABILITY_ASPECTS), "output_format": "png"}
+        if self.cfg.image.get("negative_prompt"): fields["negative_prompt"] = str(self.cfg.image["negative_prompt"])
+        fields.update({k: str(v) for k, v in (self.cfg.image.get("extra") or {}).items()})
+        body, ctype = _multipart(fields)
+        raw = self.http.post_raw(f"/stable-image/generate/{self.model}", body, {"Content-Type": ctype, "Accept": "image/*"})
+        if not raw: raise MediaError("phản hồi Stability rỗng")
+        out.write_bytes(raw)
+        return MediaResult(out, "stability", self.model)
+
+
+# ---------- Ảnh: Replicate (Flux, SDXL…) ----------
+
+class ReplicateImage:
+    """POST /models/{owner}/{name}/predictions với Prefer: wait → prediction; chưa `succeeded` thì poll `urls.get`
+    (poll_s × poll_max); output là URL → tải qua ranh giới URL. `image.input` nối thêm tham số riêng của model."""
+    def __init__(self, cfg: MediaConfig):
+        self.cfg = cfg; s = cfg.image
+        key = require_key("image", "replicate", section_api_key(s, cfg, "REPLICATE_API_TOKEN"), "REPLICATE_API_TOKEN")
+        self.http = _HTTP(str(s.get("base_url") or "https://api.replicate.com/v1"), key)
+        self.model = str(s.get("model") or "black-forest-labs/flux-schnell")
+        self.poll_s = float(s.get("poll_s", 2)); self.poll_max = int(s.get("poll_max", 60))
+
+    def generate(self, prompt: str, size: str, out: Path) -> MediaResult:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        inp = {"prompt": prompt, "aspect_ratio": aspect_of(size), "output_format": "png", **(self.cfg.image.get("input") or {})}
+        pred = json.loads(self.http.post_raw(f"/models/{self.model}/predictions", json.dumps({"input": inp}).encode("utf-8"),
+                                             {"Content-Type": "application/json", "Prefer": "wait=60"}))
+        for _ in range(self.poll_max):
+            if pred.get("status") in {"succeeded", "failed", "canceled"}: break
+            get_url = (pred.get("urls") or {}).get("get")
+            if not get_url: break
+            time.sleep(self.poll_s); pred = json.loads(self.http.get(str(get_url)))
+        if pred.get("status") != "succeeded":
+            raise MediaError(f"replicate: {pred.get('status') or 'không rõ trạng thái'}: {str(pred.get('error') or '')[:300]}")
+        output = pred.get("output"); url = output[0] if isinstance(output, list) and output else output
+        if not isinstance(url, str) or not url: raise MediaError("replicate: output không có URL ảnh")
+        out.write_bytes(_download(url))
+        return MediaResult(out, "replicate", self.model)
+
+
+TTS_PROVIDERS: dict[str, Callable[[MediaConfig], Any]] = {
+    "openai": OpenAITTS, "gemini": GeminiTTS, "elevenlabs": ElevenLabsTTS, "azure": AzureTTS, "google": GoogleTTS,
+    "command": CommandTTS,
+}
+IMAGE_PROVIDERS: dict[str, Callable[[MediaConfig], Any]] = {
+    "openai": OpenAIImage, "gemini": GeminiImage, "stability": StabilityImage, "replicate": ReplicateImage,
+}
 
 
 # ---------- ghép video bằng ffmpeg ----------

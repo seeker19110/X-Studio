@@ -106,9 +106,16 @@ Timeout 24h, nhắc ở 12h, four-eyes (người duyệt ≠ người tạo). Ch
 
 ## Lớp media (ADR-0003)
 
-`media.py`: `TTS.synthesize`, `ImageGen.generate`, `VideoAssembler.assemble`; provider `fake` (offline, file giữ chỗ hợp lệ),
-`openai` (endpoint OpenAI-compatible cho TTS/ảnh), `ffmpeg` (ghép MP4). `renderer.py` biến manifest thành asset có
-checksum + provenance (provider:model, prompt_ref, license) và publish `media-assets`. Asset nằm trong `output/<video_id>/`.
+`media.py`: `TTS.synthesize`, `ImageGen.generate`, `VideoAssembler.assemble`; provider `fake` (offline, file giữ chỗ hợp lệ).
+TTS: `openai` (OpenAI-compatible), `gemini` (Gemini TTS, PCM → WAV, thời lượng đo từ số mẫu), `elevenlabs`, `azure` (Azure
+Speech, giọng vi-VN), `google` (Cloud TTS), `command` (lệnh cục bộ Piper/Kokoro/edge-tts, không qua shell). Ảnh: `openai`,
+`gemini` (Gemini Image `gemini-*-image` hoặc Imagen `imagen-*`), `stability` (Stable Image), `replicate` (Flux, SDXL…; `Prefer:
+wait` rồi poll). Video: `ffmpeg`. Bảng `TTS_PROVIDERS` / `IMAGE_PROVIDERS` là nơi đăng ký; mỗi provider một class, `urllib` thuần,
+URL do server trả về đi qua `check_url` như web_fetch. Khóa theo kênh (`api_key_env` → biến quen thuộc của provider →
+`STUDIO_MEDIA_API_KEY`); `tts.voices` dịch `voice_id` của manifest sang giọng provider, `pace` slow|medium|fast map sang tốc độ;
+thời lượng audio đo từ file (WAV header, ffprobe nếu có), chỉ ước lượng theo số từ khi không đo được. `renderer.py` biến
+manifest thành asset có checksum + provenance (provider:model, prompt_ref, license) và publish `media-assets`. Asset nằm trong
+`output/<video_id>/`.
 
 ## Adapter nền tảng (ADR-0008)
 
