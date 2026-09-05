@@ -45,7 +45,7 @@ src/studio/    events, bus, sqlite_bus, blackboard, registry, gates, gate_cli, l
                platform (adapter YouTube thật / fake — ADR-0008), youtube (CLI login/status/sync-*),
                preflight, analytics, desk, supervisor, runner, orchestrator, evals, fakes, demo
 evals/         ca eval theo agent (YAML) — 14 agent, mỗi agent 2 ca; recordings/ = phản hồi model đã ghi
-tests/         pytest 438 ca / 32 file: bus, registry, golden 14 agent, preflight/analytics, media/renderer (ffmpeg nếu có),
+tests/         pytest 439 ca / 33 file: bus, registry, golden 14 agent, preflight/analytics, media/renderer (ffmpeg nếu có),
                desk/gate, runner/eval ghi-phát lại, tool web + vòng lặp tool, platform (fake, YouTube với HTTP giả, CLI sync),
                routing nhiều backend, provider claude-code, orchestrator end-to-end (gate, rework, sửa cảnh, upload sau gate,
                resume SQLite, injection)
@@ -202,7 +202,7 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
   Orchestrator: gate publish approve → CODE upload + thumbnail chosen + lịch, ghi đè `platform_ref`/`url`/`evidence`; gate replies
   approve → CODE đăng reply; không có approve thì adapter không bị chạm. CLI `sync-comments`/`sync-metrics` nạp số thật lên bus.
 - **Eval ghi/phát lại** + **client giả có kịch bản** (`fakes.py`) chạy được mọi ca eval và demo end-to-end offline.
-- Test: 424 ca pytest (golden 14 agent, bus, registry, preflight/analytics, media/renderer + 8 provider media, timeline/QC, desk/gate, runner/eval, tool web + vòng tool,
+- Test: 439 ca pytest (golden 14 agent, bus, registry, preflight/analytics, media/renderer + 8 provider media, timeline/QC, desk/gate, runner/eval, tool web + vòng tool,
   platform fake/YouTube HTTP giả/CLI sync, routing nhiều backend, provider claude-code, orchestrator e2e kể cả approval-first
   với adapter); 28/28 ca eval có bản ghi model thật; ruff sạch.
 
