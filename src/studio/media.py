@@ -749,9 +749,6 @@ IMAGE_PROVIDERS: dict[str, Callable[[MediaConfig], Any]] = {
 
 # ---------- ghép video bằng ffmpeg ----------
 
-def _concat_quote(p: Path) -> str:
-    return p.as_posix().replace("'", "'\\''")
-
 
 class FFmpegAssembler:
     """Ghép từng cảnh (ảnh + giọng đọc) rồi nối lại. Hai điều quan trọng:

@@ -538,8 +538,8 @@ class ClaudeCodeClient:
             data = json.loads(out[out.index("{"):]) if "{" in out else {}
         except json.JSONDecodeError as e:
             raise LLMError(f"claude -p trả về không phải JSON: {out[:300]}") from e
-        if not isinstance(data, dict):
-            raise LLMError(f"claude -p trả về không phải object JSON: {out[:300]}")
+        # `data` luôn là dict: chuỗi được cắt từ dấu `{` đầu tiên nên json.loads chỉ ra object hoặc ném lỗi;
+        # nhánh "không phải object JSON" trước đây là code chết, đã bỏ.
         subtype = str(data.get("subtype") or "")
         if subtype in CLI_SUBTYPE_ERRORS:   # đọc TRƯỚC `result`: các subtype này có thể không có result
             raise LLMError(f"claude -p {subtype}: {CLI_SUBTYPE_ERRORS[subtype]}; {str(data.get('result') or '')[:200]}")

@@ -45,7 +45,7 @@ src/studio/    events, bus, sqlite_bus, blackboard, registry, gates, gate_cli, l
                platform (adapter YouTube thật / fake — ADR-0008), youtube (CLI login/status/sync-*),
                preflight, analytics, desk, supervisor, runner, orchestrator, evals, fakes, demo
 evals/         ca eval theo agent (YAML) — 14 agent, mỗi agent 2 ca; recordings/ = phản hồi model đã ghi
-tests/         pytest 424 ca / 31 file: bus, registry, golden 14 agent, preflight/analytics, media/renderer (ffmpeg nếu có),
+tests/         pytest 438 ca / 32 file: bus, registry, golden 14 agent, preflight/analytics, media/renderer (ffmpeg nếu có),
                desk/gate, runner/eval ghi-phát lại, tool web + vòng lặp tool, platform (fake, YouTube với HTTP giả, CLI sync),
                routing nhiều backend, provider claude-code, orchestrator end-to-end (gate, rework, sửa cảnh, upload sau gate,
                resume SQLite, injection)

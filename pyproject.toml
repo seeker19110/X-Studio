@@ -34,8 +34,9 @@ testpaths = ["tests"]
 source = ["src/studio"]
 
 [tool.coverage.report]
-# Ngưỡng đặt ở mức đang đạt được (đo 85%): nó chặn tụt lùi, không phải mục tiêu để phấn đấu tới.
-fail_under = 84
+# Cả bốn package phủ 100% dòng: ngưỡng bằng đúng mức đạt được, nên mất một dòng phủ là CI đỏ.
+# Nhánh phụ thuộc nền tảng (os.name == "nt", AF_INET6) được test bằng cách thay socket/ctypes, không bằng môi trường.
+fail_under = 100
 show_missing = true
 skip_covered = true
 
