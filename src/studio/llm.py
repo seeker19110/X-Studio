@@ -29,7 +29,8 @@ import os
 import re
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -411,10 +412,71 @@ CLI_TOOL_TURNS = 8
 # trần tổng độ dài argv (Windows ~32 KB; POSIX rộng hơn nhưng vẫn hữu hạn)
 CLI_ARGV_MAX = 30_000 if os.name == "nt" else 120_000
 
+# ADR-0026 (software-company): đồng bộ cơ chế adapter CLI sang đây. `--effort` theo tier — bảng ĐÓNG, giá trị ngoài
+# bảng phải hỏng to thay vì rơi về mặc định (bài học `none` của codex: cấu hình nói một đằng, CLI chạy một nẻo).
+CLAUDE_EFFORT = ("low", "medium", "high", "xhigh", "max")
+
+# `--json-schema`: CLI tự ép và kiểm đầu ra, trả `structured_output` đã parse.
+# `--no-session-persistence`: mỗi lượt `-p` mặc định ghi transcript (chứa kịch bản, dossier, kết quả web) ra
+# ~/.claude/projects; phòng ban gọi hàng trăm lượt thì đó là hàng trăm bản sao nằm ngoài kho của mình.
+CLI_BASE_FLAGS = ("--no-session-persistence",)
+
+# `subtype` nói vì sao phiên dừng; `result` có thể vắng ở các subtype lỗi, nên đọc nó TRƯỚC.
+CLI_SUBTYPE_ERRORS = {
+    "error_max_turns": "CLI hết lượt (tăng CLI_TOOL_TURNS hoặc chia nhỏ việc)",
+    "error_max_budget_usd": "CLI chạm trần chi phí `--max-budget-usd`",
+    "error_max_structured_output_retries": "CLI không ép được đầu ra đúng JSON Schema sau nhiều lần thử",
+    "error_during_execution": "CLI lỗi khi đang chạy",
+}
+
+# Biến môi trường trông như khoá/bí mật: không đưa vào tiến trình CLI model. Cùng ý với `workspace.SECRET_ENV` của
+# software-company; Studio không có workspace nên khai tại chỗ.
+SECRET_ENV = re.compile(
+    r"(API_?KEY|TOKEN|SECRET|PASSW(OR)?D|CREDENTIAL|ACCESS_KEY|PRIVATE_KEY|SESSION_KEY|SIGNING_KEY|AUTH(?!OR)"
+    r"|_URL$|_URI$|_DSN$|DATABASE|CONNECTION_STRING|SSH_AUTH_SOCK|^GITHUB_|^GH_|^NPM_|^PYPI_|^AWS_|^AZURE_|^GOOGLE_"
+    r"|^OPENAI_|^ANTHROPIC_|^COMPANY_LLM|^STUDIO_LLM|^CLAUDE_CONFIG_DIR$|^CODEX_HOME$)",
+    re.IGNORECASE)
+
+
+def cli_env(keep_prefixes: tuple[str, ...] = ()) -> dict[str, str]:
+    """Env cho tiến trình CLI model (claude/codex): bỏ mọi biến trông như khoá, trừ tiền tố CLI cần để đăng nhập.
+    Trước đây adapter truyền nguyên `os.environ`, nghĩa là khoá TTS/ảnh/YouTube của phòng ban đi thẳng vào tiến
+    trình con — thứ không lượt gọi model nào cần tới."""
+    out = {}
+    for k, v in os.environ.items():
+        if k.upper().startswith(("COMPANY_LLM", "STUDIO_LLM")): continue
+        if SECRET_ENV.search(k) and not k.upper().startswith(tuple(p.upper() for p in keep_prefixes)): continue
+        out[k] = v
+    return out
+
+
+@contextmanager
+def system_prompt_args(system: str) -> Iterator[list[str]]:
+    """`--system-prompt-file <path>` thay vì `--system-prompt <text>`: agent nhiều skill có system prompt sát hoặc
+    vượt trần argv trên Windows; ghi ra file tạm thì argv chỉ còn một đường dẫn ngắn."""
+    import tempfile
+    fd, path = tempfile.mkstemp(prefix="claude-sp-", suffix=".txt")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f: f.write(system)
+        yield ["--system-prompt-file", path]
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def cli_effort_args(effort: dict[str, str], tier: str) -> list[str]:
+    """`--effort <mức>` cho tier; không khai tier → không thêm cờ; khai sai → lỗi rõ, không rơi về mặc định."""
+    level = effort.get(tier)
+    if level is None: return []
+    if level not in CLAUDE_EFFORT:
+        raise LLMError(f"claude-code: effort `{level}` cho tier `{tier}` không hợp lệ; CLI chỉ nhận "
+                       f"{'|'.join(CLAUDE_EFFORT)} (khai `effort:` riêng cho backend này trong llm.yaml)")
+    return ["--effort", level]
+
 
 class ClaudeCodeClient:
     """Gọi `claude -p --output-format json` như một model backend: mỗi lượt là một tiến trình con, system prompt
-    truyền qua `--system-prompt`, user message (kèm schema nhúng — CLI không có structured output) đưa qua STDIN,
+    truyền qua `--system-prompt-file` (ADR-0026: argv có trần ~32 KB trên Windows), schema đi cả `--json-schema`
+    (CLI ép và kiểm, trả `structured_output`) lẫn phần nhúng trong user message; user message đưa qua STDIN,
     không qua argv (argv lộ trong `ps`, có trần độ dài và không được chứa nội dung không tin cậy).
     Không `tools` → `--tools ""` một lượt. Có `tools` (web) → uỷ quyền vòng tool cho CLI: `--tools WebFetch,WebSearch`
     nhiều lượt, CLI tự tìm/đọc rồi trả kết quả cuối; `Completion.tool_calls` luôn rỗng nên runner không lặp thêm.
@@ -427,7 +489,8 @@ class ClaudeCodeClient:
         self.cfg = cfg or load_config()
         self.binary = shutil.which(self.cfg.binary or binary) or self.cfg.binary or binary
         self.timeout = timeout
-        self.env = dict(os.environ)
+        # Giữ ANTHROPIC_*/CLAUDE_* vì CLI cần chúng để đăng nhập / chọn endpoint; mọi khoá khác bị lọc (ADR-0026).
+        self.env = cli_env(keep_prefixes=("ANTHROPIC_", "CLAUDE_"))
         if self.cfg.config_dir:   # nhiều tài khoản Claude trên một máy: mỗi backend một thư mục đăng nhập riêng
             self.env["CLAUDE_CONFIG_DIR"] = str(Path(self.cfg.config_dir).expanduser())
         self._run = runner or self._subprocess  # test thay bằng hàm giả: (args, stdin) → stdout
@@ -458,16 +521,30 @@ class ClaudeCodeClient:
         self.delegated_tools = bool(tools)
         tool_args = (["--tools", CLI_WEB_TOOLS, "--allowedTools", CLI_WEB_TOOLS, "--max-turns", str(CLI_TOOL_TURNS)]
                      if tools else ["--tools", "", "--max-turns", "1"])
-        args = [self.binary, "-p", "--output-format", "json", "--model", model, *tool_args, "--system-prompt", system]
-        if sum(len(a) + 1 for a in args) > CLI_ARGV_MAX:
-            raise LLMError(f"claude -p: argv (system prompt) vượt {CLI_ARGV_MAX} ký tự — rút gọn prompt/skill của agent")
-        out = self._run(args, user + hint)
+        # ADR-0026: schema đi CẢ HAI đường — `--json-schema` để CLI ép và kiểm, `hint` trong prompt để model thấy mô
+        # tả từng trường. `--effort` theo tier, và không ghi transcript ra máy.
+        base = [self.binary, "-p", "--output-format", "json", "--model", model, *CLI_BASE_FLAGS,
+                "--json-schema", json.dumps(schema, ensure_ascii=False), *cli_effort_args(self.cfg.effort, model_tier)]
+        with system_prompt_args(system) as sp_args:
+            args = [*base, *tool_args, *sp_args]
+            if sum(len(a) + 1 for a in args) > CLI_ARGV_MAX:
+                raise LLMError(f"claude -p: argv vượt {CLI_ARGV_MAX} ký tự — rút gọn schema/prompt của agent")
+            out = self._run(args, user + hint)
+        return self._parse(out, model)
+
+    def _parse(self, out: str, model: str) -> Completion:
+        """JSON của `claude -p` → Completion."""
         try:
             data = json.loads(out[out.index("{"):]) if "{" in out else {}
         except json.JSONDecodeError as e:
             raise LLMError(f"claude -p trả về không phải JSON: {out[:300]}") from e
-        if not isinstance(data, dict) or "result" not in data:
-            raise LLMError(f"claude -p thiếu trường result: {out[:300]}")
+        if not isinstance(data, dict):
+            raise LLMError(f"claude -p trả về không phải object JSON: {out[:300]}")
+        subtype = str(data.get("subtype") or "")
+        if subtype in CLI_SUBTYPE_ERRORS:   # đọc TRƯỚC `result`: các subtype này có thể không có result
+            raise LLMError(f"claude -p {subtype}: {CLI_SUBTYPE_ERRORS[subtype]}; {str(data.get('result') or '')[:200]}")
+        if "result" not in data:
+            raise LLMError(f"claude -p thiếu trường result (subtype={subtype or '?'}): {out[:300]}")
         if data.get("is_error"):
             raise LLMError(f"claude -p lỗi: {str(data.get('result'))[:300]}")
         if data.get("stop_reason") == "refusal":
@@ -475,14 +552,20 @@ class ClaudeCodeClient:
         u = data.get("usage") or {}
         read = int(u.get("cache_read_input_tokens", 0) or 0); write = int(u.get("cache_creation_input_tokens", 0) or 0)
         used = reported_model(data.get("modelUsage") or {}, model)
-        return Completion(text=str(data["result"]), input_tokens=int(u.get("input_tokens", 0) or 0) + read + write,
+        # `--json-schema` → `structured_output` đã parse và đã qua kiểm của CLI: ưu tiên nó, `result` chỉ là bản chữ.
+        so = data.get("structured_output")
+        text = json.dumps(so, ensure_ascii=False) if isinstance(so, dict) else str(data["result"])
+        return Completion(text=text, input_tokens=int(u.get("input_tokens", 0) or 0) + read + write,
                           output_tokens=int(u.get("output_tokens", 0) or 0), model=used,
                           stop_reason=str(data.get("stop_reason") or "end_turn"), cached_input_tokens=read)
 
 
 # ---------- provider: Codex CLI (gói ChatGPT Plus/Pro đã `codex login` trên máy, không cần API key) ----------
 
-CODEX_EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "xhigh", "minimal": "minimal"}
+# `none` = TẮT HẲN suy nghĩ. Phải có mặt ở đây, nếu không `.get(effort, "medium")` bên dưới âm thầm đổi `none`
+# thành `medium` — cấu hình nói một đằng, CLI chạy một nẻo (lỗi thật đã gặp ở software-company, PR #38).
+CODEX_EFFORT = {"none": "none", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh",
+                "max": "xhigh", "minimal": "minimal"}
 
 
 def find_codex_binary(binary: str = "codex") -> str:
@@ -514,7 +597,7 @@ class CodexClient:
         self.binary = (shutil.which(explicit) or explicit) if explicit else find_codex_binary()
         self.timeout = timeout
         self.workdir = Path(tempfile.mkdtemp(prefix="codex-empty-"))
-        self.env = dict(os.environ)
+        self.env = cli_env(keep_prefixes=("OPENAI_", "CODEX_"))   # ADR-0026: khoá của phòng ban không đi theo
         if self.cfg.config_dir:
             self.env["CODEX_HOME"] = str(Path(self.cfg.config_dir).expanduser())
         self._run = runner or self._subprocess
