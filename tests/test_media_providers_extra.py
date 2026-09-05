@@ -340,3 +340,19 @@ def test_replicate_blocks_private_output_url(tmp_path, monkeypatch):
     _capture(monkeypatch, [json.dumps({"status": "succeeded", "output": "http://169.254.169.254/latest"}).encode()])
     with pytest.raises(MediaError, match="URL ảnh bị chặn"):
         ReplicateImage(MediaConfig(image={"provider": "replicate", "api_key": "rp"})).generate("p", "1024x1024", tmp_path / "a.png")
+
+
+def test_command_tts_ep_stdin_utf8_du_bang_ma_cuc_bo_cua_con_khac(tmp_path, monkeypatch):
+    """Tiến trình con giải mã stdin theo bảng mã cục bộ CỦA NÓ, không theo bảng mã ta ghi. Trên Windows
+    mặc định là cp1252, nên "xin chào" tới lệnh TTS thành chữ hỏng — và hỏng im lặng: lệnh vẫn thoát 0,
+    vẫn ra file audio, chỉ có giọng đọc là sai. Đặt PYTHONIOENCODING ở tiến trình CHA để dựng lại đúng
+    cảnh đó trên MỌI hệ điều hành: bản sửa phải đè lên nó. Bỏ `env=` trong `synthesize` thì test này ĐỎ."""
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+    cmd = _script(tmp_path, "import sys, wave\n"
+                            "got = sys.stdin.read()\n"
+                            "assert got == 'xin chào', repr(got)\n"
+                            "w = wave.open(sys.argv[1], 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)\n"
+                            "w.writeframes(b'\\x00' * 8000); w.close()\n")
+    cfg = MediaConfig(tts={"provider": "command", "command": cmd + " {out}"})
+    r = CommandTTS(cfg).synthesize("xin chào", {}, tmp_path / "S1.wav")
+    assert r.path.is_file()

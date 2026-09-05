@@ -614,9 +614,13 @@ class CommandTTS:
         fields = _SafeMap(text=text, out=str(p), voice=pick_voice(s, voice, "", trust_manifest=False),
                           lang=language_code(voice, s), pace=pace_of(voice))
         argv = [a.format_map(fields) for a in self.argv]
+        # PYTHONIOENCODING: ta ghi stdin bằng UTF-8, nhưng tiến trình con giải mã theo bảng mã cục bộ của nó —
+        # trên Windows là cp1252, nên "xin chào" tới lệnh TTS thành "xin ch?o". Lỗi này im lặng: lệnh vẫn thoát 0
+        # và vẫn tạo ra file audio, chỉ có giọng đọc là sai. Cùng cách chữa như cầu MCP của software-company.
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
         try:
             r = subprocess.run(argv, input=text, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               timeout=self.timeout)
+                               env=env, timeout=self.timeout)
         except (OSError, subprocess.SubprocessError) as e:
             raise MediaError(f"lệnh TTS không chạy được: {e}") from e
         if r.returncode != 0: raise MediaError(f"lệnh TTS lỗi ({r.returncode}): {r.stderr[-400:]}")
