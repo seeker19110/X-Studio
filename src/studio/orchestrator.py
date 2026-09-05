@@ -40,6 +40,7 @@ from .events import (
     AuditLog,
     CutList,
     Envelope,
+    MediaAsset,
     MetadataPackage,
     PerformanceSnapshot,
     SceneManifest,
@@ -49,14 +50,16 @@ from .events import (
 from .gate_cli import PersistentGate, rollback_target
 from .gates import GateRequest, gate_approvers
 from .llm import LLMError, ModelClient
-from .media import MediaError, MediaSuite
+from .media import MediaError, MediaSuite, frame_size
 from .platform import Platform, PlatformError, UploadResult, make_platform
 from .preflight import PreflightReport, preflight
+from .qc import QCReport, qc_scenes, qc_video
 from .registry import AgentSpec, load_agents
 from .renderer import ACTOR as RENDERER
 from .renderer import Renderer
 from .runner import CONTEXT_ONLY, AgentRunner, RunnerError
 from .supervisor import Supervisor
+from .timeline import snap_chapters
 from .youtube import sync_comments, sync_metrics
 
 ACTOR = "orchestrator"
@@ -150,9 +153,12 @@ def _assets_of(o: Orchestrator, vid: str, version: int | None = None) -> list[di
 
 
 def _with_manifest_assets(e: Envelope, o: Orchestrator) -> dict[str, Any]:
+    """Editor là người duy nhất sửa được cảnh, nhưng nó chỉ đọc JSON: `scene_qc` là số đo THẬT của từng ảnh và từng
+    file giọng đọc (độ sáng, tương phản, thời lượng, im lặng) để nó quyết định sửa cảnh nào bằng dữ liệu, không phải
+    phỏng đoán. Máy không có ffmpeg thì trường này rỗng và editor làm việc như cũ."""
     vid = e.payload["video_id"]; m = o.manifest(vid)
     if m is None: return {}
-    return {"manifest": m.model_dump(), "scene_assets": _assets_of(o, vid, m.version),
+    return {"manifest": m.model_dump(), "scene_assets": _assets_of(o, vid, m.version), "scene_qc": qc_scenes(m),
             "repair_rounds_used": o.desk.repair_rounds[vid], "repair_rounds_max": 3}
 
 
@@ -162,7 +168,10 @@ def _with_package(e: Envelope, o: Orchestrator) -> dict[str, Any]:
                            "manifest": m.model_dump() if m else None,
                            "thumbnails": [a for a in _assets_of(o, vid) if a["kind"] == "thumbnail"],
                            "final_video": next((a for a in reversed(_assets_of(o, vid)) if a["kind"] == "final_video"), None),
-                           "preflight": [f.model_dump() for f in o.preflights.get(vid, PreflightReport()).findings]}
+                           "captions": next((a for a in reversed(_assets_of(o, vid)) if a["kind"] == "captions"), None),
+                           "preflight": [f.model_dump() for f in o.preflights.get(vid, PreflightReport()).findings],
+                           # QC đo trên FILE thật: quality-reviewer chỉ đọc JSON nên đây là mắt và tai của nó
+                           "qc": o.qcs[vid].as_dict() if vid in o.qcs else None}
     return {"package": {k: v for k, v in pkg.items() if v is not None}}
 
 
@@ -269,6 +278,7 @@ class Orchestrator:
         self.plans: dict[str, dict[str, Any]] = {}
         self.reply_batches: dict[str, list[dict[str, Any]]] = {}
         self.preflights: dict[str, PreflightReport] = {}
+        self.qcs: dict[str, QCReport] = {}  # QC bằng code trên bản dựng cuối (đo file, không đọc manifest)
         self.queue: list[Envelope] = []
         self.deferred: dict[str, tuple[Envelope, str]] = {}
         self.once: set[str] = set()
@@ -486,7 +496,8 @@ class Orchestrator:
             else:
                 if cut.decision == "repair":
                     self._audit("repair.limit", {"video_id": cut.video_id, "rounds": self.desk.repair_rounds[cut.video_id]}, video_id=cut.video_id)
-                self.renderer.finalize(m, cut.order or None); res.actions.append("finalize")
+                final = self.renderer.finalize(m, cut.order or None); res.actions.append("finalize")
+                self._after_final(m, cut.order or None, final, res)
         except (MediaError, ValueError) as e:
             self._audit("render_failed", {"error": str(e)[:300]}, video_id=cut.video_id); res.actions.append("render!failed")
 
@@ -495,6 +506,35 @@ class Orchestrator:
             n = len(self.renderer.thumbnails(ThumbnailSpec.model_validate(env.payload))); res.actions.append(f"thumbnails→{n}")
         except MediaError as e:
             self._audit("render_failed", {"error": str(e)[:300]}, video_id=env.payload.get("video_id"))
+
+    def _captions_of(self, vid: str) -> str | None:
+        return next((a["path"] for a in reversed(_assets_of(self, vid)) if a["kind"] == "captions"), None)
+
+    def _after_final(self, m: SceneManifest, order: list[str] | None, final: MediaAsset, res: StepResult) -> None:
+        """Hai việc CODE làm ngay khi có bản cuối, trước khi ai duyệt gì:
+
+        1. Nắn mốc chapter về đầu cảnh thật. seo-optimizer viết nhãn từ lúc chưa có video nên mốc của nó là số đoán.
+        2. Đo file thật (QC): khung hình, thời lượng, âm lượng, hình đen, khoảng lặng, thumbnail, phụ đề — vì ba
+           reviewer chỉ đọc JSON, không mở được file."""
+        vid = m.video_id
+        cues = self.renderer.cues(m, order)
+        latest = _latest_payload(self, "metadata-packages", vid)
+        if latest and latest.get("chapters"):
+            meta = MetadataPackage.model_validate(latest)
+            fixed = snap_chapters(meta.chapters, cues)
+            if [c.model_dump() for c in fixed] != [c.model_dump() for c in meta.chapters]:
+                meta.chapters = fixed
+                self._audit("chapters.snapped", {"video_id": vid, "chapters": [c.model_dump() for c in fixed]}, video_id=vid)
+                self.bus.publish(Envelope(topic="metadata-packages", key=vid, actor="chapters", payload=meta.model_dump()))
+                res.actions.append(f"chapters→{len(fixed)}")
+        v = self.renderer.media.cfg.video
+        fps, res_str = int(v.get("fps", 30)), frame_size(v, m.aspect)
+        thumb = self._chosen_thumbnail(vid); cap = self._captions_of(vid)
+        rep = qc_video(Path(final.path), expected_duration_s=final.duration_s or 0.0, expected_resolution=res_str,
+                       expected_fps=fps, thumbnail=Path(thumb) if thumb else None, captions=Path(cap) if cap else None)
+        self.qcs[vid] = rep
+        self._audit("qc", {"video_id": vid, **rep.as_dict()}, video_id=vid)
+        res.actions.append(f"qc:{'block' if rep.blocked else 'ok'}:{len(rep.findings)}" if rep.available else "qc:n/a")
 
     def _preflight(self, env: Envelope, res: StepResult) -> None:
         meta = MetadataPackage.model_validate(env.payload)
@@ -558,9 +598,12 @@ class Orchestrator:
         final = next((a for a in reversed(_assets_of(self, vid)) if a["kind"] == "final_video"), None)
         meta = _latest_payload(self, "metadata-packages", vid) or {}
         thumb = self._chosen_thumbnail(vid)
+        cap = self._captions_of(vid)
         facts = [f"final_video:{final['path']}" if final else "final_video:(chưa có)",
-                 f"thumbnail:{thumb}" if thumb else "thumbnail:(chưa có)", f"title:{meta.get('title', '(chưa có)')}"]
-        return [f"review:{s}:{r.verdict}" for s, r in sorted(self.desk.reviews[vid].items())] + rep.checklist() + facts
+                 f"thumbnail:{thumb}" if thumb else "thumbnail:(chưa có)", f"title:{meta.get('title', '(chưa có)')}",
+                 f"captions:{cap}" if cap else "captions:(chưa có)"]
+        qc = self.qcs[vid].checklist() if vid in self.qcs else []
+        return [f"review:{s}:{r.verdict}" for s, r in sorted(self.desk.reviews[vid].items())] + rep.checklist() + qc + facts
 
     def _maybe_request_publish(self, vid: str, res: StepResult) -> None:
         sid = f"PUB-{vid}"
@@ -711,6 +754,17 @@ class Orchestrator:
                 self._audit(f"platform.{step}_failed", {"video_id": vid, "platform_ref": up.platform_ref, "error": str(e)[:300],
                                                         "status": getattr(e, "status", None)}, video_id=vid)
                 res.actions.append(f"platform:{step}!failed"); break
+        # Phụ đề là phần thêm, không phải điều kiện đăng: lỗi ở đây ghi vào evidence chứ không làm hỏng lượt đăng.
+        cap = self._captions_of(vid)
+        if not failed and cap:
+            try:
+                steps["captions"] = self.platform.upload_captions(up.platform_ref, Path(cap), language=meta.language or "vi")
+                self._audit("platform.captions", {"video_id": vid, "platform_ref": up.platform_ref, "file": cap}, video_id=vid)
+                res.actions.append("platform:captions")
+            except (PlatformError, OSError) as e:
+                steps["captions"] = f"captions lỗi ({self.platform.name}): {str(e)[:200]}"
+                self._audit("platform.captions_failed", {"video_id": vid, "error": str(e)[:300]}, video_id=vid)
+                res.actions.append("platform:captions!failed")
         if failed: status = "failed"
         elif p.get("scheduled_at"): status = "scheduled"
         else:  # không lên lịch: giữ trạng thái nền tảng báo (public → published), không tự khai "scheduled"

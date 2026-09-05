@@ -25,13 +25,14 @@ brief kênh → trend → KẾ HOẠCH (gate plan) → nghiên cứu → kịch 
 | 7 | Giám sát | supervisor | Watchdog, ngân sách token, lỗi lặp, bài học, calibration ước lượng |
 | — | Human gate | (con người) | `plan` · `publish` · `replies` · `escalation` |
 
-Thành phần code: **renderer** (media), **desk** (vòng đời video, gom review, rework có hint), **preflight**, **analytics**,
-**platform** (adapter nền tảng: `fake` | `youtube` — upload, thumbnail, lên lịch, bình luận, số liệu; ADR-0008), **orchestrator**.
+Thành phần code: **renderer** (media), **timeline** (mốc cảnh → phụ đề, chapter), **qc** (đo file thật), **desk**
+(vòng đời video, gom review, rework có hint), **preflight**, **analytics**,
+**platform** (adapter nền tảng: `fake` | `youtube` — upload, thumbnail, phụ đề, lên lịch, bình luận, số liệu; ADR-0008), **orchestrator**.
 
 ## Cấu trúc
 
 ```
-docs/          kiến trúc, tiêu chuẩn, ADR 0001–0008
+docs/          kiến trúc, tiêu chuẩn, ADR 0001–0009
 agents/        14 system prompt có version, nhóm theo khối; front matter: model_tier, reads/writes, context_namespace_write,
                skills / skills_core, tools, budget_tokens_per_task, max_retries, timeout_minutes
 skills/        24 skill có version: tiêu chuẩn + quy trình + quy tắc + checklist; nạp đầy đủ / rút gọn
@@ -40,10 +41,11 @@ templates/     brief, kịch bản, scene manifest, metadata, gói đăng, postm
 topics/        19 JSON Schema topic + bảng owner 10 namespace
 src/studio/    events, bus, sqlite_bus, blackboard, registry, gates, gate_cli, llm (text), routing (nhiều gói tài khoản,
                chọn theo tier, xoay khi hết quota — ADR-0006), tools (web chỉ đọc — ADR-0007), media (TTS/ảnh/video),
-               renderer, platform (adapter YouTube thật / fake — ADR-0008), youtube (CLI login/status/sync-*),
+               renderer, timeline (mốc cảnh, SRT, nắn chapter — ADR-0009), qc (đo file bằng ffprobe/ffmpeg),
+               platform (adapter YouTube thật / fake — ADR-0008), youtube (CLI login/status/sync-*),
                preflight, analytics, desk, supervisor, runner, orchestrator, evals, fakes, demo
 evals/         ca eval theo agent (YAML) — 14 agent, mỗi agent 2 ca; recordings/ = phản hồi model đã ghi
-tests/         pytest 164 ca / 12 file: bus, registry, golden 14 agent, preflight/analytics, media/renderer (ffmpeg nếu có),
+tests/         pytest 424 ca / 31 file: bus, registry, golden 14 agent, preflight/analytics, media/renderer (ffmpeg nếu có),
                desk/gate, runner/eval ghi-phát lại, tool web + vòng lặp tool, platform (fake, YouTube với HTTP giả, CLI sync),
                routing nhiều backend, provider claude-code, orchestrator end-to-end (gate, rework, sửa cảnh, upload sau gate,
                resume SQLite, injection)
@@ -117,7 +119,9 @@ uv run python -m studio.evals all --replay [--strict]  # make eval-replay — nh
 UPDATE_GOLDEN=1 uv run pytest tests/test_golden_agents.py             # make golden — sau khi cố ý sửa agents/ hoặc skills/
 ```
 
-Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png`, `draft_v1.mp4`, `final_v2.mp4`, `thumbnails/A.png`…
+Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png`, `draft_v1.mp4`, `final_v2.mp4`,
+`thumbnails/A_base.png` (nền do model ảnh vẽ), `thumbnails/A.jpg` (bản hoàn thiện 1280x720 có chữ phủ, chính là file
+đăng) và `captions_v2.srt` (phụ đề của bản cuối).
 
 ## Quy ước bắt buộc
 - Brief phải có `estimate_tokens` trước dispatch; `budget_tokens ≥ estimate × 1.5` (code từ chối kế hoạch nếu không).
@@ -133,7 +137,7 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
 ## Hiện trạng (2026-09-02)
 
 ### Đã có
-- Tài liệu: kiến trúc, tiêu chuẩn, ADR 0001–0008; 14 system prompt có version; 24 skill có version; 7 template; checklist 4 gate.
+- Tài liệu: kiến trúc, tiêu chuẩn, ADR 0001–0009; 14 system prompt có version; 24 skill có version; 7 template; checklist 4 gate.
 - 19 JSON Schema topic (sinh từ pydantic + 4 schema tay) + bảng owner 10 namespace.
 - Lõi xác định `src/studio/`: envelope/payload pydantic, bus validate schema + quyền namespace, bus SQLite (checkpoint/resume),
   registry nạp prompt + skill hai mức, human gate bền vững qua audit-log + CLI four-eyes.
@@ -154,6 +158,27 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
   thuần, khóa theo kênh (`api_key_env`), bảng `tts.voices` dịch voice_id của manifest, `pace` map sang tốc độ từng provider,
   thời lượng audio đo từ file (WAV header / ffprobe) thay cho ước lượng theo số từ. **Renderer** biến scene manifest thành
   asset có checksum + provenance.
+- **Bản dựng có nhịp** (ADR-0009): mỗi cảnh một kiểu chuyển động nhẹ xoay vòng (zoom/pan, hai cảnh liền nhau khác kiểu),
+  chuyển cảnh mờ dần nằm gọn trong đoạn đệm im lặng nên giọng đọc không bao giờ chồng nhau, âm lượng chuẩn hoá về
+  -14 LUFS và đỉnh -1 dBTP. Cả video là một lệnh ffmpeg (`xfade` + `acrossfade` + `loudnorm`).
+- **Phụ đề và chapter tính từ bản dựng thật** (ADR-0009): `timeline.py` là nguồn sự thật duy nhất của mốc thời gian —
+  SRT sinh thẳng từ narration (không cần nhận dạng giọng nói), chapter thì model đặt tên còn CODE nắn mốc về đầu cảnh
+  gần nhất và bỏ mốc vi phạm giới hạn nền tảng, rồi publish lại metadata dưới actor `chapters`. Phụ đề được đăng kèm
+  sau khi upload video (`captions.insert`); lỗi phụ đề không làm hỏng lượt đăng.
+- **QC bằng code trên file thật** (`qc.py`, ADR-0009): ffprobe + ebur128/blackdetect/silencedetect đo khung hình, fps,
+  thời lượng, âm lượng, đỉnh, đoạn hình đen, khoảng lặng, thumbnail, phụ đề. Báo cáo vào `package` của quality-reviewer
+  và vào checklist gate publish — ba reviewer chỉ đọc JSON nên đây là mắt và tai của họ.
+- **Đo từng cảnh cho editor** (`qc.qc_scenes`): độ sáng và tương phản của từng ảnh, thời lượng và tổng im lặng của từng
+  file giọng đọc, so với số từ của narration → `scene_qc` trong payload của editor. Ảnh gần đen, ảnh một màu, TTS trả về
+  im lặng hay đọc thiếu đều thành finding có mức và vị trí, nên editor sửa đúng cảnh thay vì đoán.
+- **Khung hình và thời lượng đúng ngay lượt render thật đầu tiên**: kích thước ảnh chọn theo model (`gpt-image-1` không
+  nhận 1792x1024 — khai sai được thay bằng kích thước hợp lệ cùng tỷ lệ), khung video theo `aspect` của manifest (short
+  9:16 ra 1080x1920, không phải khung ngang kèm hai dải đen), cảnh dài đúng bằng giọng đọc (`-shortest` + `apad`, không
+  cắt theo số từ chia 2,5) và ảnh lấp đầy khung (`fit: cover`). File trung gian của ffmpeg nằm trong thư mục tạm.
+- **Thumbnail do CODE hoàn thiện**: model ảnh chỉ vẽ nền không chữ (nó viết sai dấu tiếng Việt), code phủ `overlay_text`
+  bằng `drawtext` (viết hoa, ngắt ≤ 3 dòng, viền đen, tránh góc phải dưới nơi nền tảng đè thời lượng), thu về 1280x720,
+  nén JPEG ≤ 2 MB; adapter YouTube từ chối trước khi gọi API nếu file vẫn quá nặng. Không có font thì vẫn ra ảnh đúng
+  kích thước và audit `thumbnail.finish` nói rõ là thiếu chữ.
 - **Scene repair** (`renderer.apply_cutlist`, ADR-0004): sinh lại đúng cảnh, khoá cảnh, thay asset, đổi thứ tự, ≤ 3 vòng.
 - **Preflight** (`preflight.py`, ADR-0005): giới hạn nền tảng (block: tiêu đề ≤ 100, mô tả ≤ 5000, tag ≤ 500 ký tự, cụm cấm)
   + quy tắc chất lượng (warn: tiêu đề ≤ 70, mô tả ≥ 200, ≥ 3 chapter bắt đầu 00:00 mỗi chapter ≥ 10s), seo-optimizer sửa block
@@ -177,7 +202,7 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
   Orchestrator: gate publish approve → CODE upload + thumbnail chosen + lịch, ghi đè `platform_ref`/`url`/`evidence`; gate replies
   approve → CODE đăng reply; không có approve thì adapter không bị chạm. CLI `sync-comments`/`sync-metrics` nạp số thật lên bus.
 - **Eval ghi/phát lại** + **client giả có kịch bản** (`fakes.py`) chạy được mọi ca eval và demo end-to-end offline.
-- Test: 164 ca pytest (golden 14 agent, bus, registry, preflight/analytics, media/renderer, desk/gate, runner/eval, tool web + vòng tool,
+- Test: 424 ca pytest (golden 14 agent, bus, registry, preflight/analytics, media/renderer + 8 provider media, timeline/QC, desk/gate, runner/eval, tool web + vòng tool,
   platform fake/YouTube HTTP giả/CLI sync, routing nhiều backend, provider claude-code, orchestrator e2e kể cả approval-first
   với adapter); 28/28 ca eval có bản ghi model thật; ruff sạch.
 

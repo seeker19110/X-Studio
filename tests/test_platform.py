@@ -319,3 +319,32 @@ def test_sync_comments_skips_seen_and_replied_and_since_compares_datetimes():
     ev = json.loads(next(e.payload["evidence"] for e in bus.replay("audit-log") if e.payload["action"] == "platform.comments"))
     assert ev["count"] == 1 and ev["skipped"] == 2
     assert sync_comments(bus, p, "V1", ref="fake-0001") is None  # kéo lại: tất cả đã thấy
+
+
+def test_youtube_uploads_captions_as_multipart_related(tmp_path):
+    """captions.insert: một request multipart gồm phần JSON mô tả rãnh phụ đề và phần nội dung SRT nguyên văn."""
+    srt = tmp_path / "captions_v1.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nCâu mở đầu.\n", encoding="utf-8")
+    http = FakeHTTP().on("POST", "https://www.googleapis.com/upload/youtube/v3/captions", (200, {}, {"id": "cap-1"}))
+    yt = YouTubePlatform(_store(tmp_path), http, lambda: NOW)
+    out = json.loads(yt.upload_captions("vid-9", srt, language="vi", name="Tiếng Việt"))
+    assert out == {"captions.insert": 200, "id": "cap-1", "bytes": srt.stat().st_size, "language": "vi", "file": "captions_v1.srt"}
+    method, url, headers, body = http.calls[0]
+    assert method == "POST" and url.endswith("/captions?part=snippet&uploadType=multipart")
+    boundary = headers["Content-Type"].split("boundary=")[1]
+    assert headers["Content-Type"].startswith("multipart/related; boundary=") and headers["Content-Length"] == str(len(body))
+    text = body.decode("utf-8")
+    assert text.count(f"--{boundary}") == 3 and text.endswith(f"--{boundary}--\r\n")
+    assert json.loads(text.split("\r\n\r\n")[1].split(f"\r\n--{boundary}")[0]) == {
+        "snippet": {"videoId": "vid-9", "language": "vi", "name": "Tiếng Việt", "isDraft": False}}
+    assert "Câu mở đầu." in text and "Content-Type: application/octet-stream" in text
+
+
+def test_youtube_captions_error_surfaces_as_platform_error(tmp_path):
+    srt = tmp_path / "c.srt"; srt.write_text("1\n", encoding="utf-8")
+    http = FakeHTTP().on("POST", "https://www.googleapis.com/upload/youtube/v3/captions",
+                         (403, {}, {"error": {"errors": [{"reason": "quotaExceeded"}], "message": "hết quota"}}))
+    yt = YouTubePlatform(_store(tmp_path), http, lambda: NOW)
+    with pytest.raises(PlatformError) as e:
+        yt.upload_captions("vid-9", srt)
+    assert e.value.status == 403 and e.value.reason == "quotaExceeded"

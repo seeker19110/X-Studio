@@ -15,7 +15,7 @@ Topic = Literal[
 ]
 Namespace = Literal["strategy", "research", "voice", "production", "brand", "seo", "rights", "insights", "community", "knowledge"]
 ReviewSource = Literal["fact", "rights", "quality"]
-AssetKind = Literal["scene_audio", "scene_image", "draft_video", "final_video", "thumbnail"]
+AssetKind = Literal["scene_audio", "scene_image", "draft_video", "final_video", "thumbnail", "captions"]
 VideoFormat = Literal["long", "short"]
 SupervisorActionKind = Literal["pause", "resume", "escalate", "budget_cut", "warn"]
 ExperimentKind = Literal["title", "thumbnail"]

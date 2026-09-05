@@ -18,6 +18,8 @@ Kết quả: approve (desk dispatch) / request_changes / reject
 - [ ] `review:quality:pass` — hook, nhịp, tiêu đề/thumbnail được nội dung chứng minh, thời lượng đúng
 - [ ] Preflight: 0 finding block; mỗi warn còn lại có lý do giữ (ghi trong `--reason`)
 - [ ] Đã xem bản cuối `output/<video>/final_v<n>.mp4` và thumbnail `chosen`
+- [ ] Dòng `qc:` trong checklist: khung hình, thời lượng, âm lượng (≈ -14 LUFS) đúng; không finding `qc:block`
+- [ ] Phụ đề `captions:` có và đúng ngôn ngữ kênh (thiếu thì chỉ là warn, nhưng mất tiếp cận và SEO)
 - [ ] Không vi phạm `boundaries` và content-policy (YMYL có miễn trừ)
 - [ ] Lịch đăng theo chiến lược (`strategy`) hoặc nêu trong reason
 - [ ] Người duyệt ≠ người tạo (desk)

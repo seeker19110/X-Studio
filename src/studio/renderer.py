@@ -6,7 +6,10 @@
 - `apply_cutlist(manifest, cut)`: sửa đúng những cảnh editor yêu cầu (regenerate/replace/lock), tăng `version` manifest,
   render lại chỉ phần đó → bản nháp mới. Không làm lại cả video.
 - `finalize(manifest, order)`: ghép `final_video` theo thứ tự chốt.
-- `thumbnails(spec)`: mỗi biến thể A/B một ảnh.
+- `thumbnails(spec)`: mỗi biến thể A/B một ảnh NỀN (không chữ — model ảnh viết sai dấu tiếng Việt), rồi CODE phủ chữ,
+  thu về 1280x720 và nén xuống ≤ 2 MB cho đúng giới hạn nền tảng.
+Khung hình và kích thước ảnh bám theo `aspect` của manifest (`media.frame_size`, `media.image_size`): short 9:16 ra
+1080x1920, và model ảnh chỉ nhận kích thước hợp lệ của chính nó.
 Kết quả publish lên `media-assets` dưới actor `renderer`, kèm audit.
 """
 from __future__ import annotations
@@ -18,9 +21,12 @@ from typing import Any
 
 from .bus import InMemoryBus
 from .events import AssetKind, AuditLog, CutList, Envelope, MediaAsset, Provenance, Scene, SceneManifest, ThumbnailSpec
-from .media import MediaResult, MediaSuite, make_media
+from .media import MediaResult, MediaSuite, frame_size, image_size, make_media
+from .timeline import srt, timeline
 
 ACTOR = "renderer"
+# Chữ nằm trong ảnh sinh là lỗi (skill visual-direction): model ảnh viết sai dấu tiếng Việt, và chữ phải do code phủ lên.
+NO_TEXT = "Không chữ, không watermark, không logo trong ảnh."
 
 
 def checksum(p: Path) -> str:
@@ -54,6 +60,10 @@ class Renderer:
         p = (base / p if not p.is_absolute() else p).resolve()
         return p if p.is_relative_to(base) and p.is_file() else None
 
+    def _video_opts(self, aspect: str) -> tuple[int, str]:
+        v = self.media.cfg.video
+        return int(v.get("fps", 30)), frame_size(v, aspect)
+
     def _audit(self, action: str, video_id: str, data: dict[str, Any]) -> None:
         a = AuditLog(actor=ACTOR, action=action, video_id=video_id, evidence=json.dumps(data, ensure_ascii=False))
         self.bus.publish(Envelope(topic="audit-log", key=ACTOR, actor=ACTOR, payload=a.model_dump()))
@@ -77,8 +87,8 @@ class Renderer:
             s.asset_refs["scene_audio"] = str(r.path); s.duration_s = r.duration_s or s.duration_s
             out.append(self._asset(m.video_id, "scene_audio", r, m.version, s.scene_id, prompt_ref=f"{s.scene_id}:narration"))
         if image:
-            size = str(self.media.cfg.image.get("size") or ("1024x1792" if m.aspect == "9:16" else "1792x1024"))
-            r = self.media.image.generate(s.visual_prompt, size, d / f"{s.scene_id}.png")
+            r = self.media.image.generate(f"{s.visual_prompt} {NO_TEXT}", image_size(self.media.cfg, m.aspect),
+                                          d / f"{s.scene_id}.png")
             s.asset_refs["scene_image"] = str(r.path)
             out.append(self._asset(m.video_id, "scene_image", r, m.version, s.scene_id, prompt_ref=f"{s.scene_id}:visual_prompt"))
         return out
@@ -101,9 +111,8 @@ class Renderer:
             need = (only is not None and s.scene_id in only) or (only is None and not (s.locked and len(s.asset_refs) >= 2))
             if need:
                 assets += self.render_scene(m, s)
-        v = self.media.cfg.video
-        r = self.media.video.assemble(self._segments(m), self._dir(m.video_id) / f"draft_v{m.version}.mp4",
-                                      int(v.get("fps", 30)), str(v.get("resolution", "1920x1080")))
+        fps, res = self._video_opts(m.aspect)
+        r = self.media.video.assemble(self._segments(m), self._dir(m.video_id) / f"draft_v{m.version}.mp4", fps, res)
         assets.append(self._asset(m.video_id, "draft_video", r, m.version, prompt_ref=f"manifest:v{m.version}"))
         # manifest cùng version nhưng đã có asset_refs/duration thật → publish lại để bus là nguồn sự thật (resume, editor, finalize)
         self.bus.publish(Envelope(topic="scene-manifests", key=m.video_id, actor=ACTOR, payload=m.model_dump()))
@@ -141,26 +150,46 @@ class Renderer:
         for s in new.scenes:
             if s.scene_id in regen:
                 a, i = regen[s.scene_id]; assets += self.render_scene(new, s, audio=a, image=i)
-        v = self.media.cfg.video
-        vr = self.media.video.assemble(self._segments(new), self._dir(new.video_id) / f"draft_v{new.version}.mp4",
-                                      int(v.get("fps", 30)), str(v.get("resolution", "1920x1080")))
+        fps, res = self._video_opts(new.aspect)
+        vr = self.media.video.assemble(self._segments(new), self._dir(new.video_id) / f"draft_v{new.version}.mp4", fps, res)
         assets.append(self._asset(new.video_id, "draft_video", vr, new.version, prompt_ref=f"manifest:v{new.version}"))
         self.bus.publish(Envelope(topic="scene-manifests", key=new.video_id, actor=ACTOR, payload=new.model_dump()))
         self._publish(assets, f"render.repair:{','.join(sorted(touched)) or 'none'}")
         return new
 
+    def cues(self, m: SceneManifest, order: list[str] | None = None) -> list[Any]:
+        """Mốc từng cảnh trong bản dựng cuối, tính theo đúng tham số ghép của assembler đang dùng."""
+        return timeline(m, order, pad=getattr(self.media.video, "tail_pad_s", 0.0),
+                        transition=getattr(self.media.video, "transition_s", 0.0))
+
     def finalize(self, m: SceneManifest, order: list[str] | None = None) -> MediaAsset:
-        v = self.media.cfg.video
-        r = self.media.video.assemble(self._segments(m, order), self._dir(m.video_id) / f"final_v{m.version}.mp4",
-                                      int(v.get("fps", 30)), str(v.get("resolution", "1920x1080")))
+        """Bản cuối + phụ đề. Phụ đề sinh thẳng từ narration của manifest (đó chính là văn bản đã đọc) nên không cần
+        nhận dạng giọng nói, và mốc thời gian khớp bản dựng vì cùng một công thức."""
+        fps, res = self._video_opts(m.aspect)
+        r = self.media.video.assemble(self._segments(m, order), self._dir(m.video_id) / f"final_v{m.version}.mp4", fps, res)
         a = self._asset(m.video_id, "final_video", r, m.version, prompt_ref=f"manifest:v{m.version}")
-        self._publish([a], "render.final")
+        assets = [a]
+        text = srt(self.cues(m, order))
+        if text:
+            p = self._dir(m.video_id) / f"captions_v{m.version}.srt"
+            p.write_text(text, encoding="utf-8")
+            cap = MediaResult(p, "studio", "srt-from-manifest")
+            assets.append(self._asset(m.video_id, "captions", cap, m.version, prompt_ref=f"manifest:v{m.version}"))
+        self._publish(assets, "render.final")
         return a
 
     def thumbnails(self, spec: ThumbnailSpec) -> list[MediaAsset]:
-        d = self._dir(spec.video_id) / "thumbnails"; out = []
+        """Ảnh nền không chữ (model ảnh) → CODE phủ `overlay_text`, thu về 1280x720, nén ≤ 2 MB. Asset publish là bản
+        hoàn thiện; provenance vẫn ghi provider:model của ảnh nền, phần code làm nằm trong audit `render.thumbnails`."""
+        d = self._dir(spec.video_id) / "thumbnails"; out: list[MediaAsset] = []; notes: dict[str, str] = {}
         for var in spec.variants:
-            r = self.media.image.generate(f"{var.prompt}. Overlay text: {var.overlay_text}", "1792x1024", d / f"{var.variant_id}.png")
-            out.append(self._asset(spec.video_id, "thumbnail", r, 0, prompt_ref=f"thumbnail:{var.variant_id}", variant_id=var.variant_id))
+            base = self.media.image.generate(f"{var.prompt} {NO_TEXT}", image_size(self.media.cfg, "16:9"),
+                                             d / f"{var.variant_id}_base.png")
+            fin = self.media.video.finish_thumbnail(base.path, d / f"{var.variant_id}.jpg", text=var.overlay_text)
+            notes[var.variant_id] = fin.notes
+            r = MediaResult(fin.path, base.provider, base.model)
+            out.append(self._asset(spec.video_id, "thumbnail", r, 0, prompt_ref=f"thumbnail:{var.variant_id}",
+                                   variant_id=var.variant_id))
+        if out: self._audit("thumbnail.finish", spec.video_id, notes)
         self._publish(out, "render.thumbnails")
         return out

@@ -23,7 +23,8 @@ Bus validate trước khi ghi. Owner ghi của `shared-context` theo namespace (
 - `video-briefs.risk_tags` ⊂ {health, finance, legal, minors, politics, music, footage, brand, person} → fact-checker/rights-checker siết theo skill.
 - `review-results.source` ∈ fact | rights | quality; cả ba phải `pass` trước gate publish. `findings[].location` = claim_id / scene_id / trường metadata.
 - `scene-manifests.version` tăng mỗi lần renderer áp cut-list; `scenes[].locked` cảnh không sinh lại; `asset_refs` do renderer điền.
-- `media-assets.kind` ∈ scene_audio | scene_image | draft_video | final_video | thumbnail; `provenance` bắt buộc; `checksum` do code tính.
+- `media-assets.kind` ∈ scene_audio | scene_image | draft_video | final_video | thumbnail | captions (phụ đề SRT sinh từ
+  narration của manifest, ADR-0009); `provenance` bắt buộc; `checksum` do code tính.
 - `cut-lists.decision` repair chỉ được tối đa 3 vòng/video (`MAX_REPAIR_ROUNDS`).
 - `metadata-packages` đi qua preflight (code); finding block → seo-optimizer sửa một lần.
 - `publish-events.status` scheduled/published chỉ hợp lệ khi có quyết định gate trong audit-log; `rolled_back` → làm lại.

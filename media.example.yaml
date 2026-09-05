@@ -53,10 +53,11 @@ tts:
 image:
   provider: openai          # openai | gemini | stability | replicate | fake
   # --- openai: POST {base_url}/images/generations. KÍCH THƯỚC THEO MODEL: gpt-image-1 nhận 1024x1024 | 1536x1024 | 1024x1536
-  #     (sai kích thước → HTTP 400 ngay lượt render thật đầu tiên); dall-e-3 nhận 1792x1024 | 1024x1792.
+  #     (sai kích thước → HTTP 400); dall-e-3 nhận 1792x1024 | 1024x1792. Bỏ trống `size` là an toàn nhất: code tự chọn
+  #     kích thước hợp lệ của model theo `aspect` của manifest (16:9 cho video dài, 9:16 cho Shorts), và sửa lại nếu khai sai.
   base_url: https://api.openai.com/v1
   model: gpt-image-1
-  size: 1536x1024
+  # size: 1536x1024
   #
   # --- gemini: `gemini-2.5-flash-image` (generateContent) hoặc `imagen-4.0-generate-001` (predict) theo tên model;
   #     `size` được đổi sang tỷ lệ gần nhất (16:9 / 9:16 / 1:1…). Key: GEMINI_API_KEY
@@ -79,7 +80,16 @@ image:
 video:
   provider: ffmpeg          # ffmpeg (ghép ảnh + audio thành MP4, cần ffmpeg trên PATH; có ffprobe thì thời lượng audio đo thật) | fake
   fps: 30
-  resolution: 1920x1080
+  resolution: 1920x1080     # khung của video dài; manifest `aspect: 9:16` (Shorts) tự hoán đổi thành 1080x1920
+  fit: cover                # cover: ảnh lấp đầy khung, cắt mép (mặc định) | contain: giữ trọn ảnh, chấp nhận viền đen
+  tail_pad_s: 0.35          # im lặng đệm cuối mỗi cảnh; cảnh dài đúng bằng giọng đọc, không bị cắt theo thời lượng ước lượng
+  motion: auto              # chuyển động nhẹ trên ảnh tĩnh: auto (xoay vòng zoom/pan, hai cảnh liền nhau khác kiểu)
+                            # | none | zoom_in | zoom_out | pan_left | pan_right (ép cùng một kiểu cho cả video)
+  transition_s: 0.3         # chuyển cảnh mờ dần; tự kẹp ≤ tail_pad_s để giọng đọc hai cảnh không chồng nhau; 0 = cắt thẳng
+  loudness_lufs: -14        # chuẩn hoá âm lượng về mức nền tảng phát lại (đỉnh ≤ -1 dBTP); `null` = giữ nguyên tiếng gốc
+  # font: /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf   # font phủ chữ thumbnail (mặc định: tìm font đậm có sẵn trên máy;
+  #                          không có font thì thumbnail vẫn ra 1280x720 nhưng KHÔNG có chữ, và audit `thumbnail.finish` nói rõ)
+  # binary: ffmpeg
 
 # Adapter nền tảng phân phối (ADR-0008): CODE gọi sau gate publish/replies và trong `python -m studio.youtube sync-*`.
 # fake (mặc định, offline) | youtube (Data API v3 + Analytics API v2; đăng nhập trước bằng

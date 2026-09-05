@@ -32,7 +32,8 @@
             "scene_image",
             "draft_video",
             "final_video",
-            "thumbnail"
+            "thumbnail",
+            "captions"
           ],
           "type": "string"
         },

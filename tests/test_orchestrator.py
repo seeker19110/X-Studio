@@ -87,10 +87,12 @@ def test_preflight_block_reruns_seo_once(tmp_path):
     bus = InMemoryBus(); o = _orch(bus, tmp_path, seo_bad_first=True)
     bus.publish(Envelope(topic="channel-briefs", key="CH1", actor="human", payload=CHANNEL)); o.run()
     o.gate.decide("PLAN-CH1-1", "approve", by="human:owner"); o.run()
-    metas = [e.payload["title"] for e in bus.replay("metadata-packages", "CH1-V1")]
+    metas = [e.payload["title"] for e in bus.replay("metadata-packages", "CH1-V1") if e.actor == "seo-optimizer"]
     assert len(metas) == 2 and len(metas[0]) > 100 and len(metas[1]) <= 70
+    # bản thứ ba là của CODE: nắn mốc chapter về đầu cảnh thật sau khi có bản dựng cuối (không phải seo-optimizer làm lại lần nữa)
+    assert [e.actor for e in bus.replay("metadata-packages", "CH1-V1")][-1] == "chapters"
     pre = [json.loads(e.payload["evidence"]) for e in bus.replay("audit-log") if e.payload["action"] == "preflight"]
-    assert [p["blocked"] for p in pre] == [True, False]
+    assert [p["blocked"] for p in pre] == [True, False, False]  # lượt ba: preflight kiểm lại chính bản chapter đã nắn
     assert "PUB-CH1-V1" in o.gate.pending
 
 
@@ -130,11 +132,11 @@ def test_publish_gate_approve_uploads_once_with_real_file_thumbnail_and_schedule
     bus, o = _to_publish_gate(tmp_path)
     o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
     ops = [c[0] for c in o.platform.calls]
-    assert ops == ["upload_video", "set_thumbnail", "schedule"]  # đúng một lần, đúng thứ tự
+    assert ops == ["upload_video", "set_thumbnail", "schedule", "upload_captions"]  # đúng một lần, đúng thứ tự
     final = next(a for a in reversed([e.payload for e in bus.replay("media-assets", "CH1-V1")]) if a["kind"] == "final_video")
     up = o.platform.calls[0][1]
     assert up["path"] == final["path"] and up["title"].startswith("AI dựng video") and up["privacy"] == "private" and up["publish_at"] is None
-    assert o.platform.calls[1][1]["path"].endswith("A.png")  # thumbnail `chosen: A` của thumbnail-designer
+    assert o.platform.calls[1][1]["path"].endswith("A.jpg")  # thumbnail `chosen: A` đã hoàn thiện (nền + chữ do code phủ)
     assert o.platform.calls[2][1] == {"platform_ref": "fake-0001", "publish_at": "2026-09-05T12:00:00Z"}
     ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")]
     assert len(ev) == 1 and ev[0]["status"] == "scheduled" and ev[0]["platform_ref"] == "fake-0001"  # model khai yt:abc123 → code ghi đè
@@ -209,10 +211,20 @@ def test_thumbnail_failure_keeps_platform_ref_and_reapprove_reuses_upload(tmp_pa
     o.platform.fail.clear()
     o.gate.request(GateRequest(kind="publish", subject_id="PUB-CH1-V1", created_by="desk", checklist=["đăng lại"]))
     o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
-    assert [c[0] for c in o.platform.calls] == ["upload_video", "set_thumbnail", "set_thumbnail", "schedule"]
+    assert [c[0] for c in o.platform.calls] == ["upload_video", "set_thumbnail", "set_thumbnail", "schedule", "upload_captions"]
     ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")]
     assert ev[-1]["status"] == "scheduled" and ev[-1]["platform_ref"] == "fake-0001" and "dùng lại upload" in ev[-1]["evidence"]
     assert "platform.upload_reused" in _audit_actions(bus, "orchestrator") and o.desk.state["CH1-V1"] == "scheduled"
+
+
+def test_captions_are_uploaded_after_the_video_and_never_block_publishing(tmp_path):
+    """Phụ đề là phần thêm: lỗi khi đăng nó ghi vào evidence và audit, nhưng video vẫn được lên lịch bình thường."""
+    bus, o = _to_publish_gate(tmp_path); o.platform.fail.add("upload_captions")
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    assert [c[0] for c in o.platform.calls] == ["upload_video", "set_thumbnail", "schedule", "upload_captions"]
+    ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")][-1]
+    assert ev["status"] == "scheduled" and "captions lỗi" in ev["evidence"]  # vẫn scheduled, không phải failed
+    assert "platform.captions_failed" in _audit_actions(bus, "orchestrator") and o.desk.state["CH1-V1"] == "scheduled"
 
 
 def test_publish_without_scheduled_at_keeps_platform_status(tmp_path):
@@ -223,7 +235,7 @@ def test_publish_without_scheduled_at_keeps_platform_status(tmp_path):
         __import__("studio.fakes", fromlist=["_inputs"])._inputs(user)[0]) if "# publisher" in system else None
     o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
     ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")]
-    assert [c[0] for c in o.platform.calls] == ["upload_video", "set_thumbnail"] and ev[-1]["status"] == "published"
+    assert [c[0] for c in o.platform.calls] == ["upload_video", "set_thumbnail", "upload_captions"] and ev[-1]["status"] == "published"
 
 
 def test_hold_keeps_gate_pending_and_rollback_emits_rolled_back(tmp_path):
@@ -316,7 +328,7 @@ def test_publish_checklist_shows_final_video_thumbnail_title_and_cli_full(tmp_pa
     bus, o = _to_publish_gate(tmp_path)
     req = o.gate.pending["PUB-CH1-V1"]
     final = next(a for a in reversed([e.payload for e in bus.replay("media-assets", "CH1-V1")]) if a["kind"] == "final_video")
-    assert f"final_video:{final['path']}" in req.checklist and any(c.startswith("thumbnail:") and c.endswith("A.png") for c in req.checklist)
+    assert f"final_video:{final['path']}" in req.checklist and any(c.startswith("thumbnail:") and c.endswith("A.jpg") for c in req.checklist)
     assert any(c.startswith("title:AI dựng video") for c in req.checklist) and req.triggered_by == "human:owner"  # người duyệt plan
     # reply: checklist giữ nguyên văn; `list` cắt 80 ký tự trừ khi --full
     long = "x" * 100

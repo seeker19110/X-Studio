@@ -39,8 +39,9 @@ lên lịch/đăng/trả lời công khai trước khi qua human gate.
 | 7 | Giám sát | supervisor | Watchdog, ngân sách token, bài học, version prompt |
 | — | Human gate | (con người) | plan · publish · replies · escalation |
 
-Thành phần code (không phải agent): **renderer** (media), **desk** (vòng đời video, gom review), **preflight**,
-**analytics** (retention/A-B), **tools** (web chỉ đọc), **platform** (adapter nền tảng), **orchestrator**.
+Thành phần code (không phải agent): **renderer** (media), **timeline** (mốc cảnh → phụ đề, chapter), **qc** (đo file
+thật bằng ffprobe/ffmpeg), **desk** (vòng đời video, gom review), **preflight**, **analytics** (retention/A-B),
+**tools** (web chỉ đọc), **platform** (adapter nền tảng), **orchestrator**.
 
 ## Topic
 
@@ -116,6 +117,22 @@ URL do server trả về đi qua `check_url` như web_fetch. Khóa theo kênh (`
 thời lượng audio đo từ file (WAV header, ffprobe nếu có), chỉ ước lượng theo số từ khi không đo được. `renderer.py` biến
 manifest thành asset có checksum + provenance (provider:model, prompt_ref, license) và publish `media-assets`. Asset nằm trong
 `output/<video_id>/`.
+
+Bản dựng (ADR-0009) là MỘT lệnh ffmpeg: mỗi cảnh là ảnh có chuyển động nhẹ (`motion_for` xoay vòng zoom/pan nên hai
+cảnh liền nhau khác kiểu), nối bằng `xfade`/`acrossfade` với `transition_s` kẹp ≤ `tail_pad_s` — phần chồng lấn nằm gọn
+trong đoạn đệm im lặng nên giọng đọc không chồng nhau và hình–tiếng không lệch — rồi `loudnorm` đưa âm lượng về -14 LUFS,
+đỉnh -1 dBTP. `timeline.py` giữ công thức mốc cảnh dùng chung cho phụ đề (SRT sinh từ narration), cho việc nắn mốc
+chapter về đầu cảnh thật (model đặt tên, code đặt giờ) và cho điểm rơi retention. `qc.py` đo bản cuối (khung hình, fps,
+thời lượng, LUFS, đỉnh, hình đen, khoảng lặng, thumbnail, phụ đề) rồi đưa báo cáo vào `package` của quality-reviewer và
+vào checklist gate publish; `qc_scenes` đo từng cảnh (độ sáng, tương phản của ảnh; thời lượng, im lặng của giọng đọc)
+rồi đưa vào payload của editor dưới khoá `scene_qc`.
+
+Ba quyết định khung hình nằm ở lớp này vì chúng quyết định video có xem được không: `image_size` chỉ gửi kích thước HỢP LỆ
+theo model (gpt-image-1 không nhận 1792x1024); `frame_size` đổi khung theo `aspect` của manifest (9:16 → 1080x1920);
+assembler không cắt cảnh theo thời lượng ước lượng mà để `-shortest` chạy hết giọng đọc rồi `apad` đệm `tail_pad_s` giây,
+với `fit=cover` để ảnh lấp đầy khung. Thumbnail hoàn thiện bằng code (`finish_thumbnail`): model ảnh vẽ nền không chữ,
+`drawtext` phủ `overlay_text` (viết hoa, ≤ 3 dòng, tránh góc phải dưới), xuất 1280x720 JPEG ≤ 2 MB; `YouTubePlatform`
+từ chối file quá 2 MB trước khi gọi API. Việc code đã làm nằm trong audit `thumbnail.finish` và `MediaResult.notes`.
 
 ## Adapter nền tảng (ADR-0008)
 
