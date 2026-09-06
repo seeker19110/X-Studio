@@ -21,7 +21,8 @@ bỏ phần gắn với Hermes Agent (ProviderProfile, đồng bộ `auth.json`,
 | Mọi tài khoản đều cooldown (hoặc pool trống) | Trả **429** kèm "thử lại sau khoảng Ns" để lớp trên fallback tiếp (router của công ty khớp chuỗi này để nghỉ đúng số giây) |
 
 Thời gian cooldown (`auth.py`): 401 → 300s; 402/403/429 → 3600s; mã khác → 60s; `Retry-After` ghi đè. Access token được làm mới
-sớm 120s trước hạn. Gateway **không** tự retry hay backoff mũ: chỉ cooldown + xoay tài khoản; request upstream timeout 120s.
+sớm 120s trước hạn. Gateway **không** tự retry hay backoff mũ: chỉ cooldown + xoay tài khoản; trần chờ upstream 900s
+(`GATEWAY_UPSTREAM_TIMEOUT_S`), hết giờ trả 504 kèm thông điệp. Vì sao xoay như vậy: `docs/adr/0001-xoay-vong-tai-khoan.md`.
 
 Thêm: bearer token của client trùng access token hoặc email một tài khoản thì tài khoản đó được ưu tiên; các chuỗi giữ chỗ
 `dummy`, `none`, `token`, `default`, `antigravity`, `gateway-local`, `sk-gateway` bị bỏ qua (không ghim tài khoản).
@@ -170,5 +171,21 @@ Triển khai VPS: copy file token từ máy cá nhân lên, chạy `make start`;
 
 ```bash
 make lint
-make test        # 78 ca (76 chạy, 2 skip), không gọi mạng: httpx MockTransport + aiohttp TestClient
+make test        # 216 ca (213 chạy, 3 skip quyền file POSIX trên Windows), không gọi mạng: httpx MockTransport + aiohttp TestClient
 ```
+
+## Tài liệu
+
+Bộ khung 4 file cùng cấu trúc với ba package kia, cộng ADR:
+
+| File | Trả lời câu gì |
+|---|---|
+| `CLAUDE.md` | luật riêng khi sửa gateway: ba điều không được phá, sửa X thì phải sửa thêm gì |
+| `TRAPS.md` | bẫy đã mắc hoặc thấy trong test: cổng bị giữ, cooldown không chung, LRU hoà trên Windows, skip chmod POSIX… |
+| `CODEMAP.md` | muốn đổi X thì sửa hàm nào, dòng nào, kiểm bằng test nào |
+| `ARCHITECTURE.md` | bản đồ bốn file nguồn, ranh giới vào/ra/đĩa với phần còn lại của hub |
+| `docs/adr/0001-xoay-vong-tai-khoan.md` | vì sao thứ tự tài khoản là bearer-rồi-LRU, hạn mức nghỉ theo mã lỗi, không retry |
+| `docs/adr/0002-giu-cong-va-daemon.md` | vì sao cổng 1123 loopback, daemon tách tiến trình, PID file + healthcheck thay lock |
+| `docs/adr/0003-ranh-gioi-bao-mat.md` | token nằm đâu, quyền 0600, cái gì được ra log/HTTP, ranh giới với `../SECURITY.md` |
+
+Mọi số và tên trong các file trên dẫn `file:dòng` — đổi code thì đổi tài liệu cùng PR.
