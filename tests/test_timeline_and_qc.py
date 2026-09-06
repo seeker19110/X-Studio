@@ -18,6 +18,7 @@ from studio.events import Chapter, Scene, SceneManifest
 from studio.media import MediaConfig, make_media
 from studio.qc import qc_video
 from studio.renderer import Renderer
+from studio.sandbox import SubprocessSandbox
 from studio.timeline import chapter_time, parse_time, snap_chapters, srt, stamp, timeline
 
 
@@ -98,7 +99,7 @@ def _fake_tools(monkeypatch, probe_json: dict, ffmpeg_err: str = "", probe_code:
             return subprocess.CompletedProcess(argv, probe_code, json.dumps(probe_json), "")
         return subprocess.CompletedProcess(argv, 0, "", ffmpeg_err)
 
-    monkeypatch.setattr(qc.subprocess, "run", run)
+    monkeypatch.setattr(qc, "qc_sandbox", lambda: SubprocessSandbox(runner=run))
 
 
 _OK_PROBE = {"streams": [{"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "r_frame_rate": "30/1"},
@@ -150,7 +151,7 @@ def test_qc_checks_the_thumbnail_against_platform_limits(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(argv, 0, json.dumps(big), "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(qc.subprocess, "run", run)
+    monkeypatch.setattr(qc, "qc_sandbox", lambda: SubprocessSandbox(runner=run))
     rep = qc_video(f, thumbnail=thumb)
     texts = " | ".join(x.text for x in rep.findings)
     assert rep.blocked and "3.0 MB vượt giới hạn" in texts and "640x360 khác chuẩn 1280x720" in texts
@@ -162,10 +163,11 @@ def test_qc_survives_unreadable_output(tmp_path, monkeypatch):
     _fake_tools(monkeypatch, {}, probe_code=1)
     assert qc_video(f).available is False
     monkeypatch.setattr(qc.shutil, "which", lambda b: f"/usr/bin/{b}")
-    monkeypatch.setattr(qc.subprocess, "run",
-                        lambda argv, *a, **k: subprocess.CompletedProcess(argv, 0, "{khong-phai-json", ""))
+    monkeypatch.setattr(qc, "qc_sandbox", lambda: SubprocessSandbox(
+        runner=lambda argv, *a, **k: subprocess.CompletedProcess(argv, 0, "{khong-phai-json", "")))
     assert qc_video(f).available is False
-    monkeypatch.setattr(qc.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("ffprobe chết")))
+    monkeypatch.setattr(qc, "qc_sandbox", lambda: SubprocessSandbox(
+        runner=lambda *a, **k: (_ for _ in ()).throw(OSError("ffprobe chết"))))
     assert qc_video(f).available is False
 
 
@@ -195,7 +197,7 @@ def _ffmpeg_out(monkeypatch, image_err: str = "", audio_err: str = "", duration:
         err = image_err if "-vf" in argv else audio_err
         return subprocess.CompletedProcess(argv, 0, "", err)
 
-    monkeypatch.setattr(qc.subprocess, "run", run)
+    monkeypatch.setattr(qc, "qc_sandbox", lambda: SubprocessSandbox(runner=run))
 
 
 _GOOD_IMG = ("lavfi.signalstats.YAVG=125.5\nlavfi.signalstats.YLOW=16\nlavfi.signalstats.YHIGH=235\n")

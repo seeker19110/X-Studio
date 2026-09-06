@@ -51,11 +51,13 @@ from uuid import uuid4
 
 import yaml
 
+from .sandbox import RunSpec, Sandbox, SubprocessSandbox, clean_env, sandbox_from_config
 from .tools import ToolError, check_url
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT / "media.yaml"
 WORDS_PER_SECOND = 2.5  # ~150 từ/phút: ước lượng thời lượng khi không đo được từ file
+RENDER_TIMEOUT_S = 600.0  # trần một lệnh ffmpeg (media.yaml `render.timeout_s`)
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 PACE_SPEED = {"slow": 0.9, "medium": 1.0, "fast": 1.15}  # pace của manifest → hệ số tốc độ (openai speed, google speakingRate)
 LANG_CODES = {"vi": "vi-VN", "en": "en-US", "ja": "ja-JP", "ko": "ko-KR", "zh": "cmn-CN", "fr": "fr-FR", "de": "de-DE",
@@ -127,6 +129,9 @@ class MediaConfig:
     platform: dict[str, Any] = field(default_factory=lambda: {"provider": "fake"})  # adapter nền tảng (ADR-0008): fake | youtube
     # gate.approvers: [human:owner, ...] — ai được duyệt (env STUDIO_GATE_APPROVERS thắng)
     gate: dict[str, Any] = field(default_factory=dict)
+    # render.timeout_s: trần thời gian một lệnh ffmpeg (ffmpeg treo là treo im lặng — không có timeout thì cả
+    # phòng đứng); render.sandbox: {mode, runtime, image} — xem `sandbox.py`.
+    render: dict[str, Any] = field(default_factory=lambda: {"timeout_s": RENDER_TIMEOUT_S})
     output_dir: Path = field(default_factory=lambda: ROOT / "output")
     upload_dir: Path | None = None  # nơi người dùng đặt file thay thế cho `replace_asset`; None = <output_dir>/uploads
     api_key: str | None = None
@@ -137,7 +142,7 @@ def load_media_config(path: Path | None = None) -> MediaConfig:
     p = path or CONFIG_FILE
     if p.exists():
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        for k in ("tts", "image", "video", "platform", "gate"):
+        for k in ("tts", "image", "video", "platform", "gate", "render"):
             getattr(cfg, k).update(data.get(k) or {})
         if data.get("output_dir"): cfg.output_dir = ROOT / str(data["output_dir"])
         if data.get("upload_dir"): cfg.upload_dir = ROOT / str(data["upload_dir"])
@@ -161,6 +166,9 @@ class MediaSuite:
     image: ImageGen
     video: VideoAssembler
     cfg: MediaConfig
+    # sandbox mà lệnh con của lượt render đi qua; renderer ghi tên nó vào audit `render.*` để người duyệt biết
+    # video này dựng bằng tiến trình trần hay trong container.
+    sandbox: Sandbox = field(default_factory=SubprocessSandbox)
 
     @property
     def names(self) -> dict[str, str]:
@@ -169,15 +177,17 @@ class MediaSuite:
 
 def make_media(cfg: MediaConfig | None = None) -> MediaSuite:
     cfg = cfg or load_media_config()
+    sb = sandbox_from_config(cfg)
     tts: TTS = _pick("tts", cfg.tts, TTS_PROVIDERS, cfg, lambda: FakeTTS(cfg))
     img: ImageGen = _pick("image", cfg.image, IMAGE_PROVIDERS, cfg, lambda: FakeImage(cfg))
     v = cfg.video
     vid: VideoAssembler = (FFmpegAssembler(binary=str(v.get("binary") or "ffmpeg"), fit=str(v.get("fit") or "cover"),
                                            tail_pad_s=float(v.get("tail_pad_s", 0.35)), font=v.get("font"),
                                            motion=str(v.get("motion") or "auto"), transition_s=float(v.get("transition_s", 0.3)),
-                                           loudness_lufs=v.get("loudness_lufs", TARGET_LUFS))
+                                           loudness_lufs=v.get("loudness_lufs", TARGET_LUFS),
+                                           timeout=float(cfg.render.get("timeout_s") or RENDER_TIMEOUT_S), sandbox=sb)
                            if v.get("provider") == "ffmpeg" else _require_fake("video", v, FakeVideo()))
-    return MediaSuite(tts=tts, image=img, video=vid, cfg=cfg)
+    return MediaSuite(tts=tts, image=img, video=vid, cfg=cfg, sandbox=sb)
 
 
 def _pick(kind: str, section: dict[str, Any], table: dict[str, Callable[[MediaConfig], Any]], cfg: MediaConfig,
@@ -600,13 +610,14 @@ class CommandTTS:
     """`tts.command` là dòng lệnh có chỗ giữ {text} {out} {voice} {lang} {pace}; văn bản cũng đưa vào stdin. Không qua shell.
     Ví dụ: "piper -m vi_VN-vais1000-medium.onnx -f {out}" · "edge-tts --voice {voice} --text {text} --write-media {out}"
     (đặt `suffix: .mp3` cho edge-tts). File {out} phải có sau khi lệnh kết thúc; stderr của lệnh nằm trong lỗi."""
-    def __init__(self, cfg: MediaConfig):
+    def __init__(self, cfg: MediaConfig, sandbox: Sandbox | None = None):
         self.cfg = cfg; s = cfg.tts
         cmd = str(s.get("command") or "")
         if not cmd: raise MediaError('tts: provider `command` cần tts.command (vd. "piper -m vi.onnx -f {out}")')
         self.argv = shlex.split(cmd)
         self.model = str(s.get("model") or Path(self.argv[0]).name)
         self.suffix = str(s.get("suffix") or ".wav"); self.timeout = float(s.get("timeout_s") or 300)
+        self.sandbox = sandbox if sandbox is not None else sandbox_from_config(cfg)
 
     def synthesize(self, text: str, voice: dict[str, Any], out: Path) -> MediaResult:
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -617,13 +628,16 @@ class CommandTTS:
         # PYTHONIOENCODING: ta ghi stdin bằng UTF-8, nhưng tiến trình con giải mã theo bảng mã cục bộ của nó —
         # trên Windows là cp1252, nên "xin chào" tới lệnh TTS thành "xin ch?o". Lỗi này im lặng: lệnh vẫn thoát 0
         # và vẫn tạo ra file audio, chỉ có giọng đọc là sai. Cùng cách chữa như cầu MCP của software-company.
-        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+        # `clean_env`: lệnh TTS là mã của người khác (Piper, edge-tts) — nó không cần và không được thấy
+        # ELEVENLABS_API_KEY hay STUDIO_LLM_API_KEY của phòng.
+        env = {**clean_env(), "PYTHONIOENCODING": "utf-8"}
         try:
-            r = subprocess.run(argv, input=text, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               env=env, timeout=self.timeout)
+            # cwd giữ nguyên thư mục hiện tại: `tts.command` hay trỏ model bằng đường dẫn tương đối.
+            r = self.sandbox.run(RunSpec(argv=argv, cwd=Path.cwd(), env=env, timeout=self.timeout, stdin=text))
         except (OSError, subprocess.SubprocessError) as e:
             raise MediaError(f"lệnh TTS không chạy được: {e}") from e
-        if r.returncode != 0: raise MediaError(f"lệnh TTS lỗi ({r.returncode}): {r.stderr[-400:]}")
+        if r.timed_out: raise MediaError(f"lệnh TTS quá {self.timeout}s (tts.timeout_s)")
+        if r.exit_code != 0: raise MediaError(f"lệnh TTS lỗi ({r.exit_code}): {r.stderr[-400:]}")
         if not p.is_file() or p.stat().st_size == 0: raise MediaError(f"lệnh TTS không tạo file {p.name}")
         return MediaResult(p, "command", self.model, audio_duration(p, text))
 
@@ -766,7 +780,8 @@ class FFmpegAssembler:
     """
 
     def __init__(self, binary: str = "ffmpeg", fit: str = "cover", tail_pad_s: float = 0.35, font: Any = None,
-                 motion: str = "auto", transition_s: float = 0.3, loudness_lufs: float | None = TARGET_LUFS):
+                 motion: str = "auto", transition_s: float = 0.3, loudness_lufs: float | None = TARGET_LUFS,
+                 timeout: float = RENDER_TIMEOUT_S, sandbox: Sandbox | None = None):
         found = shutil.which(binary)
         if not found:
             raise MediaError("không tìm thấy ffmpeg trên PATH (đổi video.provider=fake để chạy offline)")
@@ -778,15 +793,19 @@ class FFmpegAssembler:
         # Chuyển cảnh ăn vào phần đệm im lặng cuối cảnh: giữ ≤ tail_pad_s thì giọng đọc hai cảnh KHÔNG BAO GIỜ chồng lên nhau.
         self.transition_s = min(max(0.0, float(transition_s)), self.tail_pad_s)
         self.loudness_lufs = float(loudness_lufs) if loudness_lufs else None
+        self.timeout = float(timeout)
+        self.sandbox = sandbox if sandbox is not None else SubprocessSandbox()
 
     def _run(self, args: list[str], cwd: Path | None = None) -> None:
-        # encoding cố định: `text=True` trần sẽ giải mã theo bảng mã hệ thống, mà trên Windows đó là
-        # cp1252 — thông báo lỗi của ffmpeg có đường dẫn tiếng Việt sẽ thành ký tự rác, hoặc ném
-        # UnicodeDecodeError che mất chính lỗi cần đọc. `errors="replace"` để lỗi ffmpeg luôn tới
-        # được người dùng, kể cả khi ffmpeg trả ra byte không hợp lệ.
-        r = subprocess.run([self.binary, "-y", "-loglevel", "error", *args], capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", cwd=str(cwd) if cwd else None)
-        if r.returncode != 0:
+        # Qua sandbox (`RunSpec.cwd` là thư mục được mount khi backend là container). Encoding và cắt output
+        # do sandbox lo; `errors="replace"` ở đó để lỗi ffmpeg có đường dẫn tiếng Việt luôn tới được người dùng
+        # thay vì ném UnicodeDecodeError che mất chính lỗi cần đọc (Windows giải mã cp1252).
+        # `timeout`: ffmpeg treo (input hỏng, filtergraph chờ mãi) trước đây treo luôn cả phòng — không có ai giết.
+        r = self.sandbox.run(RunSpec(argv=[self.binary, "-y", "-loglevel", "error", *args],
+                                     cwd=cwd or Path.cwd(), env=clean_env(), timeout=self.timeout))
+        if r.timed_out:
+            raise MediaError(f"ffmpeg quá {self.timeout}s (media.yaml render.timeout_s): {' '.join(args)[:200]}")
+        if r.exit_code != 0:
             raise MediaError(f"ffmpeg lỗi: {r.stderr[-400:]}")
 
     def _scale(self, w: str, h: str) -> str:
@@ -820,7 +839,9 @@ class FFmpegAssembler:
         t = self.transition_s if len(segments) > 1 else 0.0
         args: list[str] = []
         for (img, audio, _), d in zip(segments, durs, strict=True):
-            args += ["-loop", "1", "-framerate", str(fps), "-t", f"{d:.3f}", "-i", str(img), "-i", str(audio)]
+            # đường dẫn tuyệt đối: cwd của lệnh là thư mục output (thư mục được mount khi chạy trong container)
+            args += ["-loop", "1", "-framerate", str(fps), "-t", f"{d:.3f}", "-i", str(Path(img).resolve()),
+                     "-i", str(Path(audio).resolve())]
         chains: list[str] = []
         for i, d in enumerate(durs):
             mo = motion_for(i, self.motion)
@@ -845,7 +866,8 @@ class FFmpegAssembler:
             chains.append(f"[{alast}]loudnorm=I={self.loudness_lufs}:TP={TRUE_PEAK_DB}:LRA=11[aout]"); aout = "aout"
         self._run([*args, "-filter_complex", ";".join(chains), "-map", f"[{vlast}]", "-map", f"[{aout}]",
                    "-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p",
-                   "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", str(out)])
+                   "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart",
+                   str(out.resolve())], cwd=out.parent)
         total = round(sum(durs) - t * (len(durs) - 1), 2)
         loud = f" {self.loudness_lufs} LUFS" if self.loudness_lufs is not None else ""
         return MediaResult(out, "ffmpeg", "libx264", total,

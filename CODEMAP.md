@@ -28,6 +28,7 @@
 | Pipeline render, sửa từng cảnh | `src/studio/renderer.py` (ADR-0004, ADR-0009) |
 | Mốc cảnh → SRT, chapter | `src/studio/timeline.py` |
 | Đo file thật (thời lượng, độ phân giải, âm) | `src/studio/qc.py` (ffprobe/ffmpeg) |
+| Cách chạy lệnh con (ffmpeg, TTS cục bộ): env lọc khoá, timeout, container | `src/studio/sandbox.py` + `media.yaml` khoá `render` (bản tạm, vào lõi chung ở K3.2) |
 | Preflight khả năng được tìm thấy | `src/studio/preflight.py` (ADR-0005) |
 | Retention map cảnh, A/B ≥ 95% | `src/studio/analytics.py` |
 | Upload, thumbnail, phụ đề, lên lịch, bình luận, số liệu | `src/studio/platform.py` (adapter `fake` \| `youtube`, ADR-0008) |

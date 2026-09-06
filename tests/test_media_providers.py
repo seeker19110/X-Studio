@@ -133,8 +133,9 @@ def test_ffmpeg_assembler_run_raises_media_error_on_nonzero_exit(monkeypatch):
 
     from studio import media
     monkeypatch.setattr(media.shutil, "which", lambda b: "/usr/bin/ffmpeg")
-    monkeypatch.setattr(media.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "loi ffmpeg chi tiet"))
-    asm = media.FFmpegAssembler()
+    from studio.sandbox import SubprocessSandbox
+    asm = media.FFmpegAssembler(
+        sandbox=SubprocessSandbox(runner=lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "loi ffmpeg chi tiet")))
     with pytest.raises(MediaError, match="ffmpeg lỗi"):
         asm._run(["-version"])
 

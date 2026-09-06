@@ -17,7 +17,16 @@ from pathlib import Path
 from typing import Any
 
 from .events import Finding
-from .media import TARGET_LUFS, THUMBNAIL_MAX_BYTES, THUMBNAIL_SIZE, TRUE_PEAK_DB, WORDS_PER_SECOND, probe_duration
+from .media import (
+    TARGET_LUFS,
+    THUMBNAIL_MAX_BYTES,
+    THUMBNAIL_SIZE,
+    TRUE_PEAK_DB,
+    WORDS_PER_SECOND,
+    load_media_config,
+    probe_duration,
+)
+from .sandbox import RunSpec, Sandbox, clean_env, sandbox_from_config
 
 DURATION_TOLERANCE = 0.10   # lệch > 10% so với manifest = dựng hỏng, không phải sai số làm tròn
 LUFS_TOLERANCE = 1.5
@@ -47,10 +56,28 @@ class QCReport:
         return [head] + [f"qc:{f.level}:{f.location or '-'}:{f.text}" for f in self.findings]
 
 
-def _run(args: list[str]) -> tuple[int, str, str]:
+_SANDBOX: Sandbox | None = None
+
+
+def qc_sandbox() -> Sandbox:
+    """Sandbox dùng chung cho mọi lượt đo (dựng một lần: `load_media_config` đọc YAML từ đĩa)."""
+    global _SANDBOX
+    if _SANDBOX is None:
+        _SANDBOX = sandbox_from_config(load_media_config())
+    return _SANDBOX
+
+
+def _run(args: list[str], sandbox: Sandbox | None = None) -> tuple[int, str, str]:
+    """QC chỉ ĐO file: `read_only=True` → backend container mount cwd `:ro`, không lượt đo nào ghi đè được bản dựng.
+
+    `max_output` lớn vì stderr của ffmpeg là dữ liệu đo (ebur128, blackdetect) chứ không phải thông báo lỗi —
+    cắt 6000 ký tự mặc định là mất chính con số cần đọc."""
+    sb = sandbox if sandbox is not None else qc_sandbox()
     try:
-        r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_S)
-        return r.returncode, r.stdout, r.stderr
+        r = sb.run(RunSpec(argv=args, cwd=Path.cwd(), env=clean_env(), timeout=TIMEOUT_S, read_only=True,
+                           max_output=1_000_000))
+        if r.timed_out: return 1, "", f"quá {TIMEOUT_S}s"
+        return int(r.exit_code or 0), r.stdout, r.stderr
     except (OSError, subprocess.SubprocessError) as e:
         return 1, "", str(e)
 

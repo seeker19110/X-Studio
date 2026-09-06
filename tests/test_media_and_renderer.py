@@ -8,6 +8,7 @@ from studio.bus import InMemoryBus
 from studio.events import CutList, Repair, Scene, SceneManifest, ThumbnailSpec, ThumbnailVariant
 from studio.media import FFmpegAssembler, MediaConfig, MediaError, make_media
 from studio.renderer import Renderer
+from studio.sandbox import SubprocessSandbox
 
 
 def _manifest(vid="V1"):
@@ -94,10 +95,11 @@ def test_ffmpeg_builds_one_graph_with_motion_transition_and_loudness(tmp_path, m
     from studio import media
     runs: list[list[str]] = []
     monkeypatch.setattr(media.shutil, "which", lambda b: f"/usr/bin/{b}")
-    monkeypatch.setattr(media.subprocess, "run",
-                        lambda argv, *a, **k: (runs.append(argv), subprocess.CompletedProcess(argv, 0, "", ""))[1])
+    # lệnh đi qua Sandbox: bơm `runner=` giả vào SubprocessSandbox, KHÔNG vá `subprocess.run` — nếu assembler
+    # lén gọi thẳng subprocess thì `runs` rỗng và test đỏ ngay.
+    sb = SubprocessSandbox(runner=lambda argv, *a, **k: (runs.append(argv), subprocess.CompletedProcess(argv, 0, "", ""))[1])
     segs = [(tmp_path / f"i{i}.png", tmp_path / f"a{i}.wav", 3.0) for i in range(3)]
-    r = FFmpegAssembler().assemble(segs, tmp_path / "o.mp4", 30, "1920x1080")
+    r = FFmpegAssembler(sandbox=sb).assemble(segs, tmp_path / "o.mp4", 30, "1920x1080")
     argv = next(a for a in runs if "-filter_complex" in a)
     graph = argv[argv.index("-filter_complex") + 1]
     assert argv.count("-i") == 6  # mỗi cảnh hai đầu vào: ảnh + giọng đọc
@@ -115,18 +117,19 @@ def test_ffmpeg_one_scene_or_no_transition_falls_back_to_concat(tmp_path, monkey
     from studio import media
     runs: list[list[str]] = []
     monkeypatch.setattr(media.shutil, "which", lambda b: f"/usr/bin/{b}")
-    monkeypatch.setattr(media.subprocess, "run",
-                        lambda argv, *a, **k: (runs.append(argv), subprocess.CompletedProcess(argv, 0, "", ""))[1])
+    # lệnh đi qua Sandbox: bơm `runner=` giả vào SubprocessSandbox, KHÔNG vá `subprocess.run` — nếu assembler
+    # lén gọi thẳng subprocess thì `runs` rỗng và test đỏ ngay.
+    sb = SubprocessSandbox(runner=lambda argv, *a, **k: (runs.append(argv), subprocess.CompletedProcess(argv, 0, "", ""))[1])
     one = [(tmp_path / "i.png", tmp_path / "a.wav", 2.0)]
-    FFmpegAssembler().assemble(one, tmp_path / "one.mp4", 30, "1920x1080")
+    FFmpegAssembler(sandbox=sb).assemble(one, tmp_path / "one.mp4", 30, "1920x1080")
     g1 = runs[-1][runs[-1].index("-filter_complex") + 1]
     assert "xfade" not in g1 and "concat=" not in g1 and "[v0]" in g1
     two = [*one, (tmp_path / "i2.png", tmp_path / "a2.wav", 2.0)]
-    FFmpegAssembler(transition_s=0).assemble(two, tmp_path / "cut.mp4", 30, "1920x1080")
+    FFmpegAssembler(transition_s=0, sandbox=sb).assemble(two, tmp_path / "cut.mp4", 30, "1920x1080")
     g2 = runs[-1][runs[-1].index("-filter_complex") + 1]
     assert "concat=n=2:v=1:a=1" in g2 and "xfade" not in g2
     # tắt chuyển động và chuẩn hoá âm lượng
-    FFmpegAssembler(motion="none", loudness_lufs=None).assemble(two, tmp_path / "plain.mp4", 30, "1920x1080")
+    FFmpegAssembler(motion="none", loudness_lufs=None, sandbox=sb).assemble(two, tmp_path / "plain.mp4", 30, "1920x1080")
     g3 = runs[-1][runs[-1].index("-filter_complex") + 1]
     assert "zoompan" not in g3 and "loudnorm" not in g3
 

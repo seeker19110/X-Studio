@@ -74,7 +74,10 @@ class Renderer:
         if assets:
             a = AuditLog(actor=ACTOR, action=action, video_id=assets[0].video_id,
                          evidence=json.dumps({"assets": [(x.kind, x.scene_id or x.variant_id) for x in assets],
-                                              "providers": self.media.names}, ensure_ascii=False))
+                                              "providers": self.media.names,
+                                              # lệnh con (TTS cục bộ, ffmpeg) đã chạy trong sandbox nào — người
+                                              # duyệt publish thấy ngay video dựng bằng tiến trình trần hay container
+                                              "sandbox": self.media.sandbox.name}, ensure_ascii=False))
             self.bus.publish(Envelope(topic="audit-log", key=ACTOR, actor=ACTOR, payload=a.model_dump()))
         return out
 

@@ -91,6 +91,20 @@ video:
   #                          không có font thì thumbnail vẫn ra 1280x720 nhưng KHÔNG có chữ, và audit `thumbnail.finish` nói rõ)
   # binary: ffmpeg
 
+# Lệnh con của lượt render (ffmpeg, TTS cục bộ `provider: command`) chạy qua lớp `sandbox` — xem
+# `src/studio/sandbox.py` (bản tạm, sẽ chuyển vào lõi chung `xagents-core`).
+render:
+  timeout_s: 600            # trần MỘT lệnh ffmpeg; hết giờ là lỗi render có thông báo, không phải cả phòng treo im lặng
+  # sandbox:
+  #   mode: subprocess      # subprocess (mặc định) | container | auto. KHÔNG mặc định `auto` như software-company:
+  #                         # ffmpeg đọc/ghi đường dẫn tuyệt đối trải trên nhiều thư mục (output, font, thư mục tạm) mà
+  #                         # container chỉ thấy cwd được mount — bật container là việc phải cố ý, kèm tự lo mount.
+  #   runtime: docker       # docker | podman; khai `mode: container` mà thiếu binary → lỗi ngay, không âm thầm hạ cấp
+  #   image: python:3.12-slim   # image phải có sẵn ffmpeg/ffprobe nếu dùng cho render
+  # Biến môi trường tương đương (thắng file): STUDIO_SANDBOX, STUDIO_SANDBOX_RUNTIME, STUDIO_SANDBOX_IMAGE.
+  # Dù backend nào, env của lệnh con đã lọc mọi biến trông như khoá (SECRET_ENV): lệnh TTS của người khác
+  # không thấy ELEVENLABS_API_KEY / STUDIO_LLM_API_KEY. Tên sandbox đã dùng nằm trong audit `render.*`.
+
 # Adapter nền tảng phân phối (ADR-0008): CODE gọi sau gate publish/replies và trong `python -m studio.youtube sync-*`.
 # fake (mặc định, offline) | youtube (Data API v3 + Analytics API v2; đăng nhập trước bằng
 # `python -m studio.youtube login --client-secrets client_secret.json`). Biến môi trường tương đương: STUDIO_PLATFORM=youtube

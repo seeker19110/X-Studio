@@ -8,6 +8,7 @@ import pytest
 
 from studio import media, qc
 from studio.media import FFmpegAssembler, MediaConfig, MediaError
+from studio.sandbox import SubprocessSandbox
 
 
 def _stub_which(monkeypatch, mapping):
@@ -100,8 +101,8 @@ def _assembler_ghi_file(monkeypatch, out: Path, sizes: list[int]):
         out.write_bytes(b"\xff" * sizes[min(len(runs) - 1, len(sizes) - 1)])
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    monkeypatch.setattr(media.subprocess, "run", fake_run)
-    return FFmpegAssembler(), runs
+    # qua Sandbox (runner giả), không vá `subprocess.run`: gọi thẳng subprocess là `runs` rỗng → test đỏ.
+    return FFmpegAssembler(sandbox=SubprocessSandbox(runner=fake_run)), runs
 
 
 def test_finish_thumbnail_ve_chu_phu_va_don_thu_muc_tam(tmp_path, monkeypatch):
