@@ -24,9 +24,67 @@ from gateway import manage
 # ---------- _pid_is_gateway ----------
 
 
-def test_pid_is_gateway_short_circuits_on_non_linux(monkeypatch):
+class _Runner:
+    """Thay `subprocess.run`: ghi lại argv, trả stdout dựng sẵn (hoặc ném)."""
+
+    def __init__(self, stdout: str = "", rc: int = 0, boom: Exception | None = None):
+        self.stdout, self.rc, self.boom = stdout, rc, boom
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, **kw):
+        self.calls.append(list(argv))
+        if self.boom is not None: raise self.boom
+        return subprocess.CompletedProcess(argv, self.rc, self.stdout, "")
+
+
+def test_pid_is_gateway_windows_hoi_tasklist(monkeypatch):
+    """K8.6: trước đây mọi hệ không phải Linux đều trả True — tức `stop` trên Windows/macOS giết BẤT KỲ PID nào
+    trong PID file, kể cả PID đã bị hệ điều hành tái dùng cho tiến trình khác (Windows tái dùng PID nhanh)."""
     monkeypatch.setattr(sys, "platform", "win32")
-    assert manage._pid_is_gateway(123) is True
+    r = _Runner(stdout='"python.exe","4242","Console","1","40.000 K"')
+    assert manage._pid_is_gateway(4242, runner=r) is True
+    assert r.calls == [["tasklist", "/FI", "PID eq 4242", "/NH", "/FO", "CSV"]]
+
+
+def test_pid_is_gateway_windows_pid_da_bi_tai_dung_thi_khong_giet(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    r = _Runner(stdout='"notepad.exe","4242","Console","1","8.000 K"')
+    assert manage._pid_is_gateway(4242, runner=r) is False
+
+
+def test_pid_is_gateway_windows_khong_co_tien_trinh(monkeypatch):
+    """`tasklist` in "INFO: No tasks..." ra stdout và VẪN thoát 0 — dựa vào mã thoát là sai."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    r = _Runner(stdout="INFO: No tasks are running which match the specified criteria.")
+    assert manage._pid_is_gateway(4242, runner=r) is False
+    assert manage._pid_is_gateway(4242, runner=_Runner(stdout="")) is False
+
+
+def test_pid_is_gateway_macos_hoi_ps(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    r = _Runner(stdout="/usr/bin/python3 -c from gateway.manage import _run_daemon; ...")
+    assert manage._pid_is_gateway(4242, runner=r) is True
+    assert r.calls == [["ps", "-o", "command=", "-p", "4242"]]
+    assert manage._pid_is_gateway(4242, runner=_Runner(stdout="/usr/bin/vim ghi-chu.txt")) is False
+    assert manage._pid_is_gateway(4242, runner=_Runner(stdout="", rc=1)) is False
+
+
+def test_pid_is_gateway_khong_doc_duoc_thi_giu_hanh_vi_cu(monkeypatch):
+    """Không đọc được ≠ không tồn tại. `ps`/`tasklist` thiếu hoặc treo thì K8.6 KHÔNG được biến `stop` thành
+    lệnh không làm gì — giữ nguyên hành vi trước đó (giết) và để PID file dọn như cũ."""
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert manage._pid_is_gateway(1, runner=_Runner(boom=FileNotFoundError("ps"))) is True
+    assert manage._pid_is_gateway(1, runner=_Runner(boom=subprocess.TimeoutExpired("ps", 5))) is True
+
+
+def test_cmdline_linux_phan_biet_khong_co_voi_khong_doc_duoc(monkeypatch):
+    """Ba giá trị trả về là ba chuyện khác nhau; gộp `""` với `None` là chỗ lỗi dễ mắc nhất của K8.6."""
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def missing(self): raise FileNotFoundError
+
+    monkeypatch.setattr(manage.Path, "read_bytes", missing)
+    assert manage._cmdline(1) == ""
 
 
 def test_pid_is_gateway_linux_oserror_treated_as_gateway(monkeypatch):

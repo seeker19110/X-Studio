@@ -57,18 +57,68 @@ DEFAULT_CHECK_TARGETS = [
 ]
 
 
-def _pid_is_gateway(pid: int) -> bool:
-    """Tránh SIGTERM nhầm tiến trình khác tái dùng PID: trên Linux kiểm tra /proc/<pid>/cmdline có "gateway".
-    Hệ khác không có /proc → bỏ qua kiểm tra."""
-    if not sys.platform.startswith("linux"):
-        return True
+CMDLINE_TIMEOUT_S = 5.0
+
+
+def _cmdline(pid: int, runner: Any = None) -> str | None:
+    """Dòng lệnh của tiến trình `pid`, hoặc `""` khi tiến trình KHÔNG tồn tại, hoặc `None` khi không đọc được.
+
+    Ba giá trị trả về là ba chuyện khác nhau và `_pid_is_gateway` xử lý khác nhau — gộp `""` với `None` là chỗ
+    lỗi dễ mắc nhất ở đây: "không có tiến trình đó" phải dẫn tới KHÔNG giết, còn "không đọc được" phải dẫn tới
+    giữ nguyên hành vi cũ.
+
+    Không dùng `psutil`: gateway cố ý không có phụ thuộc ngoài (xem `pyproject.toml`), và ba lệnh dưới đây có
+    sẵn trên mọi máy chạy được repo này.
+    """
+    run = runner if runner is not None else subprocess.run
+    if sys.platform.startswith("linux"):
+        try:
+            return Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace")
+        except FileNotFoundError:
+            return ""      # /proc không có mục này = tiến trình đã thoát
+        except OSError:
+            return None    # quyền, hay /proc bị mount lạ — không biết thì không đoán
+    if sys.platform == "win32":
+        # `tasklist` chỉ cho TÊN ẢNH (python.exe), không cho dòng lệnh. Đủ để loại trường hợp nguy hiểm nhất:
+        # PID được hệ điều hành tái dùng cho một tiến trình KHÔNG PHẢI python (Windows tái dùng PID nhanh và
+        # thường xuyên hơn Linux). Không đủ để phân biệt gateway với một python khác — nói rõ giới hạn đó ở
+        # `_pid_is_gateway` thay vì giả vờ chặt hơn thực tế.
+        argv = ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"]
+    else:
+        argv = ["ps", "-o", "command=", "-p", str(pid)]   # macOS và BSD
     try:
-        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except FileNotFoundError:
-        return False
-    except OSError:
+        r = run(argv, capture_output=True, text=True, timeout=CMDLINE_TIMEOUT_S)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = (r.stdout or "").strip()
+    if sys.platform == "win32":
+        # Không có tiến trình: tasklist in "INFO: No tasks..." ra stdout và VẪN thoát 0 — không dựa vào mã thoát.
+        return "" if (not out or "No tasks" in out or str(pid) not in out) else out
+    return out if r.returncode == 0 and out else ""
+
+
+def _pid_is_gateway(pid: int, runner: Any = None) -> bool:
+    """Tránh giết nhầm một tiến trình khác đã tái dùng PID trong PID file.
+
+    | Đọc được gì | Kết luận |
+    |---|---|
+    | dòng lệnh có `gateway` (Linux, macOS) | đúng gateway → giết |
+    | dòng lệnh không có `gateway` | KHÔNG giết |
+    | tiến trình không tồn tại (`""`) | KHÔNG giết, chỉ xoá PID file |
+    | không đọc được (`None`) | giết — giữ nguyên hành vi trước K8.6 |
+
+    **Windows chặt tới đâu:** `tasklist` chỉ cho tên ảnh, nên ở đó phép kiểm là "PID này có phải một tiến trình
+    Python đang chạy không". Nó loại được ca nguy hiểm nhất (PID tái dùng cho một tiến trình bất kỳ — Windows
+    tái dùng PID nhanh hơn Linux nhiều) nhưng KHÔNG phân biệt được gateway với một python khác. Nói ra giới hạn
+    còn hơn để người đọc tưởng `stop` an toàn tuyệt đối.
+    """
+    cmd = _cmdline(pid, runner)
+    if cmd is None:
         return True
-    return b"gateway" in cmdline
+    if not cmd:
+        return False
+    low = cmd.lower()
+    return ("python" in low) if sys.platform == "win32" else ("gateway" in low)
 
 
 def _run_daemon(host: str, port: int) -> None:

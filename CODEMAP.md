@@ -24,7 +24,7 @@ dòng thì grep tên hàm.
 | Endpoint HTTP, giới hạn body 32 MB | `GatewayServer.__init__` (`server.py:137-143`) và các `handle_*` | mục "Endpoint" `README.md`; `tests/test_server.py:220` |
 | Trường trả về của `/auth/status` | `handle_auth_status` (`server.py:151-170`) | bảng lộ dữ liệu ADR-0003 §2; `tests/test_server.py:134` |
 | Host/port mặc định, cảnh báo bind ngoài loopback | `server.py:37-38,111-122`; `manage.py:93-95` | `tests/test_server.py:231`, `tests/test_manage.py:40`; ADR-0002 §1 |
-| Vòng đời daemon: spawn, PID file, healthcheck 10 s, stop | `cmd_start`/`cmd_stop`/`_run_daemon`/`_pid_is_gateway` (`manage.py:60-161`); đường dẫn PID/log (`server.py:42-49`) | `tests/test_x_manage_coverage.py:46-236`, `tests/test_manage.py:47,76`; ADR-0002 §2-3 |
+| Vòng đời daemon: spawn, PID file, healthcheck 10 s, stop | `cmd_start`/`cmd_stop`/`_run_daemon`/`_pid_is_gateway`+`_cmdline` (`manage.py:60-208`; K8.6: kiểm dòng lệnh trên cả ba nền, không chỉ `/proc`); đường dẫn PID/log (`server.py:42-49`) | `tests/test_x_manage_coverage.py:46-236`, `tests/test_manage.py:47,76`; ADR-0002 §2-3 |
 | `status` (định dạng, mã thoát) | `cmd_status` (`manage.py:168-196`) | `tests/test_x_manage_coverage.py:238-266` |
 | CLI subparser, cờ mới | `main` (`manage.py:463-517`), `__main__.py` | `tests/test_x_manage_coverage.py:411` |
 | `setup` ghi `llm.yaml` cho software-company | `cmd_setup` (`manage.py:235-256`), mặc định model (`manage.py:52-53`) | `tests/test_manage.py:16`; không dùng khi `llm.yaml` đã có `backends:` |
