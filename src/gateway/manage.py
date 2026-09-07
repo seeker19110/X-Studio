@@ -282,6 +282,31 @@ def cmd_logout(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_ready(args: argparse.Namespace) -> int:
+    """Máy này đã đăng nhập ít nhất một tài khoản Antigravity chưa? (K8.2)
+
+    Sinh ra cho `make llm` của hai công ty: hồ sơ `claude-gateway` trỏ `base_url` vào daemon, nên cài nó lên một
+    máy chưa có tài khoản nào là dựng sẵn một cấu hình **chắc chắn hỏng** — và hỏng muộn, ở lượt gọi model đầu
+    tiên giữa một phiên chạy thật, chứ không phải lúc cài.
+
+    Không kiểm daemon có đang chạy hay không: `make llm` là bước CÀI, còn `make start` là bước CHẠY. Bắt daemon
+    phải sống mới cho cài là đổi một lỗi muộn lấy một phiền hà sớm không cần thiết.
+
+    Mã thoát: 0 = có tài khoản; 2 = chưa (kèm đúng lệnh phải gõ). Không dùng 1 để phân biệt với lỗi thật.
+    """
+    accounts = AntigravityAuthManager().load_all_stored_credentials()
+    if accounts:
+        if not args.quiet:
+            print(f"[+] {len(accounts)} tài khoản trong pool: " + ", ".join(c.email or "primary" for c in accounts))
+        return 0
+    print("[-] Chưa có tài khoản Antigravity nào trên máy này.", file=sys.stderr)
+    print("    Đăng nhập một tài khoản:  cd gateway && make login && make start", file=sys.stderr)
+    print("    Rồi chạy lại lệnh vừa rồi.", file=sys.stderr)
+    print("    Đọc trước khi thêm tài khoản THỨ HAI: gateway/README.md §Rủi ro tài khoản (ADR-0004).",
+          file=sys.stderr)
+    return 2
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     """Ghi `llm.yaml` cho software-company (provider openai, base_url trỏ vào gateway)."""
     import yaml
@@ -536,6 +561,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("email", nargs="?", default="")
     p = sub.add_parser("logout", help="gỡ tài khoản khỏi pool")
     p.add_argument("email")
+    p = sub.add_parser("ready", help="máy này đã đăng nhập tài khoản Antigravity chưa (exit 2 nếu chưa)")
+    p.add_argument("--quiet", action="store_true", help="không in gì khi đã có tài khoản (dùng trong Makefile)")
     p = sub.add_parser("setup", help="ghi llm.yaml của software-company trỏ vào gateway")
     add_hostport(p)
     p.add_argument("--target", default=str(DEFAULT_SETUP_TARGET))
@@ -561,6 +588,7 @@ def main(argv: list[str] | None = None) -> int:
         "login": cmd_login,
         "reset": cmd_reset,
         "logout": cmd_logout,
+        "ready": cmd_ready,
         "setup": cmd_setup,
         "models": cmd_models,
     }

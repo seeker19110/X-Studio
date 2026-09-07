@@ -1,4 +1,4 @@
-.PHONY: test cov lint types fix login start stop status setup models
+.PHONY: test cov lint types fix login start stop status setup models ready
 test:
 	uv run pytest -q
 cov:
@@ -16,6 +16,8 @@ start:
 	uv run python -m gateway start
 stop:
 	uv run python -m gateway stop
+ready:         # exit 2 nếu chưa đăng nhập tài khoản nào (K8.2 — `make llm` của hai công ty gác bằng lệnh này)
+	uv run python -m gateway ready
 status:
 	uv run python -m gateway status
 setup:      # ghi software-company/llm.yaml trỏ vào gateway

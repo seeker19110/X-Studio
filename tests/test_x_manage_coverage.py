@@ -476,3 +476,48 @@ def test_dunder_main_guard_calls_main_and_exits(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as e:
         runpy.run_module("gateway.manage", run_name="__main__")
     assert e.value.code == 0  # file llm.yaml không tồn tại -> bỏ qua, không tính là lỗi
+
+
+# ---------- K8.2: `ready` gác `make llm` ----------
+
+def test_ready_chua_dang_nhap_thi_exit_2_va_noi_dung_lenh(tmp_path, monkeypatch, capsys):
+    """`make llm` cài hồ sơ trỏ `base_url` vào daemon. Cài nó lên máy chưa có tài khoản nào là dựng sẵn một cấu
+    hình CHẮC CHẮN hỏng, và hỏng MUỘN — ở lượt gọi model đầu tiên giữa một phiên chạy thật, không phải lúc cài.
+
+    Mã thoát 2 chứ không phải 1: phân biệt "chưa đăng nhập" (việc của người, có lệnh để gõ) với lỗi thật."""
+    monkeypatch.setenv(gw_auth.ENV_HOME, str(tmp_path))
+    assert manage.main(["ready"]) == 2
+    err = capsys.readouterr().err
+    assert "make login" in err, "báo lỗi phải kèm đúng lệnh phải gõ, không chỉ nói 'chưa có'"
+    assert "Rủi ro tài khoản" in err, "và trỏ tới §rủi ro trước khi người ta thêm tài khoản thứ hai (K8.1)"
+
+
+def test_ready_co_tai_khoan_thi_exit_0(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv(gw_auth.ENV_HOME, str(tmp_path))
+    mgr = gw_auth.AntigravityAuthManager()
+    mgr.save_credentials(gw_auth.AntigravityCredentials(access_token="t", email="a@example.com", project_id="p"))
+    assert manage.main(["ready"]) == 0
+    assert "a@example.com" in capsys.readouterr().out
+
+
+def test_ready_quiet_khong_in_gi_khi_dat(tmp_path, monkeypatch, capsys):
+    """Makefile gọi `--quiet`: `make llm` chạy trơn thì không nên có thêm dòng nhiễu; chỉ mã thoát mới quan trọng."""
+    monkeypatch.setenv(gw_auth.ENV_HOME, str(tmp_path))
+    gw_auth.AntigravityAuthManager().save_credentials(
+        gw_auth.AntigravityCredentials(access_token="t", email="a@example.com", project_id="p"))
+    assert manage.main(["ready", "--quiet"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_ready_khong_doi_daemon_phai_dang_chay(tmp_path, monkeypatch):
+    """`make llm` là bước CÀI, `make start` là bước CHẠY. Bắt daemon phải sống mới cho cài là đổi một lỗi muộn
+    lấy một phiền hà sớm không cần thiết — nên `ready` không được gọi `is_server_running`."""
+    monkeypatch.setenv(gw_auth.ENV_HOME, str(tmp_path))
+    gw_auth.AntigravityAuthManager().save_credentials(
+        gw_auth.AntigravityCredentials(access_token="t", email="a@example.com", project_id="p"))
+
+    def khong_duoc_goi(*a, **kw):
+        raise AssertionError("ready không được kiểm daemon")
+
+    monkeypatch.setattr(manage, "is_server_running", khong_duoc_goi)
+    assert manage.main(["ready"]) == 0

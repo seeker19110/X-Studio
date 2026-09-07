@@ -36,6 +36,7 @@ cd gateway
 uv sync
 make login        # mở trình duyệt, đăng nhập Google; chạy lại để thêm tài khoản thứ 2, 3...   (login --no-browser: chỉ in URL, không mở trình duyệt)
 make start        # daemon tại 127.0.0.1:1123   (start --foreground/-f chạy tiền cảnh; --host/--port)
+make ready        # exit 0 nếu máy đã đăng nhập >= 1 tài khoản, exit 2 nếu chưa — `make llm` của hai công ty gác bằng lệnh này
 make status       # server + từng tài khoản: sẵn sàng / cooldown / hạn token; exit 1 nếu server tắt hoặc 0 tài khoản sẵn sàng
 make models       # model gateway hỗ trợ + đối chiếu llm.yaml (thêm --probe để gọi thử upstream)
 make setup        # ghi ../software-company/llm.yaml: provider openai, base_url trỏ gateway (--target, --strong, --standard)
