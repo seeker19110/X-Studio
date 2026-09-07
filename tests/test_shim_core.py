@@ -58,3 +58,37 @@ def test_bang_tool_cua_studio_khong_cat_o_tang_bang():
     from studio.tools import WebTools
 
     assert WebTools().toolbox().max_output is None
+
+
+# ---------- K3.3b: `LLMConfig` của studio là ĐÚNG khung core, không thêm trường nào ----------
+
+def test_llmconfig_khong_them_truong_rieng_nao():
+    """Cả 13 trường studio từng khai đều là khoá chung, nên chúng đã lên core nguyên vẹn. Ca này là bánh cóc:
+    thêm một trường ở studio thì phải trả lời được "company có sẵn thứ này chưa?" trước — nếu có, việc cần làm là
+    kéo nó lên core, không phải mọc bản thứ hai."""
+    from dataclasses import fields
+
+    from xagents_core.llm import LLMConfig as CoreLLMConfig
+
+    from studio.llm import LLMConfig
+
+    assert issubclass(LLMConfig, CoreLLMConfig)
+    assert {f.name for f in fields(LLMConfig)} == {f.name for f in fields(CoreLLMConfig)}
+
+
+def test_thong_diep_thieu_model_goi_dung_bien_cua_studio():
+    import pytest
+
+    from studio.llm import LLMConfig, LLMError
+
+    with pytest.raises(LLMError, match=r"STUDIO_MODEL_LIGHT hoặc llm\.yaml"):
+        LLMConfig().model_for("light")
+
+
+def test_core_config_cua_studio_dung_mot_nguon():
+    from studio import llm
+    from studio.core import CORE
+
+    assert CORE.prefix == "STUDIO" and CORE.db_name == "studio.sqlite"
+    assert (CORE.root / "agents").is_dir()
+    assert llm.ROOT is CORE.root and llm.CONFIG_FILE == CORE.config_file

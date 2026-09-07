@@ -32,9 +32,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
-
-import yaml
+from typing import Any, ClassVar, Protocol
 
 # K3.3a: nền chung ở `xagents_core.llm`. Re-export TỪNG tên vì các module khác của studio nhập chúng từ
 # `studio.llm`. `CLI_ARGV_MAX` là tên cũ của studio cho cùng hằng số mà company gọi là `ARGV_LIMIT` — giữ cả hai
@@ -46,11 +44,13 @@ from xagents_core.llm import CLI_SUBTYPE_ERRORS as CLI_SUBTYPE_ERRORS
 from xagents_core.llm import CODEX_EFFORT as CODEX_EFFORT
 from xagents_core.llm import TIERS as TIERS
 from xagents_core.llm import TRANSIENT_HTTP as TRANSIENT_HTTP
+from xagents_core.llm import LLMConfig as CoreLLMConfig
 from xagents_core.llm import LLMError as LLMError
 from xagents_core.llm import Refused as Refused
 from xagents_core.llm import TransientError as TransientError
 from xagents_core.llm import cli_effort_args as cli_effort_args
 from xagents_core.llm import find_codex_binary as find_codex_binary
+from xagents_core.llm import load_config as core_load_config
 from xagents_core.llm import neutral_messages as neutral_messages
 from xagents_core.llm import reported_model as reported_model
 from xagents_core.llm import strict_schema as strict_schema
@@ -59,13 +59,15 @@ from xagents_core.llm import system_prompt_args as system_prompt_args
 # `SECRET_ENV` là bản THỨ BA của cùng một regex (workspace của company và sandbox đã có); K3.2 ghi nhận, K3.3a xoá.
 from xagents_core.sandbox import SECRET_ENV as SECRET_ENV
 
+from .core import CORE
 from .tools import ToolCall, ToolSpec
 
 CLI_ARGV_MAX = ARGV_LIMIT
 
 
-ROOT = Path(__file__).resolve().parents[2]
-CONFIG_FILE = ROOT / "llm.yaml"
+# Giữ tên cũ vì console (`collect.py`) và test đọc chúng từ module này; nguồn nay là `CORE`.
+ROOT = CORE.root
+CONFIG_FILE = CORE.config_file
 @dataclass
 class Completion:
     """`input_tokens` LUÔN là tổng input đã tính tiền, kể cả phần cache (Anthropic tách cache ra khỏi `input_tokens`,
@@ -123,84 +125,25 @@ class ModelClient(Protocol):
 # ---------- cấu hình ----------
 
 @dataclass
-class LLMConfig:
+class LLMConfig(CoreLLMConfig):
+    """Cấu hình của studio = ĐÚNG khung chung, không thêm trường nào.
+
+    K3.3b: cả 13 trường studio từng khai đều là khoá hai công ty dùng chung, nên chúng lên `xagents_core.llm`
+    nguyên vẹn; ở lại đây chỉ còn hai điểm studio thật sự khác company — tiền tố biến môi trường và provider
+    mặc định. Nếu một ngày lớp này lại mọc trường riêng, hãy hỏi trước: đó là nhu cầu của studio, hay là company
+    đã có sẵn thứ đó và cái cần làm là kéo nó lên core.
+
+    `provider` mặc định `fake` (company: `anthropic`): studio chạy được toàn bộ đường ống offline bằng provider
+    giả, còn company mặc định gọi model thật.
+    """
+    PREFIX: ClassVar[str] = CORE.prefix
+
     provider: str = "fake"
-    models: dict[str, str] = field(default_factory=lambda: {"strong": "", "standard": "", "light": ""})
-    base_url: str | None = None
-    api_key: str | None = None
-    max_tokens: int = 16_000
-    max_input_chars: int = 120_000   # trần ký tự prompt (≈ 37k token); runner cắt payload/blackboard theo xagents_core.context
-    effort: dict[str, str] = field(default_factory=lambda: {"strong": "high", "standard": "medium", "light": "low"})
-    extra: dict[str, Any] = field(default_factory=dict)
-    config_dir: str | None = None    # claude-code: CLAUDE_CONFIG_DIR / codex: CODEX_HOME riêng → tài khoản khác trên cùng máy
-    binary: str | None = None        # đường dẫn CLI (claude / codex) khi không có trên PATH
-    name: str = "default"            # tên backend (ADR-0006), hiện trong ghi chú audit khi xoay
-    backends: list[dict[str, Any]] = field(default_factory=list)   # mỗi phần tử = một backend, cùng khoá như cấp trên
-    routing: dict[str, Any] = field(default_factory=dict)          # cooldown_s, transient_cooldown_s, prefer{tier: backend}
-
-    def model_for(self, tier: str) -> str:
-        """light → standard → strong: backend không có model rẻ thì dùng model tầm trung, không bao giờ lùi lên tier cao
-        hơn yêu cầu trừ khi đó là model duy nhất."""
-        m = self.models.get(tier) or self.models.get("standard") or self.models.get("strong") or ""
-        if not m:
-            raise LLMError(f"chưa cấu hình model cho tier `{tier}` (STUDIO_MODEL_{tier.upper()} hoặc llm.yaml)")
-        return m
-
-    def tiers_configured(self) -> frozenset[str]:
-        return frozenset(t for t in TIERS if self.models.get(t))
-
-    def backend_config(self, data: dict[str, Any]) -> LLMConfig:
-        """Cấu hình cho một phần tử `backends:`: thừa kế khoá dùng chung từ cấp trên, ghi đè provider / models /
-        base_url / api_key / effort / extra / max_tokens theo phần tử."""
-        cfg = LLMConfig(**{k: v for k, v in self.__dict__.items() if k not in {"backends", "routing"}})
-        cfg.models = dict(self.models) if data.get("inherit_models") else {t: "" for t in TIERS}
-        cfg.effort, cfg.extra = dict(self.effort), dict(self.extra)
-        _apply_yaml(cfg, data)
-        cfg.name = str(data.get("name") or cfg.provider)
-        cfg.config_dir = str(data["config_dir"]) if data.get("config_dir") else None
-        cfg.binary = str(data["binary"]) if data.get("binary") else None
-        if data.get("api_key"): cfg.api_key = str(data["api_key"])
-        if data.get("api_key_env"): cfg.api_key = os.environ.get(str(data["api_key_env"]), cfg.api_key)
-        return cfg
-
-
-def _apply_yaml(cfg: LLMConfig, data: dict[str, Any]) -> None:
-    cfg.provider = data.get("provider", cfg.provider)
-    cfg.models.update({k: str(v) for k, v in (data.get("models") or {}).items()})
-    cfg.effort.update(data.get("effort") or {})
-    cfg.base_url = data.get("base_url", cfg.base_url)
-    cfg.max_tokens = int(data.get("max_tokens", cfg.max_tokens))
-    if "extra" in data: cfg.extra = dict(data.get("extra") or {})
 
 
 def load_config(path: Path | None = None) -> LLMConfig:
-    cfg = LLMConfig()
-    p = path or CONFIG_FILE
-    if p.exists():
-        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        _apply_yaml(cfg, data)
-        # Cố ý KHÔNG ở trong `_apply_yaml`: trần prompt là thuộc tính của cả hệ, không của một backend — mỗi backend
-        # một trần khác nhau thì cùng một agent bị cắt khác nhau tuỳ tài khoản nào còn hạn mức (giống `company/llm.py`).
-        cfg.max_input_chars = int(data.get("max_input_chars", cfg.max_input_chars))
-        cfg.backends = [dict(b) for b in (data.get("backends") or []) if isinstance(b, dict)]
-        cfg.routing = dict(data.get("routing") or {})
-    env = os.environ
-    if env.get("STUDIO_LLM_PROVIDER"):   # biến môi trường thắng file: một provider được chỉ đích danh → bỏ `backends:`
-        cfg.provider, cfg.backends = env["STUDIO_LLM_PROVIDER"], []
-    for t in TIERS:
-        if env.get(f"STUDIO_MODEL_{t.upper()}"): cfg.models[t] = env[f"STUDIO_MODEL_{t.upper()}"]
-    cfg.base_url = env.get("STUDIO_LLM_BASE_URL", cfg.base_url)
-    cfg.api_key = env.get("STUDIO_LLM_API_KEY", cfg.api_key)
-    if env.get("STUDIO_MAX_INPUT_CHARS"): cfg.max_input_chars = int(env["STUDIO_MAX_INPUT_CHARS"])
-    if env.get("STUDIO_LLM_BACKENDS"):
-        wanted = [s.strip() for s in env["STUDIO_LLM_BACKENDS"].split(",") if s.strip()]
-        by_name = {str(b.get("name") or b.get("provider")): b for b in cfg.backends}
-        missing = [w for w in wanted if w not in by_name]
-        if missing: raise LLMError(f"STUDIO_LLM_BACKENDS nhắc backend không có trong llm.yaml: {missing}")
-        cfg.backends = [by_name[w] for w in wanted]
-        if cfg.routing.get("prefer"):   # prefer trỏ backend đã bị lọc bỏ thì bỏ mục đó, không phải lỗi cấu hình
-            cfg.routing["prefer"] = {t: n for t, n in cfg.routing["prefer"].items() if n in wanted}
-    return cfg
+    """`llm.yaml` của studio + biến `STUDIO_*`. Chữ ký giữ nguyên (`path` vị trí) vì nơi gọi đang dùng."""
+    return core_load_config(CORE, path, cls=LLMConfig)
 
 
 def _single_client(cfg: LLMConfig) -> ModelClient:
