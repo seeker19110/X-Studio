@@ -29,26 +29,43 @@ import os
 import re
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
 import yaml
 
+# K3.3a: nền chung ở `xagents_core.llm`. Re-export TỪNG tên vì các module khác của studio nhập chúng từ
+# `studio.llm`. `CLI_ARGV_MAX` là tên cũ của studio cho cùng hằng số mà company gọi là `ARGV_LIMIT` — giữ cả hai
+# để không phải sửa nơi gọi trong PR chuyển mã.
+from xagents_core.llm import ARGV_LIMIT as ARGV_LIMIT
+from xagents_core.llm import CLAUDE_EFFORT as CLAUDE_EFFORT
+from xagents_core.llm import CLI_BASE_FLAGS as CLI_BASE_FLAGS
+from xagents_core.llm import CLI_SUBTYPE_ERRORS as CLI_SUBTYPE_ERRORS
+from xagents_core.llm import CODEX_EFFORT as CODEX_EFFORT
+from xagents_core.llm import TIERS as TIERS
+from xagents_core.llm import TRANSIENT_HTTP as TRANSIENT_HTTP
+from xagents_core.llm import LLMError as LLMError
+from xagents_core.llm import Refused as Refused
+from xagents_core.llm import TransientError as TransientError
+from xagents_core.llm import cli_effort_args as cli_effort_args
+from xagents_core.llm import find_codex_binary as find_codex_binary
+from xagents_core.llm import neutral_messages as neutral_messages
+from xagents_core.llm import reported_model as reported_model
+from xagents_core.llm import strict_schema as strict_schema
+from xagents_core.llm import system_prompt_args as system_prompt_args
+
+# `SECRET_ENV` là bản THỨ BA của cùng một regex (workspace của company và sandbox đã có); K3.2 ghi nhận, K3.3a xoá.
+from xagents_core.sandbox import SECRET_ENV as SECRET_ENV
+
 from .tools import ToolCall, ToolSpec
+
+CLI_ARGV_MAX = ARGV_LIMIT
+
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT / "llm.yaml"
-TIERS = ("strong", "standard", "light")   # light: việc cơ học/ngắn (publisher, supervisor...) — model rẻ nhất
-
-
-class LLMError(Exception): ...
-class Refused(LLMError):
-    """Model từ chối trả lời. Không retry mù; để supervisor escalate."""
-
-
 @dataclass
 class Completion:
     """`input_tokens` LUÔN là tổng input đã tính tiền, kể cả phần cache (Anthropic tách cache ra khỏi `input_tokens`,
@@ -101,10 +118,6 @@ class ModelClient(Protocol):
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
                  messages: list[dict[str, Any]] | None = None) -> Completion: ...
-
-
-def neutral_messages(user: str, messages: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    return list(messages) if messages else [{"role": "user", "content": user}]
 
 
 # ---------- cấu hình ----------
@@ -219,21 +232,6 @@ def make_client(cfg: LLMConfig | None = None) -> ModelClient:
                                prefer={str(k): str(v) for k, v in (r.get("prefer") or {}).items()})
     client.max_input_chars = cfg.max_input_chars
     return client
-
-
-def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Structured output ở nhiều provider cần `additionalProperties: false` ở mọi object; bản sao, không đổi schema gốc."""
-    def walk(node: Any) -> Any:
-        if isinstance(node, dict):
-            out = {k: walk(v) for k, v in node.items() if k not in {"$schema", "$id", "format"}}
-            if out.get("type") == "object":
-                out["additionalProperties"] = False
-                out.setdefault("properties", {})
-            return out
-        if isinstance(node, list):
-            return [walk(x) for x in node]
-        return node
-    return walk(schema)
 
 
 # ---------- provider: Anthropic ----------
@@ -403,51 +401,10 @@ class OpenAICompatClient:
 
 
 
-def reported_model(model_usage: dict[str, Any], requested: str) -> str:
-    """`claude -p` liệt kê trong `modelUsage` cả model phụ mà CLI tự gọi (Haiku cho việc lặt vặt) — thường đứng TRƯỚC
-    model chính. Chọn khoá khớp tên model đã yêu cầu; không có thì khoá tiêu nhiều output token nhất; rỗng thì tên yêu cầu."""
-    if not model_usage: return requested
-    for k, v in model_usage.items():
-        canonical = str(v.get("canonicalModel", "")) if isinstance(v, dict) else ""
-        if k == requested or k.startswith(requested) or requested.startswith(k) or canonical.startswith(requested): return k
-    def out(k: str) -> int:
-        v = model_usage.get(k)
-        return int(v.get("outputTokens", 0) or 0) if isinstance(v, dict) else 0
-    return max(model_usage, key=out)
-
 # ---------- provider: Claude Code CLI (dùng đăng nhập sẵn có của máy, không cần API key) ----------
 
 CLI_WEB_TOOLS = "WebFetch,WebSearch"  # tool sẵn có của CLI, bản đồ 1-1 của web_fetch/web_search (ADR-0007)
 CLI_TOOL_TURNS = 8
-# trần tổng độ dài argv (Windows ~32 KB; POSIX rộng hơn nhưng vẫn hữu hạn)
-CLI_ARGV_MAX = 30_000 if os.name == "nt" else 120_000
-
-# ADR-0026 (software-company): đồng bộ cơ chế adapter CLI sang đây. `--effort` theo tier — bảng ĐÓNG, giá trị ngoài
-# bảng phải hỏng to thay vì rơi về mặc định (bài học `none` của codex: cấu hình nói một đằng, CLI chạy một nẻo).
-CLAUDE_EFFORT = ("low", "medium", "high", "xhigh", "max")
-
-# `--json-schema`: CLI tự ép và kiểm đầu ra, trả `structured_output` đã parse.
-# `--no-session-persistence`: mỗi lượt `-p` mặc định ghi transcript (chứa kịch bản, dossier, kết quả web) ra
-# ~/.claude/projects; phòng ban gọi hàng trăm lượt thì đó là hàng trăm bản sao nằm ngoài kho của mình.
-CLI_BASE_FLAGS = ("--no-session-persistence",)
-
-# `subtype` nói vì sao phiên dừng; `result` có thể vắng ở các subtype lỗi, nên đọc nó TRƯỚC.
-CLI_SUBTYPE_ERRORS = {
-    "error_max_turns": "CLI hết lượt (tăng CLI_TOOL_TURNS hoặc chia nhỏ việc)",
-    "error_max_budget_usd": "CLI chạm trần chi phí `--max-budget-usd`",
-    "error_max_structured_output_retries": "CLI không ép được đầu ra đúng JSON Schema sau nhiều lần thử",
-    "error_during_execution": "CLI lỗi khi đang chạy",
-}
-
-# Biến môi trường trông như khoá/bí mật: không đưa vào tiến trình CLI model. Cùng ý với `workspace.SECRET_ENV` của
-# software-company; Studio không có workspace nên khai tại chỗ.
-SECRET_ENV = re.compile(
-    r"(API_?KEY|TOKEN|SECRET|PASSW(OR)?D|CREDENTIAL|ACCESS_KEY|PRIVATE_KEY|SESSION_KEY|SIGNING_KEY|AUTH(?!OR)"
-    r"|_URL$|_URI$|_DSN$|DATABASE|CONNECTION_STRING|SSH_AUTH_SOCK|^GITHUB_|^GH_|^NPM_|^PYPI_|^AWS_|^AZURE_|^GOOGLE_"
-    r"|^OPENAI_|^ANTHROPIC_|^COMPANY_LLM|^STUDIO_LLM|^CLAUDE_CONFIG_DIR$|^CODEX_HOME$)",
-    re.IGNORECASE)
-
-
 def cli_env(keep_prefixes: tuple[str, ...] = ()) -> dict[str, str]:
     """Env cho tiến trình CLI model (claude/codex): bỏ mọi biến trông như khoá, trừ tiền tố CLI cần để đăng nhập.
     Trước đây adapter truyền nguyên `os.environ`, nghĩa là khoá TTS/ảnh/YouTube của phòng ban đi thẳng vào tiến
@@ -458,29 +415,6 @@ def cli_env(keep_prefixes: tuple[str, ...] = ()) -> dict[str, str]:
         if SECRET_ENV.search(k) and not k.upper().startswith(tuple(p.upper() for p in keep_prefixes)): continue
         out[k] = v
     return out
-
-
-@contextmanager
-def system_prompt_args(system: str) -> Iterator[list[str]]:
-    """`--system-prompt-file <path>` thay vì `--system-prompt <text>`: agent nhiều skill có system prompt sát hoặc
-    vượt trần argv trên Windows; ghi ra file tạm thì argv chỉ còn một đường dẫn ngắn."""
-    import tempfile
-    fd, path = tempfile.mkstemp(prefix="claude-sp-", suffix=".txt")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f: f.write(system)
-        yield ["--system-prompt-file", path]
-    finally:
-        Path(path).unlink(missing_ok=True)
-
-
-def cli_effort_args(effort: dict[str, str], tier: str) -> list[str]:
-    """`--effort <mức>` cho tier; không khai tier → không thêm cờ; khai sai → lỗi rõ, không rơi về mặc định."""
-    level = effort.get(tier)
-    if level is None: return []
-    if level not in CLAUDE_EFFORT:
-        raise LLMError(f"claude-code: effort `{level}` cho tier `{tier}` không hợp lệ; CLI chỉ nhận "
-                       f"{'|'.join(CLAUDE_EFFORT)} (khai `effort:` riêng cho backend này trong llm.yaml)")
-    return ["--effort", level]
 
 
 class ClaudeCodeClient:
@@ -571,24 +505,6 @@ class ClaudeCodeClient:
 
 
 # ---------- provider: Codex CLI (gói ChatGPT Plus/Pro đã `codex login` trên máy, không cần API key) ----------
-
-# `none` = TẮT HẲN suy nghĩ. Phải có mặt ở đây, nếu không `.get(effort, "medium")` bên dưới âm thầm đổi `none`
-# thành `medium` — cấu hình nói một đằng, CLI chạy một nẻo (lỗi thật đã gặp ở software-company, PR #38).
-CODEX_EFFORT = {"none": "none", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh",
-                "max": "xhigh", "minimal": "minimal"}
-
-
-def find_codex_binary(binary: str = "codex") -> str:
-    """`codex` trên PATH; không có thì tìm bản đi kèm app Codex trên Windows (%LOCALAPPDATA%/OpenAI/Codex/bin/*/codex.exe)."""
-    import shutil
-    found = shutil.which(binary)
-    if found: return found
-    base = os.environ.get("LOCALAPPDATA")
-    if base:
-        cands = sorted(Path(base).glob("OpenAI/Codex/bin/*/codex.exe"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if cands: return str(cands[0])
-    return binary
-
 
 class CodexClient:
     """Gọi `codex exec --json` như một model backend: mỗi lượt một tiến trình con, sandbox read-only trong
