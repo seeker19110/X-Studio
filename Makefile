@@ -22,7 +22,7 @@ gate:
 eval:
 	uv run python -m studio.evals $(AGENT)
 eval-record:   # chạy model thật, lưu evals/recordings/$(AGENT).json — bắt buộc sau khi đổi prompt/skill
-	uv run python -m studio.evals $(AGENT) --record
+	uv run python -m studio.evals $(AGENT) --record --jobs $(or $(JOBS),1)
 eval-replay:   # như CI: phát lại từ bản ghi, không gọi model
 	uv run python -m studio.evals all --replay --strict
 run:

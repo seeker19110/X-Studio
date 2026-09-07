@@ -77,3 +77,38 @@ def test_main_record_saves_recording_via_recording_client(monkeypatch, tmp_path,
     assert saved.exists()
     data = json.loads(saved.read_text(encoding="utf-8"))
     assert data["agent"] == "supervisor" and len(data["cases"]) == 2
+
+
+def test_main_jobs_chay_song_song_va_van_in_theo_thu_tu_id(monkeypatch, capsys):
+    """K5.3: `--jobs N` đổi thứ tự CHẠY, không đổi thứ tự ĐỌC — in thẳng trong luồng thì log của nhiều agent
+    cài răng lược và `FAIL` không biết thuộc về ai. Rào ba luồng chứng minh có song song THẬT: bỏ nhánh
+    `ThreadPoolExecutor` là test này treo tới timeout rồi đỏ."""
+    import threading
+    from typing import Any
+
+    ids = [f"a{i}" for i in range(6)]
+    luong: set[int] = set()
+    rao = threading.Barrier(3, timeout=10)
+
+    def run_eval(aid: str, *a: Any) -> list[Any]:
+        luong.add(threading.get_ident()); rao.wait()
+        return [evals_mod.CaseResult(name="c", passed=True, failures=[], tokens=1)]
+
+    monkeypatch.setattr(evals_mod, "load_agents", lambda: {i: object() for i in ids})
+    monkeypatch.setattr(evals_mod, "load_cases", lambda aid: [object()])
+    monkeypatch.setattr(evals_mod, "required_agents", lambda: [])
+    monkeypatch.setattr(evals_mod, "ReplayClient", lambda aid: object())
+    monkeypatch.setattr(evals_mod, "run_eval", run_eval)
+
+    assert main(["all", "--replay", "--jobs", "3"]) == 0
+    assert len(luong) >= 3, f"phải có ít nhất 3 luồng thật, nhận được {len(luong)}"
+    out = capsys.readouterr().out
+    assert [ln.split(":")[0] for ln in out.splitlines() if ln.endswith("1/1 pass")] == sorted(ids)
+
+
+def test_main_jobs_khong_hop_le_bi_chan_o_argparse(monkeypatch):
+    """`--jobs 0` làm `ThreadPoolExecutor` ném; chặn ngay lúc parse để lỗi hiện trước khi gọi model."""
+    monkeypatch.setattr(evals_mod, "load_agents", lambda: {"a0": object()})
+    with pytest.raises(SystemExit) as e:
+        main(["all", "--replay", "--jobs", "0"])
+    assert e.value.code == 2

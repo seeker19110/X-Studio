@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -214,11 +215,10 @@ def run_eval(agent_id: str, client: ModelClient, agents: dict | None = None) -> 
     return results
 
 
-def _print(agent_id: str, res: list[CaseResult]) -> bool:
-    for r in res:
-        print(f"{'PASS' if r.passed else 'FAIL'} {agent_id}/{r.name} ({r.tokens} tok)" + "".join(f"\n   - {f}" for f in r.failures))
-    print(f"{agent_id}: {sum(r.passed for r in res)}/{len(res)} pass")
-    return all(r.passed for r in res)
+def _lines(agent_id: str, res: list[CaseResult]) -> list[str]:
+    out = [f"{'PASS' if r.passed else 'FAIL'} {agent_id}/{r.name} ({r.tokens} tok)"
+           + "".join(f"\n   - {f}" for f in r.failures) for r in res]
+    return [*out, f"{agent_id}: {sum(r.passed for r in res)}/{len(res)} pass"]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -230,7 +230,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--strict", action="store_true",
                     help="với --replay: agent trong evals/recordings/REQUIRED.txt mà thiếu bản ghi hoặc bản ghi lệch "
                          "phiên bản prompt thì tính là fail")
+    ap.add_argument("--jobs", type=int, default=1, metavar="N",
+                    help="chạy N agent song song (K5.3). Mỗi agent một client và một file bản ghi riêng nên "
+                         "không tranh nhau; thứ tự IN vẫn theo id. Song song ở đây là chờ MẠNG, không phải CPU")
     ns = ap.parse_args(argv)
+    if ns.jobs < 1: ap.error("--jobs phải >= 1")
     if hasattr(sys.stdout, "reconfigure"): sys.stdout.reconfigure(encoding="utf-8")
     agents = load_agents()
     ids = sorted(agents) if ns.agent == "all" else [ns.agent]
@@ -239,24 +243,37 @@ def main(argv: list[str] | None = None) -> int:
     if ns.strict:
         for aid, why in outdated_versions(ids).items():
             print(f"FAIL {aid}: {why} — chạy `make eval-record AGENT={aid}` rồi commit lại"); ok = False
-    for aid in ids:
-        if not load_cases(aid): continue
+    def _one(aid: str) -> tuple[str, list[str], bool]:
+        """Một agent, chạy độc lập được (K5.3): client riêng, file bản ghi riêng, `save()` gộp chứ không ghi đè.
+        Dòng in được GOM lại thay vì `print` thẳng — với `--jobs > 1`, in thẳng là log cài răng lược."""
+        lines: list[str] = []
+        if not load_cases(aid): return aid, lines, True
         if ns.replay:
             try: client: ModelClient = ReplayClient(aid)
             except LLMError as e:
-                print(f"{'FAIL' if aid in required else 'SKIP'} {aid}: {e}")
-                ok = ok and aid not in required
-                continue
+                lines.append(f"{'FAIL' if aid in required else 'SKIP'} {aid}: {e}")
+                return aid, lines, aid not in required
         else:
             from .llm import make_client
             client = RecordingClient(make_client(), aid) if ns.record else make_client()
         res = run_eval(aid, client, agents)
-        passed = _print(aid, res)
+        lines += _lines(aid, res)
+        if ns.record and isinstance(client, RecordingClient):
+            lines.append(f"đã ghi {client.save()}")
         # --replay (CI): cổng là "bản ghi còn khớp prompt và đầu ra hợp lệ" — ca chấm không đạt là tín hiệu chất lượng
         # cho vòng sau, không làm CI đỏ (đỏ khi bản ghi lệch/thiếu prompt, hoặc --strict + REQUIRED.txt). Model thật: mọi ca phải đạt.
-        ok = ok and (passed if not ns.replay else not any(r.error for r in res))
-        if ns.record and isinstance(client, RecordingClient):
-            print(f"đã ghi {client.save()}")
+        passed = all(r.passed for r in res)
+        return aid, lines, (passed if not ns.replay else not any(r.error for r in res))
+
+    # Thứ tự IN theo id kể cả khi chạy song song: log so được giữa hai lần chạy.
+    if ns.jobs > 1 and len(ids) > 1:
+        with ThreadPoolExecutor(max_workers=ns.jobs) as pool:
+            rows = list(pool.map(_one, ids))
+    else:
+        rows = [_one(aid) for aid in ids]
+    for _aid, lines, agent_ok in rows:
+        for ln in lines: print(ln)
+        ok = ok and agent_ok
     return 0 if ok else 1
 
 
