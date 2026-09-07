@@ -42,6 +42,27 @@ make setup        # ghi ../software-company/llm.yaml: provider openai, base_url 
 make fix          # ruff --fix
 ```
 
+### Rủi ro tài khoản — đọc trước khi gõ `make login` lần thứ hai
+
+Xoay vòng nhiều tài khoản là **cơ chế lõi** của gateway, và cũng là chỗ duy nhất trong hub có hậu quả nằm ngoài
+phạm vi kỹ thuật. Nói thẳng ba điều:
+
+- **Nhà cung cấp thường cấm.** Điều khoản của Google (Antigravity / Gemini), Anthropic và OpenAI đều có mục cấm
+  tạo hoặc dùng nhiều tài khoản để vượt hạn mức, và cấm tự động hoá việc lách giới hạn. Cách gateway hoạt động —
+  một tài khoản trả 429 thì chuyển sang tài khoản kế — rơi thẳng vào mô tả đó.
+- **Hậu quả nặng nhất không phải bị chặn request, mà là khoá tài khoản Google.** Đó là cùng tài khoản đang giữ
+  email, Drive, thanh toán của bạn. Mất nó tốn hơn nhiều so với thứ bạn tiết kiệm được.
+- **Trách nhiệm là của người vận hành.** Repo này không đọc thay bạn điều khoản, không theo dõi khi nó đổi, và
+  không khẳng định cách dùng nào hợp lệ. Bạn là người quyết và người chịu.
+
+Gateway **cố ý không** cảnh báo lúc chạy, không đếm số tài khoản, không đặt trần: một cảnh báo ở `login` chỉ
+biến quyết định này thành thao tác bấm qua, và tới lúc bạn gõ `login` lần hai thì bạn đã quyết rồi. Lý do đầy đủ
+và các phương án đã bỏ: [`docs/adr/0004-ranh-gioi-dieu-khoan.md`](docs/adr/0004-ranh-gioi-dieu-khoan.md).
+
+**Dùng một tài khoản thì không có chuyện gì cả** — đó là mặc định của repo (`make llm` chỉ trỏ vào gateway khi
+máy đã có tài khoản đăng nhập). Nhiều tài khoản là lựa chọn có tên, không phải thứ bạn rơi vào vì làm theo
+hướng dẫn.
+
 ### Lượt nào đi tài khoản nào
 
 Mỗi lượt gọi thành công ghi một dòng vào log, kèm tài khoản đã phục vụ và vị trí của nó trong pool:
@@ -187,5 +208,6 @@ Bộ khung 4 file cùng cấu trúc với ba package kia, cộng ADR:
 | `docs/adr/0001-xoay-vong-tai-khoan.md` | vì sao thứ tự tài khoản là bearer-rồi-LRU, hạn mức nghỉ theo mã lỗi, không retry |
 | `docs/adr/0002-giu-cong-va-daemon.md` | vì sao cổng 1123 loopback, daemon tách tiến trình, PID file + healthcheck thay lock |
 | `docs/adr/0003-ranh-gioi-bao-mat.md` | token nằm đâu, quyền 0600, cái gì được ra log/HTTP, ranh giới với `../SECURITY.md` |
+| `docs/adr/0004-ranh-gioi-dieu-khoan.md` | vì sao repo KHÔNG hứa dùng nhiều tài khoản là hợp lệ, vì sao không cảnh báo lúc chạy, ai chịu rủi ro |
 
 Mọi số và tên trong các file trên dẫn `file:dòng` — đổi code thì đổi tài liệu cùng PR.
