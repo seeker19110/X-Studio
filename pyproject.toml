@@ -40,6 +40,15 @@ fail_under = 100
 show_missing = true
 skip_covered = true
 
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+# `warn_unused_ignores` CỐ Ý không bật ở hai package này (gateway có, và giữ nguyên). Đo được
+# 2026-09-07: nó báo 6 `# type: ignore` "thừa" mà phần lớn là PHỤ THUỘC NỀN — `ctypes.windll`
+# (`sqlite_bus.py:119`) thừa trên Windows nhưng CẦN trên Linux. CI chạy cả ubuntu lẫn windows, nên bật
+# nó là dựng một cổng đúng-sai theo máy chạy: xanh ở đây, đỏ ở kia, không ai sửa được cho cả hai.
+# Đó đúng là khuôn "test đúng-sai theo nền tảng" đã ghi ở TRAPS.md §2.
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"
