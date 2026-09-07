@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from xagents_core.context import fit
+
 from .blackboard import Blackboard
 from .bus import SCHEMA_DIR, BusError, InMemoryBus
 from .events import AuditLog, Envelope, Topic
@@ -43,6 +45,7 @@ INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(re.compile(p, re.IGNOREC
 FILTERED = "[đã lọc]"
 CONTEXT_ONLY = "shared-context"  # topic_out đặc biệt: agent chỉ ghi blackboard, không publish topic
 MAX_TOOL_TURNS = 10  # trần lượt model ↔ tool mỗi lần generate (ADR-0007)
+DEFAULT_MAX_INPUT_CHARS = 120_000  # dùng khi client không mang `max_input_chars` (test dựng client trần)
 ToolboxFactory = Callable[[AgentSpec], ToolBox | None]
 
 
@@ -151,10 +154,12 @@ class Generated:
 
 class AgentRunner:
     def __init__(self, bus: InMemoryBus, client: ModelClient, agents: dict[str, AgentSpec] | None = None,
-                 blackboard: Blackboard | None = None, toolbox_factory: ToolboxFactory = spec_toolbox):
+                 blackboard: Blackboard | None = None, toolbox_factory: ToolboxFactory = spec_toolbox,
+                 max_input_chars: int | None = None):
         self.bus, self.client = bus, client
         self.agents = agents or load_agents()
         self.blackboard = blackboard
+        self.max_input_chars = max_input_chars or getattr(client, "max_input_chars", None) or DEFAULT_MAX_INPUT_CHARS
         self.toolbox_factory = toolbox_factory  # test/orchestrator thay bằng toolbox giả hoặc tắt (lambda s: None)
 
     def _audit(self, spec: AgentSpec, action: str, inp: Envelope, evidence: str, tokens: int = 0) -> None:
@@ -233,6 +238,15 @@ class AgentRunner:
         context = {ns: sc.model_dump() for ns, sc in self.blackboard.snapshot().items()} if self.blackboard else {}
         context, n = sanitize_obj(context)  # blackboard do agent khác ghi: lọc chứ không chặn cả lượt
         if n: self._audit(spec, "injection_sanitized", inp, evidence=f"shared-context: {n} đoạn → {FILTERED}")
+        # ADR-0012 qua `xagents_core.context`: prompt = system + payload + enrich + blackboard phải nằm trong
+        # `max_input_chars`. `payload` và `extra` đi cùng một hạn mức vì cả hai đều vào prompt ở
+        # `build_user_message`; cắt riêng từng cái thì tổng vẫn vượt.
+        both, context, budget_ = fit(spec.system_prompt(), {"payload": inp.payload, "extra": extra or {}},
+                                     context, self.max_input_chars)
+        if budget_.trimmed:
+            self._audit(spec, "context_trimmed", inp, evidence=json.dumps(budget_.report(), ensure_ascii=False))
+            inp = inp.model_copy(update={"payload": both["payload"]})
+            extra = both["extra"] or None
         user = build_user_message(spec, inp, topic_out, context, many=many, extra=extra)
         out_schema = output_schema(schema, spec.namespaces_write, many)
         tools = self.toolbox_factory(spec) if spec.tools else None

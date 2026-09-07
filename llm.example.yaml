@@ -24,6 +24,11 @@ base_url: https://api.openai.com/v1
 
 max_tokens: 16000
 
+# Trần ký tự cho prompt GỬI ĐI (system + payload + dữ liệu enrich + blackboard), khác `max_tokens` là trần đầu ra.
+# Vượt thì runner cắt giữa chuỗi dài nhất và gắn nhãn "… (cắt N ký tự) …" để model biết mình đang thiếu gì
+# (ADR-0012, `xagents_core.context`). Biến môi trường: STUDIO_MAX_INPUT_CHARS.
+max_input_chars: 120000
+
 # chỉ provider anthropic: mức nỗ lực theo tier (low | medium | high | xhigh | max)
 effort:
   strong: high

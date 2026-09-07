@@ -116,6 +116,7 @@ class LLMConfig:
     base_url: str | None = None
     api_key: str | None = None
     max_tokens: int = 16_000
+    max_input_chars: int = 120_000   # trần ký tự prompt (≈ 37k token); runner cắt payload/blackboard theo xagents_core.context
     effort: dict[str, str] = field(default_factory=lambda: {"strong": "high", "standard": "medium", "light": "low"})
     extra: dict[str, Any] = field(default_factory=dict)
     config_dir: str | None = None    # claude-code: CLAUDE_CONFIG_DIR / codex: CODEX_HOME riêng → tài khoản khác trên cùng máy
@@ -165,6 +166,9 @@ def load_config(path: Path | None = None) -> LLMConfig:
     if p.exists():
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         _apply_yaml(cfg, data)
+        # Cố ý KHÔNG ở trong `_apply_yaml`: trần prompt là thuộc tính của cả hệ, không của một backend — mỗi backend
+        # một trần khác nhau thì cùng một agent bị cắt khác nhau tuỳ tài khoản nào còn hạn mức (giống `company/llm.py`).
+        cfg.max_input_chars = int(data.get("max_input_chars", cfg.max_input_chars))
         cfg.backends = [dict(b) for b in (data.get("backends") or []) if isinstance(b, dict)]
         cfg.routing = dict(data.get("routing") or {})
     env = os.environ
@@ -174,6 +178,7 @@ def load_config(path: Path | None = None) -> LLMConfig:
         if env.get(f"STUDIO_MODEL_{t.upper()}"): cfg.models[t] = env[f"STUDIO_MODEL_{t.upper()}"]
     cfg.base_url = env.get("STUDIO_LLM_BASE_URL", cfg.base_url)
     cfg.api_key = env.get("STUDIO_LLM_API_KEY", cfg.api_key)
+    if env.get("STUDIO_MAX_INPUT_CHARS"): cfg.max_input_chars = int(env["STUDIO_MAX_INPUT_CHARS"])
     if env.get("STUDIO_LLM_BACKENDS"):
         wanted = [s.strip() for s in env["STUDIO_LLM_BACKENDS"].split(",") if s.strip()]
         by_name = {str(b.get("name") or b.get("provider")): b for b in cfg.backends}
@@ -195,20 +200,25 @@ def _single_client(cfg: LLMConfig) -> ModelClient:
 
 
 def make_client(cfg: LLMConfig | None = None) -> ModelClient:
-    """Client theo cấu hình. Có `backends:` → `RoutingClient` gộp nhiều gói tài khoản (ADR-0006)."""
+    """Client theo cấu hình, gắn `max_input_chars` để runner đọc mà không cần biết cấu hình.
+    Có `backends:` → `RoutingClient` gộp nhiều gói tài khoản (ADR-0006)."""
     cfg = cfg or load_config()
+    client: Any
     if not cfg.backends:
-        return _single_client(cfg)
-    from .routing import Backend, RoutingClient
-    bs = []
-    for data in cfg.backends:
-        bc = cfg.backend_config(data)
-        bs.append(Backend(name=bc.name, client=_single_client(bc), tiers=bc.tiers_configured(),
-                          supports_tools=bool(data.get("supports_tools", bc.provider != "codex"))))
-    r = cfg.routing
-    return RoutingClient(bs, cooldown_s=float(r.get("cooldown_s", 3600)),
-                         transient_cooldown_s=float(r.get("transient_cooldown_s", 60)),
-                         prefer={str(k): str(v) for k, v in (r.get("prefer") or {}).items()})
+        client = _single_client(cfg)
+    else:
+        from .routing import Backend, RoutingClient
+        bs = []
+        for data in cfg.backends:
+            bc = cfg.backend_config(data)
+            bs.append(Backend(name=bc.name, client=_single_client(bc), tiers=bc.tiers_configured(),
+                              supports_tools=bool(data.get("supports_tools", bc.provider != "codex"))))
+        r = cfg.routing
+        client = RoutingClient(bs, cooldown_s=float(r.get("cooldown_s", 3600)),
+                               transient_cooldown_s=float(r.get("transient_cooldown_s", 60)),
+                               prefer={str(k): str(v) for k, v in (r.get("prefer") or {}).items()})
+    client.max_input_chars = cfg.max_input_chars
+    return client
 
 
 def strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
