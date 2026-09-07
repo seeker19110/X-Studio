@@ -6,7 +6,11 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6",
+    "xagents-core",   # lõi chung (ADR gốc 0001); mã chuyển sang theo bảy bước K3.1-K3.7
 ]
+
+[tool.uv.sources]
+xagents-core = { workspace = true }
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=1.0"]   # provider anthropic cho text; provider openai-compatible (text/TTS/ảnh) không cần SDK
