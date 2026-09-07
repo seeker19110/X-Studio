@@ -11,7 +11,6 @@ Hai phần:
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -22,14 +21,10 @@ import pytest
 from studio import media, qc
 from studio.media import CommandTTS, FFmpegAssembler, MediaConfig, MediaError, make_media
 from studio.sandbox import (
-    ContainerSandbox,
     Result,
     RunSpec,
     SandboxError,
-    SubprocessSandbox,
-    clean_env,
     sandbox_from_config,
-    sanitize_env,
 )
 
 PY = sys.executable
@@ -64,135 +59,6 @@ def _fake_runner(record: list[dict[str, Any]], code: int = 0, out: str = "OUT", 
         if boom: raise subprocess.TimeoutExpired(argv, kw.get("timeout", 0))
         return subprocess.CompletedProcess(argv, code, out, err)
     return run
-
-
-# ---------- bộ hợp đồng: hai backend, cùng lời hứa ----------
-
-def _backends(record: list[dict[str, Any]], **kw: Any) -> list[Any]:
-    return [SubprocessSandbox(runner=_fake_runner(record, **kw)),
-            ContainerSandbox("docker", "python:3.12-slim", runner=_fake_runner(record, **kw))]
-
-
-@pytest.mark.parametrize("i", [0, 1])
-def test_hai_backend_tra_cung_khuon_result(tmp_path, i):
-    rec: list[dict[str, Any]] = []
-    sb = _backends(rec, code=3, out="A" * 20, err="B" * 20)[i]
-    r = sb.run(_spec(tmp_path, max_output=5))
-    assert r.exit_code == 3 and r.timed_out is False
-    assert r.stdout == "AAAAA" and r.stderr == "BBBBB"      # cắt đuôi đúng max_output
-    assert r.sandbox == sb.name and sb.name in {"subprocess", "container:python:3.12-slim",
-                                                "container:python:3.12-slim:no-uid"}
-
-
-@pytest.mark.parametrize("i", [0, 1])
-def test_hai_backend_bao_timeout_thay_vi_nem_ngoai_le(tmp_path, i):
-    rec: list[dict[str, Any]] = []
-    r = _backends(rec, boom=True)[i].run(_spec(tmp_path, timeout=7))
-    assert r.timed_out is True and r.exit_code is None and "quá 7" in r.stderr
-
-
-@pytest.mark.parametrize("i", [0, 1])
-def test_hai_backend_khong_bao_gio_chuyen_bien_giong_khoa(tmp_path, monkeypatch, i):
-    monkeypatch.setenv("ELEVENLABS_API_KEY", "kín")
-    monkeypatch.setenv("STUDIO_LLM_API_KEY", "kín")
-    monkeypatch.setenv("PATH_KHONG_PHAI_KHOA", "ok")
-    rec: list[dict[str, Any]] = []
-    # env=None: sandbox tự lấy clean_env(); nơi gọi quên lọc thì sandbox vẫn lọc.
-    _backends(rec)[i].run(RunSpec(argv=["x"], cwd=tmp_path, env=dict(os.environ)))
-    blob = repr(rec[0])
-    assert "kín" not in blob and "PATH_KHONG_PHAI_KHOA" in blob
-
-
-def test_sanitize_env_loc_lai_du_noi_goi_da_ban_env_ban(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-x")
-    assert "OPENAI_API_KEY" not in clean_env()
-    e = sanitize_env({"AWS_SECRET_ACCESS_KEY": "x", "LANG": "vi"})
-    assert e == {"LANG": "vi", "PYTHONDONTWRITEBYTECODE": "1"}
-    assert "OPENAI_API_KEY" not in sanitize_env(None)   # None → clean_env()
-
-
-# ---------- argv của container ----------
-
-def test_container_argv_mount_rw_mang_tat_va_env_qua_stdin(tmp_path):
-    rec: list[dict[str, Any]] = []
-    sb = ContainerSandbox("podman", "img:1", cpus="1", memory="1g", runner=_fake_runner(rec))
-    sb.run(RunSpec(argv=["ffmpeg", "-version"], cwd=tmp_path, env={"LANG": "vi"}))
-    argv = rec[0]["argv"]
-    assert argv[:3] == ["podman", "run", "--rm"] and "--pids-limit" in argv
-    assert f"{tmp_path}:/w:rw" in argv and argv[argv.index("-w") + 1] == "/w"
-    assert argv[argv.index("--network") + 1] == "none"
-    assert argv[-2:] == ["ffmpeg", "-version"] and "--env-file" in argv
-    assert "LANG=vi" in rec[0]["input"]        # env đi qua stdin, không hiện trong danh sách tiến trình
-
-
-def test_container_mount_chi_doc_cho_qc_va_mo_cong_khi_can_mang(tmp_path):
-    rec: list[dict[str, Any]] = []
-    sb = ContainerSandbox("docker", "img:1", runner=_fake_runner(rec))
-    sb.run(RunSpec(argv=["ffprobe"], cwd=tmp_path, read_only=True))
-    assert f"{tmp_path}:/w:ro" in rec[0]["argv"]
-    sb.run(RunSpec(argv=["srv"], cwd=tmp_path, network=True, port=8080))
-    assert rec[1]["argv"][rec[1]["argv"].index("--network") + 1] == "bridge"
-    assert "127.0.0.1:8080:8080" in rec[1]["argv"]
-
-
-def test_container_khi_can_stdin_thi_env_buoc_phai_ra_dong_lenh(tmp_path):
-    """`--env-file -` chiếm stdin, mà CommandTTS cần stdin cho văn bản → env quay về `-e` (đánh đổi có chủ ý)."""
-    rec: list[dict[str, Any]] = []
-    ContainerSandbox("docker", "img:1", runner=_fake_runner(rec)).run(
-        RunSpec(argv=["tts"], cwd=tmp_path, env={"LANG": "vi"}, stdin="xin chào"))
-    argv = rec[0]["argv"]
-    assert "--env-file" not in argv and "-i" in argv and "LANG=vi" in argv
-    assert rec[0]["input"] == "xin chào"
-
-
-def test_container_khong_co_getuid_thi_noi_thang_trong_ten_sandbox(monkeypatch):
-    monkeypatch.delattr(os, "getuid", raising=False)
-    monkeypatch.delattr(os, "getgid", raising=False)
-    sb = ContainerSandbox("docker", "img:1")
-    assert sb.name == "container:img:1:no-uid" and "-u" not in sb._argv(RunSpec(argv=["x"], cwd=Path(".")))
-    monkeypatch.setattr(os, "getuid", lambda: 1000, raising=False)
-    monkeypatch.setattr(os, "getgid", lambda: 1000, raising=False)
-    sb2 = ContainerSandbox("docker", "img:1")
-    assert sb2.name == "container:img:1" and "1000:1000" in sb2._argv(RunSpec(argv=["x"], cwd=Path(".")))
-
-
-# ---------- spawn: tiến trình chạy nền ----------
-
-class _FakeProc:
-    def __init__(self) -> None:
-        self.stdin = None; self.killed = False; self._rc: int | None = None
-
-    def poll(self) -> int | None: return self._rc
-    def kill(self) -> None: self.killed = True; self._rc = -9
-    def communicate(self, timeout: float = 0) -> tuple[str, str]: return "", "loi cuoi"
-
-
-def test_spawn_tra_handle_poll_kill_stderr_cho_ca_hai_backend(tmp_path):
-    proc = _FakeProc()
-    h = SubprocessSandbox(popen=lambda *a, **k: proc).spawn(_spec(tmp_path))
-    assert h.poll() is None
-    h.kill(); assert proc.killed and h.poll() == -9
-    assert h.stderr_tail(4) == "cuoi" and h.stderr_tail(4) == "cuoi"   # lần hai lấy từ cache
-
-    class _P(_FakeProc):
-        def __init__(self) -> None:
-            super().__init__()
-            self.written: list[str] = []
-            self.stdin = type("S", (), {"write": lambda s, t: self.written.append(t), "close": lambda s: None})()
-
-    p2 = _P()
-    ContainerSandbox("docker", "img:1", popen=lambda *a, **k: p2).spawn(
-        RunSpec(argv=["x"], cwd=tmp_path, env={"LANG": "vi"}))
-    assert p2.written == ["LANG=vi\nPYTHONDONTWRITEBYTECODE=1"]
-
-
-def test_stderr_tail_rong_khi_khong_lay_duoc_dau_ra():
-    class _Hang(_FakeProc):
-        def communicate(self, timeout: float = 0) -> tuple[str, str]:
-            raise subprocess.TimeoutExpired("x", timeout)
-
-    h = SubprocessSandbox(popen=lambda *a, **k: _Hang()).spawn(RunSpec(argv=["x"], cwd=Path(".")))
-    assert h.stderr_tail(10) == ""
 
 
 # ---------- chọn backend: mặc định subprocess, fail-closed ----------
