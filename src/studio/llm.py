@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -44,6 +43,7 @@ from xagents_core.llm import CLI_SUBTYPE_ERRORS as CLI_SUBTYPE_ERRORS
 from xagents_core.llm import CODEX_EFFORT as CODEX_EFFORT
 from xagents_core.llm import TIERS as TIERS
 from xagents_core.llm import TRANSIENT_HTTP as TRANSIENT_HTTP
+from xagents_core.llm import Completion as Completion
 from xagents_core.llm import LLMConfig as CoreLLMConfig
 from xagents_core.llm import LLMError as LLMError
 from xagents_core.llm import Refused as Refused
@@ -52,8 +52,11 @@ from xagents_core.llm import cli_effort_args as cli_effort_args
 from xagents_core.llm import find_codex_binary as find_codex_binary
 from xagents_core.llm import load_config as core_load_config
 from xagents_core.llm import neutral_messages as neutral_messages
+from xagents_core.llm import object_before_trailing_junk as object_before_trailing_junk
+from xagents_core.llm import object_in_prose as object_in_prose
 from xagents_core.llm import reported_model as reported_model
 from xagents_core.llm import strict_schema as strict_schema
+from xagents_core.llm import strip_code_fence as strip_code_fence
 from xagents_core.llm import system_prompt_args as system_prompt_args
 
 # `SECRET_ENV` là bản THỨ BA của cùng một regex (workspace của company và sandbox đã có); K3.2 ghi nhận, K3.3a xoá.
@@ -68,47 +71,6 @@ CLI_ARGV_MAX = ARGV_LIMIT
 # Giữ tên cũ vì console (`collect.py`) và test đọc chúng từ module này; nguồn nay là `CORE`.
 ROOT = CORE.root
 CONFIG_FILE = CORE.config_file
-@dataclass
-class Completion:
-    """`input_tokens` LUÔN là tổng input đã tính tiền, kể cả phần cache (Anthropic tách cache ra khỏi `input_tokens`,
-    OpenAI gộp vào `prompt_tokens`; mỗi adapter tự quy đổi)."""
-    text: str
-    input_tokens: int
-    output_tokens: int
-    model: str
-    stop_reason: str = "end_turn"
-    cached_input_tokens: int = 0
-    tool_calls: list[ToolCall] = field(default_factory=list)  # model muốn gọi tool (rỗng = trả lời cuối)
-
-    @property
-    def tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
-
-    @property
-    def cache_hit_ratio(self) -> float:
-        return self.cached_input_tokens / self.input_tokens if self.input_tokens else 0.0
-
-    def json(self) -> dict[str, Any]:
-        """JSON object trong câu trả lời: chấp nhận JSON trần, JSON trong code fence, hoặc văn xuôi + fence/object
-        (model có tool hay CLI hay kể lại quá trình trước khi trả JSON). Không có object nào → LLMError."""
-        text = self.text.strip()
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        m = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", text, re.DOTALL)  # fence đầu tiên
-        if m:
-            try: return json.loads(m.group(1))
-            except json.JSONDecodeError: pass
-        start = text.find("{")
-        if start >= 0:  # object ngoài cùng đầu tiên: từ `{` đầu tới `}` cuối, rồi lùi dần
-            end = text.rfind("}")
-            while end > start:
-                try: return json.loads(text[start:end + 1])
-                except json.JSONDecodeError: end = text.rfind("}", start, end)
-        raise LLMError(f"đầu ra không phải JSON:\n{self.text[:500]}")
-
-
 class ModelClient(Protocol):
     """Một lời gọi = system + user + JSON Schema đầu ra + tier. Provider nào cũng phải trả `Completion`.
     `cache_key` (agent id) giúp provider định tuyến request cùng system prompt vào cùng cache.
