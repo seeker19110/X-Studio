@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any, Literal
-from uuid import uuid4
 
 from pydantic import BaseModel, Field
+from xagents_core.events import SCHEMA_VERSION as SCHEMA_VERSION
+from xagents_core.events import AuditLog as CoreAuditLog
+from xagents_core.events import Envelope as CoreEnvelope
+from xagents_core.events import SharedContext as CoreSharedContext
+from xagents_core.events import SupervisorAction as CoreSupervisorAction
+from xagents_core.events import can_transition as _can_transition
 
 Topic = Literal[
     "channel-briefs", "trend-reports", "video-briefs", "research-dossiers", "scripts",
@@ -17,7 +21,9 @@ Namespace = Literal["strategy", "research", "voice", "production", "brand", "seo
 ReviewSource = Literal["fact", "rights", "quality"]
 AssetKind = Literal["scene_audio", "scene_image", "draft_video", "final_video", "thumbnail", "captions"]
 VideoFormat = Literal["long", "short"]
-SupervisorActionKind = Literal["pause", "resume", "escalate", "budget_cut", "warn"]
+# `SupervisorActionKind` giống hệt bản company (đo được), nên nó lên core ở K3.5a; re-export giữ tên cũ.
+from xagents_core.events import SupervisorActionKind as SupervisorActionKind  # noqa: E402
+
 ExperimentKind = Literal["title", "thumbnail"]
 
 NAMESPACE_OWNERS: dict[str, set[str]] = {
@@ -38,13 +44,14 @@ MAX_REPAIR_ROUNDS = 3  # editor chỉ được yêu cầu sửa cảnh tối đa
 ID_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 
 
-class Envelope(BaseModel):
-    event_id: str = Field(default_factory=lambda: uuid4().hex)
+class Envelope(CoreEnvelope):
+    """Khung ở `xagents_core.events` (K3.5a). Studio nhận thêm ba trường nhân quả (`schema_version`,
+    `correlation_id`, `causation_id`) — tất cả có default, nên **bus SQLite ghi trước K3.5a vẫn mở và replay
+    được** (ca canh: `test_bus_cu_van_mo_duoc` trong `tests/test_events_core.py`).
+
+    Ở đây chỉ thu hẹp `topic` về Literal của phòng ban, để publish một topic lạ vẫn đỏ như trước."""
+
     topic: Topic
-    key: str
-    actor: str
-    ts: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    payload: dict[str, Any]
 
 
 class VideoBrief(BaseModel):
@@ -267,27 +274,20 @@ class ReplyDraft(BaseModel):
     requires_human: bool = False  # mọi reply đều chờ gate `replies`; True = cần người soạn lại, không dùng bản nháp
 
 
-class SharedContext(BaseModel):
+class SharedContext(CoreSharedContext):
     namespace: Namespace
-    version: int
-    content_ref: str
-    summary: str = ""
 
 
-class AuditLog(BaseModel):
-    actor: str
-    action: str
+class AuditLog(CoreAuditLog):
+    # Trường PHẠM VI của phòng ban; company có `ticket_id`/`project_id` ở đúng chỗ này. Đây là lý do `AuditLog`
+    # lên core dưới dạng LỚP CƠ SỞ chứ không phải lớp dùng thẳng (xem docstring `xagents_core/events.py`).
     video_id: str | None = None
     channel_id: str | None = None
-    evidence: str | None = None
-    tokens: int = 0
 
 
-class SupervisorAction(BaseModel):
-    target: str
-    action: SupervisorActionKind
-    reason: str
-    evidence: str | None = None
+class SupervisorAction(CoreSupervisorAction):
+    """Không thêm trường nào — bản studio TRÙNG hoàn toàn với khung core (đo được 0.62, phần lệch chỉ là hai
+    trường `project_id`/`rulings` mà company thêm)."""
 
 
 PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
@@ -311,4 +311,5 @@ TRANSITIONS: dict[str, set[str]] = {
 
 
 def can_transition(src: str, dst: str) -> bool:
-    return dst in {"blocked", "escalated"} or dst in TRANSITIONS.get(src, set())
+    """Bảng `TRANSITIONS` là của phòng ban; cơ chế (kể cả cửa thoát `blocked`/`escalated`) ở `xagents_core.events`."""
+    return _can_transition(src, dst, TRANSITIONS)
