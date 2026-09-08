@@ -17,6 +17,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import httpx
 from aiohttp import web
@@ -112,6 +113,58 @@ def is_loopback_host(host: str) -> bool:
     return host in {"127.0.0.1", "localhost", "::1", "[::1]"} or host.startswith("127.")
 
 
+def host_header_is_loopback(header: str | None) -> bool:
+    """`Host` có thể kèm cổng và IPv6 trong ngoặc vuông. Thiếu header (HTTP/1.0) thì cho qua.
+
+    Chống DNS rebinding: trình duyệt gửi `Host` là tên miền kẻ tấn công điều khiển (`evil.example`), dù bản ghi
+    A của nó đã trỏ về 127.0.0.1. KHÔNG phân giải DNS ở đây — tên lạ là không loopback, chấm hết."""
+    if header is None: return True
+    value = header.strip()
+    if not value: return True
+    if value.startswith("["):
+        value = value[1 : value.find("]")] if "]" in value else value[1:]
+    elif value.count(":") == 1:
+        value = value.split(":", 1)[0]
+    return is_loopback_host(value.lower())
+
+
+def origin_is_local(origin: str | None) -> bool:
+    """`Origin` vắng mặt = client không phải trình duyệt (curl, SDK OpenAI) → cho qua: trình duyệt LUÔN gắn
+    `Origin` cho request cross-origin, nên đây đúng là lằn ranh cắt CSRF mà không chạm client dòng lệnh.
+
+    Cho qua mọi origin loopback bất kể CỔNG: một trang dev chạy ở `http://localhost:3000` gọi sang gateway là
+    việc hợp lệ và thường gặp, mà trang từ Internet thì không thể tự đặt `Origin` thành loopback. `"null"`
+    (sandbox iframe, `file://`) coi là nguồn lạ."""
+    if origin is None: return True
+    value = origin.strip()
+    if not value: return True
+    scheme, sep, rest = value.partition("://")
+    if not sep or scheme.lower() not in {"http", "https"} or not rest: return False
+    return host_header_is_loopback(rest)
+
+
+def guard_middleware(enforce: bool) -> Any:
+    """Gateway KHÔNG có xác thực client, nên hai header này là toàn bộ hàng rào giữa pool tài khoản Google và
+    một trang web bất kỳ người dùng đang mở: CORS chặn trang đó ĐỌC phản hồi, nhưng không chặn tác dụng phụ —
+    `POST /v1/chat/completions` vẫn đốt quota thật, `POST /auth/login` vẫn mở luồng thêm tài khoản. Console đã
+    phòng thủ đúng hai thứ này từ đầu (`console/server.py::_guard`); gateway thì chưa, tới bản này.
+
+    `enforce=False` khi người vận hành CỐ Ý bind ra ngoài loopback: khi đó `Host` hợp lệ là tên miền thật và
+    `Origin` hợp lệ là ứng dụng web thật, hai luật dưới đây sẽ chặn nhầm. Đó là chế độ đã được cảnh báo ở
+    `warn_if_public_host` và vốn đòi firewall/reverse proxy lo xác thực."""
+    @web.middleware
+    async def guard(request: web.Request, handler: Any) -> web.StreamResponse:
+        if enforce:
+            if not host_header_is_loopback(request.headers.get("Host")):
+                # 404 chứ không 403: không xác nhận cho kẻ tấn công rằng có server ở đây.
+                return web.json_response({"error": {"message": "không có", "type": "invalid_request_error"}}, status=404)
+            if not origin_is_local(request.headers.get("Origin")):
+                return web.json_response(
+                    {"error": {"message": "Origin không hợp lệ", "type": "permission_error"}}, status=403)
+        return await handler(request)
+    return guard
+
+
 def warn_if_public_host(host: str) -> None:
     """Gateway không có xác thực client: mở ra ngoài loopback là ai trong mạng cũng dùng được pool tài khoản."""
     if not is_loopback_host(host):
@@ -134,7 +187,8 @@ class GatewayServer:
         self.port = port
         self.auth_manager = auth_manager or AntigravityAuthManager()
         self.client = client or AntigravityClient(self.auth_manager)
-        self.app = web.Application(client_max_size=32 * 1024**2)  # lịch sử chat dài kèm ảnh vượt 1MB mặc định
+        self.app = web.Application(client_max_size=32 * 1024**2,   # lịch sử chat dài kèm ảnh vượt 1MB mặc định
+                                   middlewares=[guard_middleware(is_loopback_host(host))])
         self.app.router.add_get("/health", self.handle_health)
         self.app.router.add_get("/auth/status", self.handle_auth_status)
         self.app.router.add_post("/auth/login", self.handle_auth_login)
