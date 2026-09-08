@@ -37,11 +37,12 @@ from xagents_core.llm import CLI_SUBTYPE_ERRORS as CLI_SUBTYPE_ERRORS
 from xagents_core.llm import CODEX_EFFORT as CODEX_EFFORT
 from xagents_core.llm import TIERS as TIERS
 from xagents_core.llm import TRANSIENT_HTTP as TRANSIENT_HTTP
+from xagents_core.llm import AnthropicClient as AnthropicClient
 
 # K3.3a: nền chung ở `xagents_core.llm`. Re-export TỪNG tên vì các module khác của studio nhập chúng từ
 # `studio.llm`. `CLI_ARGV_MAX` là tên cũ của studio cho cùng hằng số mà company gọi là `ARGV_LIMIT` — giữ cả hai
 # để không phải sửa nơi gọi trong PR chuyển mã.
-from xagents_core.llm import AnthropicClient as AnthropicClient
+from xagents_core.llm import ClaudeCodeClient as CoreClaudeCodeClient
 from xagents_core.llm import CodexClient as CodexClient
 from xagents_core.llm import Completion as Completion
 from xagents_core.llm import FakeClient as FakeClient
@@ -55,6 +56,7 @@ from xagents_core.llm import anthropic_input_tokens as anthropic_input_tokens
 from xagents_core.llm import check_argv as check_argv
 from xagents_core.llm import cli_effort_args as cli_effort_args
 from xagents_core.llm import cli_env as cli_env
+from xagents_core.llm import cli_exit_error as cli_exit_error
 from xagents_core.llm import find_codex_binary as find_codex_binary
 from xagents_core.llm import load_config as core_load_config
 from xagents_core.llm import neutral_messages as neutral_messages
@@ -140,7 +142,7 @@ def make_client(cfg: LLMConfig | None = None) -> ModelClient:
 
 CLI_WEB_TOOLS = "WebFetch,WebSearch"  # tool sẵn có của CLI, bản đồ 1-1 của web_fetch/web_search (ADR-0007)
 CLI_TOOL_TURNS = 8
-class ClaudeCodeClient:
+class ClaudeCodeClient(CoreClaudeCodeClient):
     """Gọi `claude -p --output-format json` như một model backend: mỗi lượt là một tiến trình con, system prompt
     truyền qua `--system-prompt-file` (ADR-0026: argv có trần ~32 KB trên Windows), schema đi cả `--json-schema`
     (CLI ép và kiểm, trả `structured_output`) lẫn phần nhúng trong user message; user message đưa qua STDIN,
@@ -150,33 +152,10 @@ class ClaudeCodeClient:
     Token thật lấy từ `usage` trong JSON trả về (input + cache read + cache creation, cùng nghĩa với adapter Anthropic).
     Dùng khi máy đã đăng nhập Claude Code mà không có ANTHROPIC_API_KEY (vd. ghi bản ghi eval tại chỗ)."""
 
-    def __init__(self, cfg: LLMConfig | None = None, binary: str = "claude", timeout: float = 900.0,
-                 runner: Callable[[list[str], str], str] | None = None):
-        import shutil
-        self.cfg = cfg or load_config()
-        self.binary = shutil.which(self.cfg.binary or binary) or self.cfg.binary or binary
-        self.timeout = timeout
-        # Giữ ANTHROPIC_*/CLAUDE_* vì CLI cần chúng để đăng nhập / chọn endpoint; mọi khoá khác bị lọc (ADR-0026).
-        self.env = cli_env(keep_prefixes=("ANTHROPIC_", "CLAUDE_"))
-        if self.cfg.config_dir:   # nhiều tài khoản Claude trên một máy: mỗi backend một thư mục đăng nhập riêng
-            self.env["CLAUDE_CONFIG_DIR"] = str(Path(self.cfg.config_dir).expanduser())
-        self._run = runner or self._subprocess  # test thay bằng hàm giả: (args, stdin) → stdout
+    def __init__(self, cfg: LLMConfig, binary: str = "claude", timeout: float = 900.0,
+                 runner: Callable[..., str] | None = None):
+        super().__init__(cfg, binary=binary, timeout=timeout, runner=runner)
         self.delegated_tools = False  # lần gọi gần nhất có uỷ quyền vòng tool cho CLI không (runner ghi audit)
-
-    def _subprocess(self, args: list[str], prompt: str) -> str:
-        import subprocess
-        try:
-            r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               input=prompt, timeout=self.timeout, env=self.env)
-        except FileNotFoundError as e:
-            raise LLMError(f"không tìm thấy `{self.binary}` (cài Claude Code hoặc đổi provider)") from e
-        except subprocess.TimeoutExpired as e:
-            raise LLMError(f"claude -p quá {self.timeout}s") from e
-        except OSError as e:  # argv quá dài, không có quyền chạy, pipe vỡ…
-            raise LLMError(f"không chạy được `{self.binary}`: {e}") from e
-        if r.returncode != 0:
-            raise LLMError(f"claude -p thoát mã {r.returncode}: {(r.stderr or r.stdout)[-500:]}")
-        return r.stdout
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
@@ -200,34 +179,6 @@ class ClaudeCodeClient:
                 raise LLMError(f"claude -p: argv vượt {CLI_ARGV_MAX} ký tự — rút gọn schema/prompt của agent")
             out = self._run(args, user + hint)
         return self._parse(out, model)
-
-    def _parse(self, out: str, model: str) -> Completion:
-        """JSON của `claude -p` → Completion."""
-        try:
-            data = json.loads(out[out.index("{"):]) if "{" in out else {}
-        except json.JSONDecodeError as e:
-            raise LLMError(f"claude -p trả về không phải JSON: {out[:300]}") from e
-        # `data` luôn là dict: chuỗi được cắt từ dấu `{` đầu tiên nên json.loads chỉ ra object hoặc ném lỗi;
-        # nhánh "không phải object JSON" trước đây là code chết, đã bỏ.
-        subtype = str(data.get("subtype") or "")
-        if subtype in CLI_SUBTYPE_ERRORS:   # đọc TRƯỚC `result`: các subtype này có thể không có result
-            raise LLMError(f"claude -p {subtype}: {CLI_SUBTYPE_ERRORS[subtype]}; {str(data.get('result') or '')[:200]}")
-        if "result" not in data:
-            raise LLMError(f"claude -p thiếu trường result (subtype={subtype or '?'}): {out[:300]}")
-        if data.get("is_error"):
-            raise LLMError(f"claude -p lỗi: {str(data.get('result'))[:300]}")
-        if data.get("stop_reason") == "refusal":
-            raise Refused("model từ chối")
-        u = data.get("usage") or {}
-        read = int(u.get("cache_read_input_tokens", 0) or 0); write = int(u.get("cache_creation_input_tokens", 0) or 0)
-        used = reported_model(data.get("modelUsage") or {}, model)
-        # `--json-schema` → `structured_output` đã parse và đã qua kiểm của CLI: ưu tiên nó, `result` chỉ là bản chữ.
-        so = data.get("structured_output")
-        text = json.dumps(so, ensure_ascii=False) if isinstance(so, dict) else str(data["result"])
-        return Completion(text=text, input_tokens=int(u.get("input_tokens", 0) or 0) + read + write,
-                          output_tokens=int(u.get("output_tokens", 0) or 0), model=used,
-                          stop_reason=str(data.get("stop_reason") or "end_turn"), cached_input_tokens=read)
-
 
 # ---------- provider: Codex CLI (gói ChatGPT Plus/Pro đã `codex login` trên máy, không cần API key) ----------
 
