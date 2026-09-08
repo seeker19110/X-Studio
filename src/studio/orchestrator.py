@@ -35,6 +35,7 @@ from typing import Any
 from .analytics import judge_experiment, retention_drops
 from .blackboard import Blackboard
 from .bus import InMemoryBus
+from .core import HUMAN_TOPICS as HUMAN_TOPICS  # bảng gốc ở `core.py` cùng ACL bus; đây chỉ tái xuất cho CLI
 from .desk import ProductionDesk
 from .events import (
     AuditLog,
@@ -66,7 +67,6 @@ from .youtube import sync_comments, sync_metrics
 ACTOR = "orchestrator"
 # Topic con người / adapter được nạp tay qua CLI `publish` (README, architecture.md). audit-log (quyết định gate) và các
 # topic do agent sinh KHÔNG nạp tay được — gate đi qua gate_cli, còn lại là việc của agent/code.
-HUMAN_TOPICS = frozenset({"channel-briefs", "publish-events", "performance-snapshots", "audience-comments"})
 SYNC_EVERY_ENV = "STUDIO_SYNC_EVERY"  # giây giữa hai lần kéo số liệu/bình luận cho video đã lên lịch/đăng; 0 = tắt
 SYNC_STATES = frozenset({"scheduled", "published"})
 PAUSING = frozenset({"pause", "budget_cut", "escalate"})

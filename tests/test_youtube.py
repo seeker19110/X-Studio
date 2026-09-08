@@ -169,7 +169,7 @@ def test_seen_comment_ids_includes_synced_and_replied():
     bus = InMemoryBus(); _seed_video(bus)
     bus.publish(Envelope(topic="audience-comments", key="V1", actor=yt.ACTOR, payload={
         "video_id": "V1", "platform_ref": "YTID1", "comments": [{"comment_id": "C1", "author": "a", "text": "t", "likes": 0, "published_at": ""}]}))
-    bus.publish(Envelope(topic="publish-events", key="V1", actor="community-manager", payload={
+    bus.publish(Envelope(topic="publish-events", key="V1", actor="publisher", payload={
         "video_id": "V1", "kind": "reply", "status": "published", "comment_id": "C2"}))
     assert yt.seen_comment_ids(bus, "V1") == {"C1", "C2"}
 

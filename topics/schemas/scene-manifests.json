@@ -21,6 +21,22 @@
       "type": "string",
       "format": "date-time"
     },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "phiên bản envelope+payload của topic"
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "event gốc của cả chuỗi (project/ticket)"
+    },
+    "causation_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "event trực tiếp sinh ra event này"
+    },
     "payload": {
       "description": "Bản ghi bền vững của một sản xuất (ADR-0004): sửa một cảnh không phải làm lại cả video.",
       "properties": {

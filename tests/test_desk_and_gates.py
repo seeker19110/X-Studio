@@ -34,26 +34,27 @@ def test_video_lifecycle_and_ready_for_publish():
     bus = InMemoryBus(); desk = ProductionDesk(bus)
     desk.dispatch([_brief()])
     assert desk.state["V1"] == "briefed"
-    pub = lambda t, p, actor="x": bus.publish(Envelope(topic=t, key="V1", actor=actor, payload=p))  # noqa: E731
-    pub("research-dossiers", {"video_id": "V1", "sources": [{"title": "a", "url": "u"}], "evidence": ["e"]})
-    pub("scripts", {"video_id": "V1", "working_title": "t", "hook": "h", "sections": [{"heading": "a", "narration": "n"}]})
+    # Từ K3.5b bus kiểm producer, nên `pub` phải khai actor THẬT của từng topic — không có giá trị mặc định.
+    pub = lambda t, actor, p: bus.publish(Envelope(topic=t, key="V1", actor=actor, payload=p))  # noqa: E731
+    pub("research-dossiers", "trend-researcher", {"video_id": "V1", "sources": [{"title": "a", "url": "u"}], "evidence": ["e"]})
+    pub("scripts", "script-writer", {"video_id": "V1", "working_title": "t", "hook": "h", "sections": [{"heading": "a", "narration": "n"}]})
     assert desk.state["V1"] == "scripted" and not desk.fact_passed("V1")
-    pub("review-results", {"video_id": "V1", "source": "fact", "verdict": "pass"})
+    pub("review-results", "fact-checker", {"video_id": "V1", "source": "fact", "verdict": "pass"})
     assert desk.fact_passed("V1")
-    pub("scene-manifests", {"video_id": "V1", "scenes": [{"scene_id": "S1", "order": 0, "narration": "n", "visual_prompt": "p"}]})
+    pub("scene-manifests", "production-manager", {"video_id": "V1", "scenes": [{"scene_id": "S1", "order": 0, "narration": "n", "visual_prompt": "p"}]})
     assert desk.state["V1"] == "in_production"
-    pub("media-assets", _asset("V1", "final_video"), "renderer")
+    pub("media-assets", "renderer", _asset("V1", "final_video"))
     assert desk.state["V1"] == "in_review" and not desk.ready_for_publish("V1")
-    pub("metadata-packages", {"video_id": "V1", "title": "t", "description": "d"})
-    pub("media-assets", _asset("V1", "thumbnail", variant_id="A"), "renderer")
-    pub("review-results", {"video_id": "V1", "source": "quality", "verdict": "pass"})
+    pub("metadata-packages", "seo-optimizer", {"video_id": "V1", "title": "t", "description": "d"})
+    pub("media-assets", "renderer", _asset("V1", "thumbnail", variant_id="A"))
+    pub("review-results", "quality-reviewer", {"video_id": "V1", "source": "quality", "verdict": "pass"})
     assert not desk.ready_for_publish("V1")  # thiếu rights
-    pub("review-results", {"video_id": "V1", "source": "rights", "verdict": "pass"})
+    pub("review-results", "rights-checker", {"video_id": "V1", "source": "rights", "verdict": "pass"})
     assert desk.ready_for_publish("V1")
     desk.mark_approved("V1")
-    pub("publish-events", {"video_id": "V1", "status": "scheduled"})
-    pub("publish-events", {"video_id": "V1", "status": "published"})
-    pub("analytics-reports", {"channel_id": "CH1", "video_id": "V1"})
+    pub("publish-events", "publisher", {"video_id": "V1", "status": "scheduled"})
+    pub("publish-events", "publisher", {"video_id": "V1", "status": "published"})
+    pub("analytics-reports", "analytics-analyst", {"channel_id": "CH1", "video_id": "V1"})
     assert desk.state["V1"] == "analyzed"
     assert can_transition("analyzed", "closed") and not can_transition("closed", "briefed")
 

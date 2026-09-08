@@ -221,7 +221,7 @@ def test_auth_url_and_exchange_code_offline(tmp_path):
 
 def test_sync_comments_and_metrics_publish_real_data_to_bus():
     bus = InMemoryBus(); p = FakePlatform()
-    bus.publish(Envelope(topic="video-briefs", key="V1", actor="human", payload={"video_id": "V1", "channel_id": "CH9", "working_title": "t", "pillar": "p",
+    bus.publish(Envelope(topic="video-briefs", key="V1", actor="channel-strategist", payload={"video_id": "V1", "channel_id": "CH9", "working_title": "t", "pillar": "p",
                                                                                  "angle": "a", "audience": "x", "estimate_tokens": 10}))
     with pytest.raises(PlatformError, match="platform_ref"): sync_comments(bus, p, "V1")
     bus.publish(Envelope(topic="publish-events", key="V1", actor="publisher", payload={"video_id": "V1", "status": "scheduled", "platform_ref": "fake-0001"}))

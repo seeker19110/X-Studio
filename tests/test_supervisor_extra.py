@@ -147,7 +147,13 @@ def test_act_once_suppresses_repeat_warn_within_same_threshold():
 
 
 def test_on_ignores_events_authored_by_supervisor_itself():
+    """Event do CHÍNH supervisor phát không quay lại kích hoạt nó — nếu không, mỗi `_act` lại đẻ một `_act`.
+
+    Dùng `supervisor-actions` chứ không phải `video-briefs`: từ K3.5b bus kiểm producer, và supervisor không
+    nằm trong producer hợp lệ của `video-briefs`; event ấy chưa từng tồn tại thật. `supervisor-actions` mới là
+    thứ supervisor tự viết, tức đúng vòng lặp mà nhánh này sinh ra để cắt."""
     bus = InMemoryBus(); sup = Supervisor(bus)
-    bus.publish(Envelope(topic="video-briefs", key="V1", actor="supervisor", payload=_brief(retry=99)))
+    bus.publish(Envelope(topic="supervisor-actions", key="V1", actor="supervisor",
+                         payload={"target": "V1", "action": "escalate", "reason": "retry 99 > 3"}))
     assert sup.actions == []  # env.actor == "supervisor" → bỏ qua ngay, không cả cập nhật last_seen
     assert "V1" not in sup.last_seen

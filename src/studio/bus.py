@@ -1,61 +1,34 @@
+"""Bus của studio — cơ chế ở `xagents_core.bus`, dữ liệu ở `core.CORE` (K3.5b của ADR gốc 0001).
+
+Bản trước K3.5b dài 61 dòng và chỉ làm hai việc: kiểm `required` của payload, và kiểm chủ namespace. Từ đây
+studio nhận **toàn bộ** cơ chế của bus company: validate cả envelope theo JSON Schema, ACL topic, `latest()`,
+`nullable_fields()`, `_notify_safely()`, và một `RLock`. Bảng ACL đo từ event thật — xem `core.py`.
+"""
 from __future__ import annotations
 
-import json
-from collections import defaultdict
-from collections.abc import Callable, Iterable
-from pathlib import Path
+from typing import Any
 
-from pydantic import ValidationError
+from xagents_core.bus import BusError as BusError
+from xagents_core.bus import InMemoryBus as CoreInMemoryBus
+from xagents_core.bus import PermissionDenied as PermissionDenied
+from xagents_core.bus import is_human as is_human
+from xagents_core.bus import producer_allowed as _producer_allowed
 
-from .events import NAMESPACE_OWNERS, PAYLOAD_MODELS, Envelope
+from .core import CORE
+from .core import HUMAN_TOPICS as HUMAN_TOPICS
+from .core import OPEN_TOPICS as OPEN_TOPICS
+from .core import TOPIC_PRODUCERS as TOPIC_PRODUCERS
+from .events import Envelope
 
-SCHEMA_DIR = Path(__file__).resolve().parents[2] / "topics" / "schemas"
+SCHEMA_DIR = CORE.schema_dir
 
-class BusError(Exception): ...
-class PermissionDenied(BusError): ...
 
-class InMemoryBus:
-    """Bus tối giản: partition theo key, validate payload, subscriber theo topic.
-    Thay bằng Redis Streams / Kafka bằng cách giữ nguyên interface publish/subscribe/replay."""
+def producer_allowed(topic: str, actor: str) -> bool:
+    return _producer_allowed(CORE.topic_acl, topic, actor)
 
-    def __init__(self, enforce_owners: bool = True):
-        self._log: list[Envelope] = []
-        self._subs: dict[str, list[Callable[[Envelope], None]]] = defaultdict(list)
-        self.enforce_owners = enforce_owners
-        self._schemas = {p.stem: json.loads(p.read_text(encoding="utf-8")) for p in SCHEMA_DIR.glob("*.json")}
 
-    def validate(self, topic: str, payload: dict) -> None:
-        """Kiểm payload theo pydantic model (nếu có) và trường bắt buộc trong JSON Schema; ném BusError."""
-        model = PAYLOAD_MODELS.get(topic)
-        if model is not None:
-            try:
-                model.model_validate(payload)
-            except ValidationError as e:
-                raise BusError(f"payload không hợp lệ cho {topic}: {e}") from e
-        schema = self._schemas.get(topic)
-        if schema is not None:
-            missing = [k for k in schema["properties"]["payload"].get("required", []) if k not in payload]
-            if missing:
-                raise BusError(f"{topic} thiếu trường bắt buộc: {missing}")
+class InMemoryBus(CoreInMemoryBus[Envelope]):
+    envelope_cls = Envelope
 
-    def publish(self, env: Envelope) -> Envelope:
-        self.validate(env.topic, env.payload)
-        if env.topic == "shared-context" and self.enforce_owners:
-            ns = env.payload["namespace"]
-            if env.actor not in NAMESPACE_OWNERS.get(ns, set()):
-                raise PermissionDenied(f"{env.actor} không được ghi namespace {ns}")
-        self._log.append(env)
-        for fn in list(self._subs.get(env.topic, [])) + list(self._subs.get("*", [])):
-            fn(env)
-        return env
-
-    def subscribe(self, topic: str, fn: Callable[[Envelope], None]) -> None:
-        self._subs[topic].append(fn)
-
-    def replay(self, topic: str | None = None, key: str | None = None) -> Iterable[Envelope]:
-        for e in self._log:
-            if (topic is None or e.topic == topic) and (key is None or e.key == key):
-                yield e
-
-    def __len__(self) -> int:
-        return len(self._log)
+    def __init__(self, enforce_owners: bool = True, cfg: Any = CORE):
+        super().__init__(cfg, enforce_owners=enforce_owners)

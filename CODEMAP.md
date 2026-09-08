@@ -15,6 +15,8 @@
 |---|---|
 | Agent nào nhận topic nào | `ROUTES` trong `src/studio/orchestrator.py`; front matter `reads`/`writes` |
 | Khung event chung (`Envelope`, `AuditLog`, `SharedContext`, `SupervisorAction`, `can_transition`) | `xagents-core/src/xagents_core/events.py` — **LỚP CƠ SỞ** từ K3.5a; `src/studio/events.py` kế thừa và thêm trường phạm vi của mình, thu hẹp `topic`/`namespace` về Literal. Model miền, `PAYLOAD_MODELS`, `TRANSITIONS` ở LẠI package | `xagents-core/tests/test_events.py`, `tests/test_events_core.py` |
+| Ai được publish topic nào | bảng `TOPIC_PRODUCERS`/`HUMAN_TOPICS`/`OPEN_TOPICS` ở `src/studio/core.py` — **đo từ event thật, không đọc từ front matter `writes`** (quá nửa event studio do CODE phát); cơ chế ở `xagents-core/src/xagents_core/bus.py` `_check_publish` từ K3.5b | `tests/test_bus_acl.py`, `xagents-core/tests/test_bus.py` |
+| Cơ chế bus (validate, ACL, `latest`, `_notify_safely`, khoá) | `xagents-core/src/xagents_core/bus.py` — `src/studio/bus.py` chỉ còn lớp con mỏng khai `envelope_cls` + `CORE` | `xagents-core/tests/test_bus.py`, `tests/test_bus.py` |
 | Trường của topic | `topics/schemas/<topic>.json` **và** `src/studio/events.py` — 19 topic: channel-briefs, trend-reports, research-dossiers, video-briefs, scripts, scene-manifests, media-assets, cut-lists, thumbnail-specs, metadata-packages, review-results, publish-events, reply-drafts, audience-comments, performance-snapshots, analytics-reports, shared-context, audit-log, supervisor-actions |
 | Namespace blackboard (10) | `topics/README.md` + owner trong `events.py` |
 | Checklist 4 gate | `gates/checklists.md` |
