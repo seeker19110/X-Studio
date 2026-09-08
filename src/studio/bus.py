@@ -30,5 +30,6 @@ def producer_allowed(topic: str, actor: str) -> bool:
 class InMemoryBus(CoreInMemoryBus[Envelope]):
     envelope_cls = Envelope
 
-    def __init__(self, enforce_owners: bool = True, cfg: Any = CORE):
+    def __init__(self, cfg: Any = CORE, enforce_owners: bool = True):
+        # Thứ tự tham số theo core (`cfg` trước) — xem chú ở `company/bus.py`, cùng lý do MRO của K3.5c.
         super().__init__(cfg, enforce_owners=enforce_owners)
