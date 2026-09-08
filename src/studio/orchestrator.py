@@ -367,7 +367,24 @@ class Orchestrator:
         self._sync(now)
         remind, overdue = self.gate.due(now)
         for sid in [*remind, *overdue]:
-            self._audit(f"gate.{'overdue' if sid in overdue else 'remind'}", {"subject_id": sid}, once=f"gate:{sid}")
+            # Khoá `once` phải mang cả GIAI ĐOẠN lẫn THẾ HỆ (TRAPS.md §1 khuôn 3, đã vá ở company/orch/scheduler.py).
+            # Giai đoạn: một gate luôn đi qua `remind` (12h) TRƯỚC rồi mới tới `overdue` (24h), nên dùng chung
+            # `gate:{sid}` là lần nhắc nuốt luôn lần quá hạn — `gate.overdue` không bao giờ vào audit-log, và
+            # audit-log là bản ghi bền DUY NHẤT, nên một gate bể hạn đọc ra y hệt một gate mới chỉ được nhắc.
+            # Thế hệ: cùng một `subject_id` mở gate nhiều lần trong đời (gate mở lại sau khi hỏng), mà
+            # `HumanGate.pending` khoá theo `subject_id` nên gate mới ghi đè gate cũ dưới đúng cái tên đó.
+            # `sid` đến thẳng từ `gate.due()` (nó duyệt `pending`) và không có gì sửa `pending` giữa chừng,
+            # nên tra `pending[sid]` ở đây luôn trúng — không có nhánh "không tìm thấy" để rơi vào im lặng.
+            pha = "overdue" if sid in overdue else "remind"
+            the_he = self.gate.pending[sid].created_at.isoformat(timespec="microseconds")
+            self._audit(f"gate.{pha}", {"subject_id": sid}, once=f"gate:{sid}:{pha}:{the_he}")
+            # Quá hạn không tự đi tiếp, nhưng cũng không được im lặng: người duyệt im lặng cũng là một bế tắc.
+            # Chống lặp nằm ở `self.once` (dựng lại từ audit-log lúc `_rehydrate`), không ở RAM của supervisor —
+            # khuôn 2: state chỉ sống trong RAM là mất khi mở lại bus.
+            key = f"gate.escalate:{sid}:{the_he}"
+            if pha == "overdue" and key not in self.once:
+                self._remember(key)
+                self.supervisor.escalate_gate(sid, f"gate quá hạn {self.gate.timeout}")
         for vid, missing in self.desk.overdue_reviews(now).items():
             fin = next((e for e in reversed(list(self.bus.replay("media-assets", vid))) if e.payload.get("kind") == "final_video"), None)
             for src in sorted(missing):

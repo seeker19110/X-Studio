@@ -25,6 +25,20 @@ def _audit_actions(bus, actor=None):
     return [e.payload["action"] for e in bus.replay("audit-log") if actor is None or e.actor == actor]
 
 
+def _gate_audits(bus, action, subject_id):
+    """Số bản ghi audit `action` của ĐÚNG một gate."""
+    return sum(1 for e in bus.replay("audit-log")
+               if e.actor == "orchestrator" and e.payload["action"] == action
+               and json.loads(e.payload["evidence"] or "{}").get("subject_id") == subject_id)
+
+
+def _escalates(bus, target):
+    """Số lần supervisor escalate ĐÚNG một chủ thể. Đếm cả topic là sai: fixture có sẵn video đang chạy, nên
+    `supervisor-actions` còn escalate của chủ thể khác và con số sẽ trôi theo fixture chứ không theo bản sửa."""
+    return sum(1 for a in bus.replay("supervisor-actions")
+               if a.payload["action"] == "escalate" and a.payload["target"] == target)
+
+
 def _to_scene_manifest(tmp_path):
     """Chạy tới khi có scene-manifests đầu tiên (trước khi renderer publish v1 có asset), để test lỗi render."""
     bus = InMemoryBus(); o = _orch(bus, tmp_path, plan_size=1, repairs=0)
@@ -287,8 +301,85 @@ def test_tick_marks_gate_overdue(tmp_path):
     from studio.gates import GateRequest
     o.gate.request(GateRequest(kind="publish", subject_id="PUB-OVERDUE", created_by="desk", checklist=[]))
     created = o.gate.pending["PUB-OVERDUE"].created_at
-    o.tick(created + timedelta(hours=25))  # > timeout (24h): thẳng tới overdue, chưa từng remind (khoá `once` riêng theo sid)
+    # Nhảy THẲNG tới 25h: gate chưa từng qua pha `remind`. Đây cố ý là kịch bản DỄ — nó không đi qua đúng
+    # nhánh mà khoá `once` chung `gate:{sid}` làm hỏng, nên một mình nó xanh không chứng minh được gì về
+    # khuôn 3. Kịch bản thật (remind rồi mới overdue) nằm ở test ngay dưới.
+    o.tick(created + timedelta(hours=25))  # > timeout (24h)
     assert any(e.payload["action"] == "gate.overdue" for e in bus.replay("audit-log") if e.actor == "orchestrator")
+
+
+def test_tick_gate_overdue_khong_bi_lan_remind_nuot(tmp_path):
+    """TRAPS.md §1 khuôn 3, đúng con bug company đã vá ở `orch/scheduler.py` mà studio còn giữ:
+    `gate.remind` (12h) và `gate.overdue` (24h) dùng CHUNG khoá `once` là `gate:{sid}`, nên lần nhắc ghi khoá
+    trước, tới lúc thật sự quá hạn `_audit` thoát sớm và `gate.overdue` KHÔNG BAO GIỜ vào audit-log. Audit-log
+    là bản ghi bền duy nhất, nên gate bể hạn đọc ra y hệt một gate mới chỉ vừa được nhắc — im lặng hoàn toàn.
+
+    Đo hai chiều (2026-09-08): đổi khoá về `once=f"gate:{sid}"` → test này ĐỎ ở assert `gate.overdue`, trong khi
+    `test_tick_marks_gate_overdue` ở trên vẫn XANH; trả lại khoá có pha + thế hệ → cả hai xanh."""
+    from datetime import timedelta
+
+    from studio.gates import GateRequest
+
+    bus, o = _to_scene_manifest(tmp_path)
+    o.gate.request(GateRequest(kind="publish", subject_id="PUB-HAI-PHA", created_by="desk", checklist=[]))
+    created = o.gate.pending["PUB-HAI-PHA"].created_at
+    o.tick(created + timedelta(hours=13))   # pha 1: remind
+    o.tick(created + timedelta(hours=25))   # pha 2: overdue — không được bị pha 1 nuốt
+    acts = _audit_actions(bus, actor="orchestrator")
+    assert "gate.remind" in acts, "gate quá 12h phải được nhắc"
+    assert "gate.overdue" in acts, "gate quá hạn phải vào audit-log, không được bị lần nhắc nuốt mất"
+    # Lọc theo target: fixture có sẵn video đang chạy nên `supervisor-actions` còn escalate của chủ thể khác.
+    assert _escalates(bus, "PUB-HAI-PHA") == 1, "quá hạn phải escalate, không im lặng"
+    o.tick(created + timedelta(hours=30))   # còn quá hạn: không được escalate lại mỗi nhịp
+    assert _escalates(bus, "PUB-HAI-PHA") == 1, "mỗi thế hệ gate chỉ escalate một lần"
+
+
+def test_tick_gate_the_he_hai_cua_cung_subject_van_duoc_nhac_va_escalate(tmp_path):
+    """Thế hệ trong khoá: cùng một `subject_id` mở gate NHIỀU LẦN trong đời, mà `HumanGate.pending` khoá theo
+    `subject_id` nên gate mới ghi đè gate cũ dưới đúng cái tên đó. Khoá chỉ mang `sid` + pha là lần quá hạn của
+    gate THỨ HAI bị lần quá hạn của gate thứ nhất nuốt.
+
+    Đo hai chiều (2026-09-08): bỏ `:{the_he}` khỏi hai khoá → assert `== 2` đỏ (chỉ còn 1); trả lại → xanh."""
+    from datetime import timedelta
+
+    from studio.gates import GateRequest
+
+    bus, o = _to_scene_manifest(tmp_path)
+    for _ in range(2):
+        o.gate.request(GateRequest(kind="publish", subject_id="PUB-LAP", created_by="desk", checklist=[]))
+        created = o.gate.pending["PUB-LAP"].created_at
+        o.tick(created + timedelta(hours=25))
+        o.gate.decide("PUB-LAP", "approve", by="reviewer", enforce=False)
+    # Lọc theo subject_id, không đếm cả topic: fixture có gate riêng của nó cũng quá hạn trong các nhịp này.
+    assert _gate_audits(bus, "gate.overdue", "PUB-LAP") == 2, "gate thế hệ hai quá hạn cũng phải vào audit-log"
+    assert _escalates(bus, "PUB-LAP") == 2, "mỗi thế hệ gate escalate riêng"
+
+
+def test_gate_escalate_khong_lap_lai_sau_khi_mo_lai_bus(tmp_path):
+    """Khuôn 2: chống-lặp của escalate phải sống sót qua restart. Nó nằm ở `self.once` (dựng lại từ audit-log
+    lúc `_rehydrate`), không ở RAM của `Supervisor` — `Supervisor.actions` chính là thứ bị replay dựng lại.
+
+    Đo hai chiều (2026-09-08): chuyển cờ sang một `set` trên Supervisor → orchestrator thứ hai escalate lại,
+    assert `== 1` đỏ."""
+    from datetime import timedelta
+
+    from studio.gates import GateRequest
+
+    db = tmp_path / "studio.sqlite"
+    bus = SQLiteBus(db)
+    o = _orch(bus, tmp_path)
+    o.gate.request(GateRequest(kind="publish", subject_id="PUB-RESTART", created_by="desk", checklist=[]))
+    created = o.gate.pending["PUB-RESTART"].created_at
+    o.tick(created + timedelta(hours=25))
+    bus.close()
+
+    bus2 = SQLiteBus(db)
+    o2 = _orch(bus2, tmp_path)
+    assert f"gate.escalate:PUB-RESTART:{created.isoformat(timespec='microseconds')}" in o2.once
+    o2.tick(created + timedelta(hours=26))
+    n = _escalates(bus2, "PUB-RESTART")
+    bus2.close()
+    assert n == 1, "mở lại bus không được escalate lại gate cũ"
 
 
 def test_tick_reassigns_overdue_review(tmp_path):

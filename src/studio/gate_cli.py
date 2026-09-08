@@ -57,15 +57,25 @@ class PersistentGate(HumanGate):
             if not isinstance(d.get("decision"), str) or not isinstance(d.get("by"), str): return
             super().decide(sid, d["decision"], by=d["by"], reason=d.get("reason", ""), enforce=False)
 
-    def _log(self, actor: str, action: str, data: dict) -> None:
+    def _envelope(self, actor: str, action: str, data: dict) -> Envelope:
         a = AuditLog(actor=actor, action=action, evidence=json.dumps(data, ensure_ascii=False))
-        self.bus.publish(Envelope(topic="audit-log", key=actor, actor=actor, payload=a.model_dump()))
+        return Envelope(topic="audit-log", key=actor, actor=actor, payload=a.model_dump())
+
+    def _log(self, actor: str, action: str, data: dict) -> None:
+        self.bus.publish(self._envelope(actor, action, data))
 
     def request(self, req: GateRequest) -> GateRequest:
         r = super().request(req)
-        self._log(req.created_by or "human", "gate.request",
-                  {"kind": req.kind, "subject_id": req.subject_id, "checklist": req.checklist, "created_by": req.created_by,
-                   "triggered_by": req.triggered_by})
+        env = self._envelope(req.created_by or "human", "gate.request",
+                             {"kind": req.kind, "subject_id": req.subject_id, "checklist": req.checklist,
+                              "created_by": req.created_by, "triggered_by": req.triggered_by})
+        # `created_at` phải là ts của CHÍNH envelope `gate.request`, không phải thời điểm dựng dataclass.
+        # Tiến trình khác dựng lại gate từ replay bằng `created_at=env.ts` (xem `apply`), nên giữ mốc khởi tạo
+        # ở đây là cùng một gate mang HAI mốc lệch nhau vài trăm micro giây tuỳ tiến trình nào đang đọc. Mọi
+        # khoá `once` lấy `created_at` làm THẾ HỆ vì thế đổi sau mỗi lần mở lại bus: nhắc lại, escalate lại một
+        # gate đã nhắc rồi (TRAPS §1 khuôn 2 + khuôn 3). Gán TRƯỚC `publish`: `publish` gọi subscriber đồng bộ.
+        r.created_at = env.ts
+        self.bus.publish(env)
         return r
 
     def decide(self, subject_id: str, decision: Decision, by: str, reason: str = "", enforce: bool = True) -> GateRequest:

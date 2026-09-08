@@ -73,6 +73,12 @@ class Supervisor:
             if env.actor not in NAMESPACE_OWNERS.get(env.payload["namespace"], set()):
                 self._act(env.actor, "pause", "ghi sai namespace")
 
+    def escalate_gate(self, subject_id: str, reason: str) -> None:
+        """Gate quá hạn: người duyệt im lặng cũng là một dạng bế tắc, phải hiện ra như mọi bế tắc khác.
+        Chống lặp KHÔNG nằm ở đây mà ở khoá `once` bền của orchestrator: `Supervisor.actions` được dựng lại
+        bằng replay nên một cờ RAM ở đây sẽ nói "đã escalate rồi" sai bét sau mỗi lần mở lại bus (khuôn 2)."""
+        self._act(subject_id, "escalate", reason)
+
     def check_timeouts(self, now: datetime | None = None, active: set[str] | None = None) -> list[str]:
         now = now or datetime.now(UTC); stuck = []
         for key, ts in self.last_seen.items():
