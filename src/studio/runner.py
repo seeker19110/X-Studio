@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -22,27 +21,13 @@ from xagents_core.context import fit
 from .blackboard import Blackboard
 from .bus import SCHEMA_DIR, BusError, InMemoryBus
 from .events import AuditLog, Envelope, Topic
+from .guard import LABEL as FILTERED
+from .guard import guard_payload, has_injection, sanitize_tool_output
+from .guard import sanitize as sanitize_obj
 from .llm import Completion, LLMError, ModelClient
 from .registry import AgentSpec, load_agents
 from .tools import ToolBox, ToolError, default_toolbox, tools_prompt
 
-# Mẫu prompt injection (không phân biệt hoa thường, Anh + Việt). Đầu vào topic khớp → từ chối chạy; riêng lô bình luận
-# thì bỏ từng bình luận khớp; kết quả tool và blackboard thì thay đoạn khớp bằng "[đã lọc]" rồi vẫn chạy.
-INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(re.compile(p, re.IGNORECASE) for p in (
-    r"ignore\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above|earlier)\b",
-    r"disregard\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above|earlier|your)\b",
-    r"\byou\s+are\s+now\b",
-    r"system\s+prompt\s*:",
-    r"\b(?:reveal|print|show|repeat|output)\s+(?:me\s+)?(?:your|the)\s+(?:system\s+)?(?:instructions?|prompt)\b",
-    r"developer\s+mode",
-    r"jailbreak",
-    r"<\|im_start\|>|<\|im_end\|>",
-    r"bỏ\s+qua\s+(?:mọi\s+|tất\s+cả\s+(?:các\s+)?)?(?:hướng\s+dẫn|chỉ\s+dẫn|lệnh)",
-    r"quên\s+(?:mọi\s+|tất\s+cả\s+(?:các\s+)?|hết\s+)?(?:hướng\s+dẫn|chỉ\s+dẫn|lệnh)",
-    r"bây\s+giờ\s+bạn\s+là",
-    r"tiết\s+lộ\s+(?:system\s+prompt|hướng\s+dẫn\s+hệ\s+thống)",
-))
-FILTERED = "[đã lọc]"
 CONTEXT_ONLY = "shared-context"  # topic_out đặc biệt: agent chỉ ghi blackboard, không publish topic
 MAX_TOOL_TURNS = 10  # trần lượt model ↔ tool mỗi lần generate (ADR-0007)
 DEFAULT_MAX_INPUT_CHARS = 120_000  # dùng khi client không mang `max_input_chars` (test dựng client trần)
@@ -55,31 +40,6 @@ def spec_toolbox(spec: AgentSpec) -> ToolBox | None:
 
 
 class RunnerError(Exception): ...
-
-
-def has_injection(text: str) -> bool:
-    return any(p.search(text) for p in INJECTION_PATTERNS)
-
-
-def sanitize_text(text: str) -> tuple[str, int]:
-    """Thay mọi đoạn khớp mẫu injection bằng FILTERED; trả (văn bản, số đoạn đã thay)."""
-    n = 0
-    for p in INJECTION_PATTERNS:
-        text, k = p.subn(FILTERED, text); n += k
-    return text, n
-
-
-def sanitize_obj(obj: Any) -> tuple[Any, int]:
-    """Đệ quy sanitize_text trên mọi chuỗi trong dict/list (blackboard snapshot, dữ liệu enrich)."""
-    if isinstance(obj, str): return sanitize_text(obj)
-    if isinstance(obj, dict):
-        out: dict[str, Any] = {}; n = 0
-        for k, v in obj.items(): out[k], m = sanitize_obj(v); n += m
-        return out, n
-    if isinstance(obj, list):
-        items = [sanitize_obj(v) for v in obj]
-        return [v for v, _ in items], sum(m for _, m in items)
-    return obj, 0
 
 
 def payload_schema(topic: str) -> dict[str, Any]:
@@ -197,8 +157,10 @@ class AgentRunner:
             for t in c.tool_calls:
                 try: out = tools.call(t)
                 except ToolError as e: out = f"lỗi: {e}"
-                out, n = sanitize_text(out)  # trang web là dữ liệu không tin cậy: lọc mẫu ra lệnh trước khi đưa lại model
-                if n: self._audit(spec, "injection_sanitized", inp, evidence=f"tool {t.name}: {n} đoạn → {FILTERED}")
+                out, hits = sanitize_tool_output(out)  # trang web là dữ liệu không tin cậy: lọc trước khi đưa lại model
+                # Ghi cả TÊN MẪU đã khớp, không chỉ số đoạn: người trực đọc `injection_sanitized` cần biết
+                # chuyện gì đã xảy ra, "3 đoạn" thì không nói được gì (K3.4).
+                if hits: self._audit(spec, "injection_sanitized", inp, evidence=f"tool {t.name}: {len(hits)} đoạn → {FILTERED} ({'; '.join(hits[:3])})")
                 msgs.append({"role": "tool", "tool_call_id": t.id, "content": out})
         if c is None or c.tool_calls or not c.text.strip():
             if c is not None and c.tool_calls:
@@ -229,15 +191,27 @@ class AgentRunner:
         if inp.topic not in spec.reads and "*" not in spec.reads:
             raise RunnerError(f"{agent_id} không đọc topic {inp.topic} (reads={spec.reads})")
         inp = self._filter_comments(spec, inp)
-        raw = json.dumps([inp.payload, extra or {}], ensure_ascii=False)
-        if has_injection(raw):
-            self._audit(spec, "injection_detected", inp, evidence="đầu vào chứa mẫu prompt injection")
+        # K3.4: chính sách theo NGUỒN thay vì "khớp mẫu ở đâu cũng từ chối". Bản cũ từ chối mọi topic, kể cả
+        # `channel-briefs` do người viết và `trend-reports` trích thẳng từ web — tức người ngoài viết một câu là
+        # tắt được một bước của phòng ban, và event ấy bị từ chối MÃI vì payload không bao giờ đổi.
+        # Topic nào là ngoài/dẫn xuất, trường nào không tin cậy: khai ở `studio/core.py` (`CORE`).
+        sach, hits, refused = guard_payload(inp.topic, inp.actor, inp.payload)
+        if refused:
+            self._audit(spec, "injection_detected", inp, evidence=f"đầu vào chứa mẫu prompt injection ({'; '.join(hits[:3])})")
+            raise RunnerError(f"{agent_id}: đầu vào {inp.event_id} nghi prompt injection, không chạy")
+        if hits:
+            self._audit(spec, "injection_sanitized", inp, evidence=f"payload: {len(hits)} đoạn → {FILTERED} ({'; '.join(hits[:3])})")
+            inp = inp.model_copy(update={"payload": sach})
+        # `extra` do route tự dựng (`enrich`) từ event khác, không mang topic/actor riêng để phân loại — giữ luật
+        # cũ: khớp mẫu là từ chối. Nới chỗ này cần biết `enrich` lấy dữ liệu từ đâu, ngoài phạm vi K3.4.
+        if has_injection(json.dumps(extra or {}, ensure_ascii=False)):
+            self._audit(spec, "injection_detected", inp, evidence="dữ liệu enrich chứa mẫu prompt injection")
             raise RunnerError(f"{agent_id}: đầu vào {inp.event_id} nghi prompt injection, không chạy")
 
         schema = None if context_only else payload_schema(topic_out)
         context = {ns: sc.model_dump() for ns, sc in self.blackboard.snapshot().items()} if self.blackboard else {}
-        context, n = sanitize_obj(context)  # blackboard do agent khác ghi: lọc chứ không chặn cả lượt
-        if n: self._audit(spec, "injection_sanitized", inp, evidence=f"shared-context: {n} đoạn → {FILTERED}")
+        context, hits = sanitize_obj(context)  # blackboard do agent khác ghi: lọc chứ không chặn cả lượt
+        if hits: self._audit(spec, "injection_sanitized", inp, evidence=f"shared-context: {len(hits)} đoạn → {FILTERED} ({'; '.join(hits[:3])})")
         # ADR-0012 qua `xagents_core.context`: prompt = system + payload + enrich + blackboard phải nằm trong
         # `max_input_chars`. `payload` và `extra` đi cùng một hạn mức vì cả hai đều vào prompt ở
         # `build_user_message`; cắt riêng từng cái thì tổng vẫn vượt.

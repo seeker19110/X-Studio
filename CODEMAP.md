@@ -42,7 +42,8 @@
 | Adapter provider, retry | `src/studio/llm.py` |
 | Chọn backend theo tier, xoay quota | `xagents-core/src/xagents_core/routing.py` (ADR-0006; K3.3d — `src/studio/routing.py` chỉ còn là shim); `llm.yaml` |
 | Ngân sách, watchdog, calibration ước lượng | `src/studio/supervisor.py` |
-| Vòng lặp tool, guard | `src/studio/runner.py` |
+| Vòng lặp tool | `src/studio/runner.py` |
+| Chống prompt injection | Bảng mẫu + lọc: `xagents-core/src/xagents_core/guard.py` (K3.4). Mẫu RIÊNG của phòng ban (`developer mode`, `jailbreak`) và chính sách topic/trường: `src/studio/core.py`; `src/studio/guard.py` là shim gắn `CORE`. Luật bỏ TỪNG bình luận của lô `audience-comments` ở lại `runner._filter_comments` | `tests/test_guard_studio_duoc_nang.py`, `xagents-core/tests/test_guard.py` |
 | Eval ghi / phát lại | `src/studio/evals.py` |
 | Client giả, media giả | `src/studio/fakes.py` |
 

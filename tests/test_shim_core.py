@@ -21,6 +21,8 @@ import studio
 # (`WebTools`) có re-export thêm phần khung, nên bề mặt của nó rộng hơn `__all__` của core.
 SHIM: list[tuple[str, str]] = [("studio.sandbox", "xagents_core.sandbox"),
                                ("studio.routing", "xagents_core.routing")]   # K3.3d
+# `studio.guard` (K3.4) là shim CÓ RÀNG BUỘC: mỗi hàm `partial` với `CORE` nên KHÔNG cùng đối tượng với
+# bản core — ca "cùng đối tượng" ở trên không áp dụng. Bề mặt của nó canh ở `test_guard_studio_duoc_nang.py`.
 
 
 @pytest.mark.parametrize(("cong_ty", "core"), SHIM)
