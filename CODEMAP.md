@@ -40,7 +40,7 @@
 | Muốn | Sửa |
 |---|---|
 | Adapter provider, retry | `src/studio/llm.py` |
-| Chọn backend theo tier, xoay quota | `src/studio/routing.py` (ADR-0006); `llm.yaml` |
+| Chọn backend theo tier, xoay quota | `xagents-core/src/xagents_core/routing.py` (ADR-0006; K3.3d — `src/studio/routing.py` chỉ còn là shim); `llm.yaml` |
 | Ngân sách, watchdog, calibration ước lượng | `src/studio/supervisor.py` |
 | Vòng lặp tool, guard | `src/studio/runner.py` |
 | Eval ghi / phát lại | `src/studio/evals.py` |

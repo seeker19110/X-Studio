@@ -19,7 +19,8 @@ import studio
 
 # (tên module studio, tên module core). `studio.tools` không có ở đây: nó không phải shim — nó là bảng tool THẬT
 # (`WebTools`) có re-export thêm phần khung, nên bề mặt của nó rộng hơn `__all__` của core.
-SHIM: list[tuple[str, str]] = [("studio.sandbox", "xagents_core.sandbox")]
+SHIM: list[tuple[str, str]] = [("studio.sandbox", "xagents_core.sandbox"),
+                               ("studio.routing", "xagents_core.routing")]   # K3.3d
 
 
 @pytest.mark.parametrize(("cong_ty", "core"), SHIM)

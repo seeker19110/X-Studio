@@ -28,7 +28,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +49,7 @@ from .events import (
 )
 from .gate_cli import PersistentGate, rollback_target
 from .gates import GateRequest, gate_approvers
-from .llm import LLMError, ModelClient
+from .llm import LLMError, ModelClient, TransientError
 from .media import MediaError, MediaSuite, frame_size
 from .platform import Platform, PlatformError, UploadResult, make_platform
 from .preflight import PreflightReport, preflight
@@ -57,6 +57,7 @@ from .qc import QCReport, qc_scenes, qc_video
 from .registry import AgentSpec, load_agents
 from .renderer import ACTOR as RENDERER
 from .renderer import Renderer
+from .routing import retry_after_seconds
 from .runner import CONTEXT_ONLY, AgentRunner, RunnerError
 from .supervisor import Supervisor
 from .timeline import snap_chapters
@@ -253,6 +254,7 @@ class StepResult:
     key: str
     actions: list[str] = field(default_factory=list)
     deferred: str | None = None
+    transient: bool = False   # một agent chưa gọi được vì transport → event được HOÃN, không tính lỗi agent (K3.3d)
 
 
 class Orchestrator:
@@ -281,6 +283,10 @@ class Orchestrator:
         self.qcs: dict[str, QCReport] = {}  # QC bằng code trên bản dựng cuối (đo file, không đọc manifest)
         self.queue: list[Envelope] = []
         self.deferred: dict[str, tuple[Envelope, str]] = {}
+        # Mốc hẹn của backend ("thử lại sau 1515s"): hỏi lại sớm hơn chỉ tốn một dòng lỗi và làm bẩn audit-log.
+        # Chỉ sống trong RAM như `deferred` — mở lại tiến trình là mất hẹn (giới hạn đã biết, xem company
+        # `orch/scheduler.py:_defer`); bù lại `defer.until` có trong audit-log để người trực đọc được.
+        self.defer_until: dict[str, float] = {}
         self.once: set[str] = set()
         self.stats: Counter[str] = Counter()
         self._rehydrate()
@@ -363,6 +369,7 @@ class Orchestrator:
 
     def tick(self, now: datetime | None = None) -> list[StepResult]:
         if hasattr(self.bus, "poll"): self.bus.poll()
+        self._retry_deferred(only="transient:")   # K3.3d: chỉ loại transport; `paused:` chờ đúng lệnh `resume`
         results = self.run()
         self._sync(now)
         remind, overdue = self.gate.due(now)
@@ -427,9 +434,29 @@ class Orchestrator:
         while max_ticks is None or n < max_ticks:
             self.tick(); n += 1; time.sleep(interval)
 
-    def _retry_deferred(self) -> None:
-        for eid, (env, _why) in list(self.deferred.items()):
-            self.deferred.pop(eid); self.queue.append(env)
+    def _defer(self, env: Envelope, res: StepResult, reason: str, wait_s: float | None = None) -> StepResult:
+        """Giữ event lại, KHÔNG đánh dấu `orchestrated` — mở lại tiến trình là hàng đợi nhận lại nó.
+        `wait_s`: backend nói rõ phải chờ bao lâu → không thử lại trước mốc đó (xem `_retry_deferred`)."""
+        self.deferred[env.event_id] = (env, reason); res.deferred = reason; self.stats["deferred"] += 1
+        if wait_s and wait_s > 0:
+            self.defer_until[env.event_id] = time.monotonic() + float(wait_s)
+            res.deferred = f"{reason} (chờ {int(wait_s)}s)"
+            self._audit("defer.until", {"event_id": env.event_id, "reason": reason, "wait_s": int(wait_s),
+                                        "until": (datetime.now(UTC) + timedelta(seconds=float(wait_s))).isoformat()},
+                        video_id=env.payload.get("video_id") if isinstance(env.payload, dict) else None)
+        return res
+
+    def _drop_defer(self, eid: str) -> None:
+        self.deferred.pop(eid, None); self.defer_until.pop(eid, None)
+
+    def _retry_deferred(self, only: str | None = None) -> None:
+        """Đưa event hoãn về ĐẦU hàng đợi; `only` = tiền tố lý do (vd. "transient:") để chỉ thử lại loại đó.
+        Event nào backend đã hẹn giờ (`defer_until`) thì chờ đúng hẹn."""
+        now = time.monotonic()
+        picked = {k: v for k, v in self.deferred.items()
+                  if (only is None or v[1].startswith(only)) and self.defer_until.get(k, 0.0) <= now}
+        for k in picked: self._drop_defer(k)
+        self.queue[:0] = [e for e, _ in picked.values()]
 
     # ---------- xử lý một event ----------
 
@@ -439,9 +466,15 @@ class Orchestrator:
         vid = env.payload.get("video_id") if isinstance(env.payload, dict) else None
         target = vid or env.key
         if env.topic == "audit-log":
-            self._on_gate_decision(env, res); self._done(env, res); return res
+            self._on_gate_decision(env, res)
+            # Quyết định gate cũng gọi model (`_publish_video`/`_post_reply` → `_decide`), và ở đây một lỗi vận
+            # chuyển đắt nhất: gate đã được NGƯỜI ký, `_done` là mất luôn lần đăng đã duyệt mà không ai thấy.
+            # Chạy lại được: nhánh `PUB-` giữ nguyên trạng thái khi đã `approved` (dòng "duyệt lại sau upload
+            # lỗi") và `_publish_video` dùng lại upload trước qua `_prior_upload`.
+            if res.transient: return self._defer_transient(env, res)
+            self._done(env, res); return res
         if target in self.paused and env.topic not in {"analytics-reports", "channel-briefs", "trend-reports"}:
-            res.deferred = f"paused:{target}"; self.deferred[env.event_id] = (env, res.deferred); return res
+            return self._defer(env, res, f"paused:{target}")
         # --- bước code (không model) ---
         if env.topic == "scene-manifests" and env.actor != RENDERER:
             self._render(env, res)
@@ -466,8 +499,23 @@ class Orchestrator:
         if env.topic == "reply-drafts" and env.actor == "community-manager":
             self._collect_replies(env, res)
         if vid: self._maybe_request_publish(vid, res)
+        if res.transient: return self._defer_transient(env, res)
         self._done(env, res)
         return res
+
+    def _defer_transient(self, env: Envelope, res: StepResult) -> StepResult:
+        """Một agent chưa chạy được vì transport: giữ event lại, nhịp `tick` sau thử tiếp. KHÔNG `_done` —
+        `_done` ghi `orchestrated` và event coi như xong vĩnh viễn, tức một nhịp mạng chập làm mất hẳn một bước
+        của video. Backend đã nói rõ phải chờ bao lâu ("thử lại sau 1515s") thì tôn trọng nó."""
+        stuck = next((a for a in res.actions if a.startswith("transient:")), "transient:?")
+        return self._defer(env, res, ":".join(stuck.split(":")[:2]), wait_s=retry_after_seconds(stuck))
+
+    def _transient(self, agent: str, e: TransientError, res: StepResult) -> None:
+        """Lỗi vận chuyển sau khi client đã thử lại: KHÔNG phải lỗi agent, nên không ghi `agent_failed` (nó là
+        thứ desk/supervisor đếm để rework rồi block video). Ba chỗ gọi model đều phải đi qua đây — `_call`,
+        `_plan`, `_decide` — vì chúng là ba bản sao của cùng một bước, sửa một chỗ là để lại hai chỗ y hệt."""
+        res.actions.append(f"transient:{agent}:{str(e)[:120]}"); res.transient = True
+        self.stats["transient"] += 1
 
     def _done(self, env: Envelope, res: StepResult) -> None:
         self.processed.add(env.event_id); self.stats[env.topic] += 1
@@ -490,6 +538,8 @@ class Orchestrator:
                 g.context_writes = []
             res.actions.append(f"{r.agent}→{r.topic_out}×{len(outs)}")
             return outs
+        except TransientError as e:   # trước `LLMError`: nó là con của lớp ấy
+            self._transient(r.agent, e, res); return []
         except (RunnerError, LLMError) as e:
             res.actions.append(f"{r.agent}!{type(e).__name__}")
             self._audit("agent_failed", {"agent": r.agent, "error": str(e)[:300]}, video_id=env.payload.get("video_id"))
@@ -581,6 +631,8 @@ class Orchestrator:
         cid = env.payload.get("channel_id") or env.key
         try:
             g = self.runner.generate("channel-strategist", env, "video-briefs", many=True, extra=_with_calibration(env, self))
+        except TransientError as e:
+            self._transient("channel-strategist", e, res); return
         except (RunnerError, LLMError) as e:
             res.actions.append("plan!failed"); self._audit("agent_failed", {"agent": "channel-strategist", "error": str(e)[:300]}); return
         for b in g.payloads: b.setdefault("channel_id", cid)
@@ -686,7 +738,7 @@ class Orchestrator:
             vid = sid[4:]
             # event bị hoãn của video này (vd. review block cũ) đã lỗi thời sau quyết định gate: bỏ, không phát lại
             for eid, (env_d, _w) in list(self.deferred.items()):
-                if (env_d.payload.get("video_id") or env_d.key) == vid: self.deferred.pop(eid); self.processed.add(eid)
+                if (env_d.payload.get("video_id") or env_d.key) == vid: self._drop_defer(eid); self.processed.add(eid)
             if dec == "approve": self.desk.reopen(vid, reason or "mở lại sau escalation"); self.paused.discard(vid); res.actions.append("reopen")
             elif dec == "reject": self.desk.close(vid); res.actions.append("closed")
             self.bus.publish(Envelope(topic="supervisor-actions", key=vid, actor="supervisor",
@@ -711,6 +763,8 @@ class Orchestrator:
         try:
             g = self.runner.generate(r.agent, env, r.topic_out, extra=data)
             return (g.payloads[0] if g.payloads else None), g
+        except TransientError as e:
+            self._transient(r.agent, e, res); return None, None
         except (RunnerError, LLMError) as e:
             res.actions.append(f"{r.agent}!{type(e).__name__}")
             self._audit("agent_failed", {"agent": r.agent, "error": str(e)[:300]}, video_id=env.payload.get("video_id"))

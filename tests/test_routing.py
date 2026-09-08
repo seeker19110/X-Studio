@@ -1,4 +1,15 @@
-"""ADR-0006: điều phối nhiều gói tài khoản (RoutingClient), tier `light`."""
+"""ADR-0006: điều phối nhiều gói tài khoản (RoutingClient), tier `light`.
+
+K3.3d: `studio.routing` nay là shim của `xagents_core.routing`, nên **cơ chế** xoay backend được canh ở
+`xagents-core/tests/test_routing.py` (một chỗ cho cả hai công ty). File này giữ phần RIÊNG của phòng ban:
+cấu hình `STUDIO_*`, hồ sơ `llm.claude-gateway.yaml`, adapter codex/claude-code — cộng vài ca xoay backend
+đủ để chứng minh shim còn nối đúng.
+
+`is_transient_error` đã xoá cùng `TRANSIENT_PATTERNS`: đoán "lỗi tạm thời" bằng regex trên thông điệp là
+việc `TransientError` sinh ra để thay. Ca nào trước đây dựng `LLMError("lỗi mạng: timeout")` để bắt router
+xoay thì nay phải dựng `TransientError` — và đó là điểm đúng: với bản core, một `LLMError` trần KHÔNG mã và
+KHÔNG khớp mẫu quota là lỗi NỘI DUNG, phải ném thẳng cho agent chứ không được im lặng xoay backend.
+"""
 from pathlib import Path
 
 import pytest
@@ -11,15 +22,16 @@ from studio.llm import (
     LLMConfig,
     LLMError,
     Refused,
+    TransientError,
     load_config,
     make_client,
 )
 from studio.routing import (
     Backend,
     RoutingClient,
+    is_auth_error,
     is_missing_error,
     is_quota_error,
-    is_transient_error,
     retry_after_seconds,
 )
 from studio.tools import ToolSpec
@@ -32,7 +44,10 @@ class _Client:
     def __init__(self, name: str, fail: list[BaseException] | None = None):
         self.name, self.fail, self.calls = name, list(fail or []), []
 
-    def complete(self, *, system, user, schema, model_tier, cache_key=None):
+    # K3.3d: router core truyền `tools`/`messages`/`workdir` LUÔN LUÔN (bản studio cũ chỉ truyền khi có).
+    # Đó là chữ ký `ModelClient` duy nhất từ K3.3c — mọi client thật của studio đã nhận đủ; chỉ backend giả này
+    # còn hẹp.
+    def complete(self, *, system, user, schema, model_tier, cache_key=None, tools=None, messages=None, workdir=None):
         self.calls.append(model_tier)
         if self.fail: raise self.fail.pop(0)
         return Completion(text="{}", input_tokens=10, output_tokens=1, model=f"{self.name}-{model_tier}")
@@ -63,7 +78,7 @@ def test_quota_error_rotates_and_rests_backend_until_retry_after():
 
 
 def test_transient_vs_content_vs_refusal():
-    a, b = _Client("a", [LLMError("lỗi mạng: timeout")]), _Client("b")
+    a, b = _Client("a", [TransientError("lỗi mạng: timeout")]), _Client("b")
     r = _router(Backend("a", a), Backend("b", b), transient_cooldown_s=30, cooldown_s=3600)
     assert _call(r).model == "b-standard" and r.status()[0]["cooldown_remaining"] == 30
     with pytest.raises(LLMError, match="JSON"):
@@ -76,9 +91,10 @@ def test_prefer_per_tier_and_all_resting():
     sub, free = _Client("claude-sub"), _Client("antigravity")
     r = _router(Backend("claude-sub", sub), Backend("antigravity", free), prefer={"light": "antigravity"})
     assert _call(r, "strong").model == "claude-sub-strong" and _call(r, "light").model == "antigravity-light"
-    a = _Client("a", [LLMError("lỗi mạng: timeout")]); b = _Client("b", [LLMError("402 insufficient quota")])
+    a = _Client("a", [TransientError("lỗi mạng: timeout")]); b = _Client("b", [LLMError("HTTP 402: insufficient quota")])
     r2 = _router(Backend("a", a), Backend("b", b), cooldown_s=600, transient_cooldown_s=45)
-    with pytest.raises(LLMError, match="thử lại sau 45s"): _call(r2)   # a nghỉ 45s (mạng), b nghỉ 600s (quota)
+    # K3.3d: `TransientError` (con của `LLMError`) — orchestrator hoãn event thay vì tính lỗi agent.
+    with pytest.raises(TransientError, match="thử lại sau 45s"): _call(r2)   # a nghỉ 45s (mạng), b nghỉ 600s (quota)
     assert [s["cooldown_remaining"] for s in r2.status()] == [45, 600]
 
 
@@ -87,8 +103,11 @@ def test_router_validation_and_classifiers():
     with pytest.raises(LLMError, match="trùng"): RoutingClient([Backend("a", _Client("a")), Backend("a", _Client("a"))])
     with pytest.raises(LLMError, match="prefer"): RoutingClient([Backend("a", _Client("a"))], prefer={"strong": "zzz"})
     assert is_quota_error(LLMError("RESOURCE_EXHAUSTED")) and is_quota_error(LLMError("You've hit your limit"))
-    assert is_transient_error(LLMError("claude -p quá 900s")) and is_transient_error(LLMError("HTTP 502: bad gateway"))
-    assert not is_quota_error(LLMError("đầu ra không phải JSON")) and not is_transient_error(LLMError("đầu ra không phải JSON"))
+    assert not is_quota_error(LLMError("đầu ra không phải JSON"))
+    # K3.3d, hai điểm studio được nâng (đầy đủ ở `xagents-core/tests/test_routing.py`): mã HTTP thẳng hơn regex,
+    # và ranh giới từ để "unlimited" không còn đọc ra "hết quota".
+    assert is_quota_error(LLMError("chuyện lạ", status=429)) and is_auth_error(LLMError("khoá sai", status=401))
+    assert not is_quota_error(LLMError("gói unlimited của bạn còn hiệu lực"))
     assert retry_after_seconds("Retry-After: 30") == 30 and retry_after_seconds("no hint") is None
     assert retry_after_seconds("Mọi tài khoản Antigravity đều đang cooldown hoặc hết hạn. Thử lại sau khoảng 77s.") == 77   # câu thật của gateway
 
