@@ -308,6 +308,15 @@ def test_tool_loop_calls_tool_feeds_result_back_and_audits(monkeypatch):
     used = next(a for a in audit if a["action"] == "tools_used"); ev = json.loads(used["evidence"])
     assert ev["turns"] == 2 and ev["calls"] == {"web_fetch": 2} and ev["urls"] == ["https://example.org/report"] and used["tokens"] == 0  # token chỉ đếm ở produced
     assert audit[-1]["action"] == "produced:review-results" and audit[-1]["tokens"] == 2600
+    # 4L-2: ngay sau `tools_used` có đúng một `tools_trace`, mang video_id (như mọi audit khác của studio) và
+    # vết TỪNG call (khác `tools_used` chỉ đếm gộp theo tên).
+    tr = next(a for a in audit if a["action"] == "tools_trace")
+    assert tr["video_id"] == "V1"
+    trev = json.loads(tr["evidence"])
+    assert trev["turns"] == 2 and [c["name"] for c in trev["calls"]] == ["web_fetch", "web_fetch"]
+    assert trev["calls"][0]["ok"] is True and trev["calls"][1]["ok"] is False
+    assert all(len(c["args_hash"]) == 12 and len(c["out_hash"]) == 12 for c in trev["calls"])
+    assert sum(1 for a in audit if a["action"] == "tools_trace") == 1, "đúng một tools_trace/lượt"
 
 
 def test_tool_loop_forces_final_answer_when_turns_run_out():

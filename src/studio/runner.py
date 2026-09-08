@@ -175,6 +175,12 @@ class AgentRunner:
         if getattr(self.client, "delegated_tools", False): evidence["delegated"] = "claude-code"
         # tokens=0: token thật ghi MỘT lần ở audit `produced:*` (supervisor cộng ngân sách từ đó), không đếm đôi ở đây
         self._audit(spec, "tools_used", inp, evidence=json.dumps(evidence, ensure_ascii=False)[:2000])
+        # 4L-2: vết TỪNG lời gọi (`ToolBox.trace()`), một audit `tools_trace` mỗi lượt — `_audit` tự đính kèm
+        # video_id/channel_id từ `inp.payload`, không cần lặp lại ở đây. Runner riêng của studio (không dùng
+        # chung `_tool_loop` với company): provider `claude-code` tự chạy tool (`delegated_tools`) → `tools.calls`
+        # rỗng ở lượt đó, cùng giới hạn "không có vết" như mode cli của company, không phải lỗi.
+        self._audit(spec, "tools_trace", inp,
+                    evidence=json.dumps({"turns": turn, "calls": tools.trace()}, ensure_ascii=False)[:20_000])
         return c, total, turn
 
     def generate(self, agent_id: str, inp: Envelope, topic_out: str, many: bool = False,

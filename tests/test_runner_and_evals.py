@@ -124,6 +124,7 @@ def test_tool_loop_swallows_tool_error_as_text_result():
         def call(self, tc): raise ToolError("URL bị chặn")
         def summary(self): return {}
         def urls(self): return []
+        def trace(self, max_args=200): return []  # 4L-2: toolbox tối giản này không giữ vết, `tools_trace` phải chịu được
 
     fc = FakeClient(responses=[{"video_id": "V1", "source": "fact", "verdict": "pass", "findings": []}],
                     tool_handler=lambda msgs, tools: [ToolCall("t1", "web_fetch", {"url": "https://a.example.org"})] if len(msgs) == 1 else [])
