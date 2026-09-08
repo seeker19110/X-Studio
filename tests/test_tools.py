@@ -293,8 +293,16 @@ def test_tool_loop_calls_tool_feeds_result_back_and_audits(monkeypatch):
     assert r.output.payload["verdict"] == "pass" and r.tokens == 2 * 1300
     assert len(seen_tool_msgs) == 2 and "42% (n=2400)" in seen_tool_msgs[0] and seen_tool_msgs[1].startswith("lỗi")
     first, second = client.calls
-    assert first["tools"] == ["web_search", "web_fetch"] and first["user"] == second["user"]  # user lượt đầu giữ nguyên (khoá eval)
-    assert "# Tool" in first["messages"][0]["content"] and "# Tool" not in first["user"]
+    assert first["tools"] == ["web_search", "web_fetch"] and first["user"] == second["user"]  # user lượt đầu giữ nguyên
+    # K3.3c2 đổi quy ước ghi của `FakeClient`: `calls[i]["user"]` nay là nội dung lượt user THẬT SỰ GỬI ĐI (lấy từ
+    # `messages`), không phải đối số `user` mà caller truyền vào. Bản cũ làm `["user"]` và `["messages"]` nói khác
+    # nhau về cùng một lượt, mà `["messages"]` mới là thứ đi tới model.
+    #
+    # Comment cũ ở dòng trên ghi "khoá eval" — SAI, và đã kiểm: `RecordingClient`/`ReplayClient` (`studio/evals.py`)
+    # băm `prompt_key(system, user)` từ **tham số** của `complete()`, không đọc `FakeClient.calls` một lần nào.
+    # Bản ghi eval vì thế không đổi; điều test này thật sự canh — khoá lượt đầu ổn định qua các vòng tool — vẫn là
+    # assert `first["user"] == second["user"]` ở trên và vẫn đúng.
+    assert "# Tool" in first["messages"][0]["content"] and "# Tool" in first["user"]
     assert second["messages"][1]["role"] == "assistant" and second["messages"][2]["role"] == "tool"
     audit = [e.payload for e in bus.replay("audit-log")]
     used = next(a for a in audit if a["action"] == "tools_used"); ev = json.loads(used["evidence"])
@@ -380,7 +388,9 @@ def test_recording_keeps_only_final_answer_and_replay_skips_tools(tmp_path, monk
     bus = InMemoryBus()
     AgentRunner(bus, rec, AGENTS, Blackboard(bus), toolbox_factory=lambda s: _web_toolbox()).run("fact-checker", _script_env(), "review-results")
     assert len(inner.calls) == 2 and len(rec.entries) == 1
-    key = prompt_key(inner.calls[0]["system"], inner.calls[0]["user"])
+    # `user_arg`, không phải `user`: khoá eval băm ĐỐI SỐ của `complete()`, còn `user` là lượt thật sự gửi đi
+    # (có thêm phần "# Tool"). Dùng nhầm `user` ở đây là dựng một khoá không tiến trình nào từng ghi.
+    key = prompt_key(inner.calls[0]["system"], inner.calls[0]["user_arg"])
     assert key in rec.entries and json.loads(rec.entries[key]["text"]) == final
     rec.save()
     # phát lại: toolbox giả sẽ nổ nếu bị gọi → chứng minh replay không chạm tool

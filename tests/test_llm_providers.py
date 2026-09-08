@@ -143,7 +143,10 @@ def _install_fake_anthropic(monkeypatch, stream_factory=None, raise_error=None):
             return stream_factory(**kwargs)
 
     class Anthropic:
-        def __init__(self):
+        def __init__(self, timeout=None):
+            # K3.3c2: adapter chung đặt `timeout=600` cho SDK — không có nó, một request treo giữ luôn cả
+            # orchestrator (vòng lặp tuần tự, một tiến trình). Stub phải nhận tham số ấy thì mới dựng được.
+            self.timeout = timeout
             self.messages = _Messages()
 
     mod.Anthropic = Anthropic
@@ -244,8 +247,10 @@ def test_anthropic_messages_appends_consecutive_tool_results_to_same_user_block(
 
 
 def test_anthropic_input_tokens_helper():
-    assert llm.anthropic_input_tokens(_FakeUsage(input_tokens=10, cache_read_input_tokens=2, cache_creation_input_tokens=3)) == (15, 2)
-    assert llm.anthropic_input_tokens(_FakeUsage(input_tokens=10)) == (10, 0)
+    # K3.3c2 thống nhất về 3-tuple (đặc tả K3.3 đã ghi): studio trước bỏ phần GHI vào cache, nên `audit-log.tokens`
+    # thiếu đúng phần đắt nhất của lượt đầu và trần ngân sách không bao giờ chạm.
+    assert llm.anthropic_input_tokens(_FakeUsage(input_tokens=10, cache_read_input_tokens=2, cache_creation_input_tokens=3)) == (15, 2, 3)
+    assert llm.anthropic_input_tokens(_FakeUsage(input_tokens=10)) == (10, 0, 0)
 
 
 def test_strict_schema_forces_additional_properties_false_recursively():
@@ -479,14 +484,14 @@ def test_codex_client_subprocess_errors(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", raise_fnf)
     with pytest.raises(LLMError, match="không tìm thấy"):
-        c._subprocess(["codex"])
+        c._subprocess(["codex"], "prompt")
 
     def raise_timeout(*a, **k):
         raise subprocess.TimeoutExpired(cmd="codex", timeout=1)
 
     monkeypatch.setattr(subprocess, "run", raise_timeout)
     with pytest.raises(LLMError, match="quá"):
-        c._subprocess(["codex"])
+        c._subprocess(["codex"], "prompt")
 
     class R:
         returncode = 2
@@ -495,7 +500,7 @@ def test_codex_client_subprocess_errors(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
     with pytest.raises(LLMError, match="thoát mã 2"):
-        c._subprocess(["codex"])
+        c._subprocess(["codex"], "prompt")
 
     class OK:
         returncode = 0
@@ -503,11 +508,11 @@ def test_codex_client_subprocess_errors(monkeypatch):
         stderr = ""
 
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: OK())
-    assert c._subprocess(["codex"]) == "codex stdout that"
+    assert c._subprocess(["codex"], "prompt") == "codex stdout that"
 
 
 def test_codex_complete_skips_malformed_json_lines_and_metadata_warning(monkeypatch):
-    c = CodexClient(_cfg_codex(), runner=lambda args: "\n".join([
+    c = CodexClient(_cfg_codex(), runner=lambda args, stdin: "\n".join([
         "not-json-but-starts-plain",
         '{malformed',
         json.dumps({"type": "error", "message": "Defaulting to fallback metadata do dieu gi do"}),
@@ -520,31 +525,31 @@ def test_codex_complete_skips_malformed_json_lines_and_metadata_warning(monkeypa
 
 
 def test_codex_complete_raises_llm_error_on_rate_limit_message():
-    c = CodexClient(_cfg_codex(), runner=lambda args: json.dumps({"type": "error", "message": "429 rate limited"}))
+    c = CodexClient(_cfg_codex(), runner=lambda args, stdin: json.dumps({"type": "error", "message": "429 rate limited"}))
     with pytest.raises(LLMError, match="429"):
         c.complete(system="s", user="u", schema={}, model_tier="standard")
 
 
 def test_codex_complete_raises_llm_error_on_login_message():
-    c = CodexClient(_cfg_codex(), runner=lambda args: json.dumps({"type": "error", "message": "not logged in, run codex login"}))
+    c = CodexClient(_cfg_codex(), runner=lambda args, stdin: json.dumps({"type": "error", "message": "not logged in, run codex login"}))
     with pytest.raises(LLMError, match="chưa đăng nhập"):
         c.complete(system="s", user="u", schema={}, model_tier="standard")
 
 
 def test_codex_complete_raises_generic_llm_error_on_other_message():
-    c = CodexClient(_cfg_codex(), runner=lambda args: json.dumps({"type": "error", "message": "loi la"}))
+    c = CodexClient(_cfg_codex(), runner=lambda args, stdin: json.dumps({"type": "error", "message": "loi la"}))
     with pytest.raises(LLMError, match="codex exec lỗi"):
         c.complete(system="s", user="u", schema={}, model_tier="standard")
 
 
 def test_codex_complete_raises_when_no_agent_message_at_all():
-    c = CodexClient(_cfg_codex(), runner=lambda args: '{"type": "turn.completed", "usage": {}}')
+    c = CodexClient(_cfg_codex(), runner=lambda args, stdin: '{"type": "turn.completed", "usage": {}}')
     with pytest.raises(LLMError, match="không trả agent_message"):
         c.complete(system="s", user="u", schema={}, model_tier="standard")
 
 
 def test_codex_complete_raises_when_tools_passed():
-    c = CodexClient(_cfg_codex(), runner=lambda args: "")
+    c = CodexClient(_cfg_codex(), runner=lambda args, stdin: "")
     tools = [ToolSpec(name="web_search", description="d", parameters={"type": "object"})]
     with pytest.raises(LLMError, match="không hỗ trợ tool-use"):
         c.complete(system="s", user="u", schema={}, model_tier="standard", tools=tools)
@@ -597,11 +602,15 @@ def test_claude_code_complete_raises_on_malformed_json_with_brace():
 def test_codex_complete_multi_turn_messages_joined():
     seen = {}
 
-    def runner(args):
-        seen["prompt"] = args[-1]
+    def runner(args, stdin):
+        # K3.3c2: prompt KHÔNG còn nằm ở `args[-1]`. `codex exec` nay đọc prompt từ stdin, vì prompt dài trên argv
+        # làm hệ điều hành thoát với `Argument list too long` — một thông điệp không nói gì về prompt.
+        seen["prompt"] = stdin
+        seen["args"] = args
         return json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "{}"}})
 
     c = CodexClient(_cfg_codex(), runner=runner)
     c.complete(system="s", user="u", schema={}, model_tier="standard",
               messages=[{"role": "user", "content": "hoi"}, {"role": "assistant", "content": "tra loi"}])
     assert "[user]" in seen["prompt"] and "[assistant]" in seen["prompt"]
+    assert not any("[user]" in a for a in seen["args"]), "prompt không được quay lại argv"

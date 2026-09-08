@@ -177,7 +177,7 @@ FAIL_JSONL = """{"type":"thread.started","thread_id":"t2"}
 def _cx(tmp_path, out, **kw):
     cfg = LLMConfig(provider="codex", models={"strong": "gpt-5.6-terra", "standard": "gpt-5.6-terra"}, effort={"strong": "high", "standard": "low"}, **kw)
     seen = []
-    c = CodexClient(cfg, runner=lambda a: (seen.append(a), out)[1])
+    c = CodexClient(cfg, runner=lambda a, stdin: (seen.append((a, stdin)), out)[1])
     return c, seen
 
 
@@ -187,11 +187,13 @@ def test_codex_client_parses_jsonl_usage_and_builds_args(tmp_path: Path, monkeyp
     r = c.complete(system="SYS", user="USER", schema={"type": "object", "properties": {"answer": {"type": "string"}}}, model_tier="standard")
     assert r.json() == {"answer": "ok"} and r.input_tokens == 15131 and r.cached_input_tokens == 11008 and r.output_tokens == 9
     assert r.model == "gpt-5.6-terra" and "CODEX_HOME" not in c.env
-    a = seen[0]
+    a, prompt = seen[0]
     assert a[1] == "exec" and "--json" in a and "--ephemeral" in a and a[a.index("-m") + 1] == "gpt-5.6-terra"
     assert a[a.index("-s") + 1] == "read-only" and "model_reasoning_effort=low" in a
     assert "--output-schema" not in a   # strict mode của OpenAI không hợp schema topic có trường tuỳ chọn
-    assert a[-1].startswith("# Vai trò và quy tắc\nSYS") and "USER" in a[-1] and "JSON Schema" in a[-1] and '"answer"' in a[-1]
+    # K3.3c2: prompt đi qua stdin, không còn là đối số cuối của argv (`Argument list too long` là lỗi câm).
+    assert prompt.startswith("# Vai trò và quy tắc\nSYS") and "USER" in prompt and "JSON Schema" in prompt and '"answer"' in prompt
+    assert not any("# Vai trò" in x for x in a), "prompt không được quay lại argv"
 
 
 def test_codex_client_errors_config_dir_and_tools(tmp_path: Path):

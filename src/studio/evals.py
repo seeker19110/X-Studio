@@ -59,9 +59,9 @@ class RecordingClient:
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None) -> Completion:
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
         c = self.inner.complete(system=system, user=user, schema=schema, model_tier=model_tier, cache_key=cache_key,
-                                tools=tools, messages=messages)
+                                tools=tools, messages=messages, workdir=workdir)
         if not c.tool_calls:  # chỉ lưu câu trả lời cuối; các lượt gọi tool không ghi (phát lại bỏ qua tool)
             self.entries[prompt_key(system, user)] = {"text": c.text, "model": c.model, "input_tokens": c.input_tokens,
                                                       "output_tokens": c.output_tokens}
@@ -87,7 +87,7 @@ class ReplayClient:
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None) -> Completion:
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
         e = self.data["cases"].get(prompt_key(system, user))
         if e is None:
             raise LLMError(f"bản ghi eval của {self.agent_id} lệch prompt hiện tại: chạy `make eval-record AGENT={self.agent_id}` "
@@ -101,7 +101,7 @@ class _Probe:
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None) -> Completion:
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
         self.key = prompt_key(system, user)
         raise LLMError("probe")
 
