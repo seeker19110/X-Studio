@@ -23,7 +23,7 @@ thoát không phân biệt hai ca.
 2. **Chế độ hỏng phải tự khai báo** (`../TRAPS.md` khuôn 1): timeout → 504 có thông điệp (`server.py:57-58,70-72`),
    hết quota, refresh lỗi — mỗi cái một thông điệp riêng, mã riêng. Mọi tài khoản cooldown → **429 kèm "Thử lại sau
    khoảng Ns"** (`auth.py:358-362`) và header `Retry-After` (`server.py:95-99`); router của công ty khớp cả hai
-   (`software-company/src/company/routing.py:38-39`) — đổi chuỗi là phá router.
+   (`xagents-core/src/xagents_core/routing.py:74-76`, dùng chung cho cả hai công ty từ K3.3d) — đổi chuỗi là phá router.
 3. **Không retry/backoff mũ trong gateway**: chỉ cooldown + xoay tài khoản (ADR-0001 §4). Retry là việc của lớp trên.
 
 ## Sửa cái gì phải làm gì
@@ -32,7 +32,7 @@ thoát không phân biệt hai ca.
 |---|---|
 | bảng cooldown / mã lỗi → hành vi | `auth.py:77-78` + bảng "Cơ chế xoay vòng" `README.md` + ADR-0001 §3 — ba chỗ phải khớp |
 | model alias, model upstream, model anh em | `client.py` (`MODEL_ALIAS_MAP`, `IN_ACCOUNT_MODEL_FALLBACK`) + bảng model `README.md`; `models --probe` gọi thử thật |
-| thông điệp 429 "thử lại sau" / dòng log `lần thử i/n` | kiểm `software-company/src/company/routing.py`, `Studio-creators/src/studio/routing.py`, và test `tests/test_failover.py:355-397` |
+| thông điệp 429 "thử lại sau" / dòng log `lần thử i/n` | kiểm `xagents-core/src/xagents_core/routing.py` (một bản cho cả hai công ty từ K3.3d) và test `tests/test_failover.py:355-397` |
 | endpoint mới, trường mới trong `/auth/status` | `server.py` + mục "Endpoint" `README.md` + bảng lộ dữ liệu ADR-0003 §2 + test HTTP giả |
 | cổng, host, vòng đời daemon | `server.py:37-38`, `manage.py:91-161` + ADR-0002 |
 | chỗ lưu token, quyền file | `auth.py:81-96,220-235` + ADR-0003 §1 + `../SECURITY.md` "Mô hình bí mật" |

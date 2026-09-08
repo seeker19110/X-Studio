@@ -11,7 +11,7 @@ dòng thì grep tên hàm.
 | Làm mới access token (sớm 120s), refresh lỗi | `REFRESH_SKEW_SECONDS` (`auth.py:73`), `refresh_access_token` (`auth.py:392-420`), nhánh 4xx vs mạng (`auth.py:335-352`) | `tests/test_login_pkce.py:55-114`, `tests/test_account_pool.py:101` |
 | Thứ tự tài khoản trong một lượt: ghim theo bearer, LRU, bỏ cooldown | `resolve_credential_candidates` (`auth.py:305-368`) | `tests/test_account_pool.py:154-188`; ADR-0001 §1 |
 | Danh sách bearer giữ chỗ (không ghim) | `_DUMMY_BEARERS` (`server.py:39`) | `tests/test_server.py:83` |
-| Thông điệp 429 khi cả pool nghỉ + header `Retry-After` | `auth.py:358-362`; `_error_response` (`server.py:90-101`) | `software-company/src/company/routing.py:38-39`, `Studio-creators/src/studio/routing.py` còn khớp; `tests/test_server.py:177` |
+| Thông điệp 429 khi cả pool nghỉ + header `Retry-After` | `auth.py:358-362`; `_error_response` (`server.py:90-101`) | `xagents-core/src/xagents_core/routing.py:74-76` (`RETRY_AFTER_PATTERNS`, K3.3d gộp hai bản của hai công ty làm một — sửa mẫu ở đây là sửa cho cả hai); `tests/test_server.py:177` |
 | Dịch OpenAI → Code Assist (messages, tools, response_format, ảnh) | `build_code_assist_request` và các `_translate_*` (`client.py:319-690`) | `tests/test_translation.py` |
 | Dịch Code Assist → OpenAI (`finish_reason`, `usage`, tool_calls) | `_map_finish_reason`, `_usage_from_gemini`, `_parts_to_openai` (`client.py:693-830`) | `tests/test_translation.py`, `tests/test_client_coverage.py` |
 | Vòng xoay không stream: model anh em, endpoint dự phòng, 4xx không xoay | `create_chat_completion` (`client.py:880-951`); `IN_ACCOUNT_MODEL_FALLBACK` (`client.py:87`); `_should_fail_over` (`client.py:92-96`) | `tests/test_failover.py`; ADR-0001 §2 |
