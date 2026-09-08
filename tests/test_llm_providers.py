@@ -10,6 +10,7 @@ import types
 import urllib.error
 
 import pytest
+from xagents_core import llm as core_llm  # adapter HTTP nay ở core (K3.3c3); vá `urlopen` phải vá đúng chỗ nó sống
 
 from studio import llm
 from studio.llm import (
@@ -300,7 +301,7 @@ def test_openai_post_success_and_http_error_and_url_error(monkeypatch):
 
     c = OpenAICompatClient(_cfg_openai())
 
-    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout=None: _FakeHTTPResponse({"ok": True}))
+    monkeypatch.setattr(core_llm.urllib.request, "urlopen", lambda req, timeout=None: _FakeHTTPResponse({"ok": True}))
     assert c._post({"a": 1}) == {"ok": True}
 
     def raise_http(req, timeout=None):
@@ -310,14 +311,14 @@ def test_openai_post_success_and_http_error_and_url_error(monkeypatch):
         return b"chi tiet loi"
 
     monkeypatch.setattr(urllib.error.HTTPError, "read", _read, raising=False)
-    monkeypatch.setattr(llm.urllib.request, "urlopen", raise_http)
+    monkeypatch.setattr(core_llm.urllib.request, "urlopen", raise_http)
     with pytest.raises(LLMError, match="HTTP 400"):
         c._post({"a": 1})
 
     def raise_url(req, timeout=None):
         raise urllib.error.URLError("timeout")
 
-    monkeypatch.setattr(llm.urllib.request, "urlopen", raise_url)
+    monkeypatch.setattr(core_llm.urllib.request, "urlopen", raise_url)
     with pytest.raises(LLMError, match="lỗi mạng"):
         c._post({"a": 1})
 
@@ -391,7 +392,10 @@ def test_openai_complete_falls_back_to_json_object_when_schema_rejected(monkeypa
     def fake_post_cacheable(body):
         calls.append(body)
         if body.get("response_format", {}).get("type") == "json_schema":
-            raise LLMError("HTTP 400: schema khong duoc ho tro")
+            # Thân lỗi phải NHẮC TỚI tính năng đang dò. K3.3c3 mang `_rejects` của company sang: bản studio
+            # cũ tắt `json_schema` khi gặp BẤT KỲ 400 nào — một 400 vì prompt quá dài cũng tắt vĩnh viễn
+            # structured output, im lặng, vì lượt sau vẫn "chạy được" ở chế độ kém hơn.
+            raise LLMError("HTTP 400: response_format json_schema khong duoc ho tro")
         return {"model": "gpt-y", "choices": [{"finish_reason": "stop", "message": {"content": "{\"a\": 1}"}}], "usage": {}}
 
     monkeypatch.setattr(c, "_post_cacheable", fake_post_cacheable)

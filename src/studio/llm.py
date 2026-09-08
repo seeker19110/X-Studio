@@ -25,9 +25,6 @@ vòng tool cho CLI (`--tools WebFetch,WebSearch`), các provider khác chạy v�
 from __future__ import annotations
 
 import json
-import os
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +48,7 @@ from xagents_core.llm import FakeClient as FakeClient
 from xagents_core.llm import LLMConfig as CoreLLMConfig
 from xagents_core.llm import LLMError as LLMError
 from xagents_core.llm import ModelClient as ModelClient
+from xagents_core.llm import OpenAICompatClient as OpenAICompatClient
 from xagents_core.llm import Refused as Refused
 from xagents_core.llm import TransientError as TransientError
 from xagents_core.llm import anthropic_input_tokens as anthropic_input_tokens
@@ -71,7 +69,7 @@ from xagents_core.llm import system_prompt_args as system_prompt_args
 from xagents_core.sandbox import SECRET_ENV as SECRET_ENV
 
 from .core import CORE
-from .tools import ToolCall, ToolSpec
+from .tools import ToolSpec
 
 CLI_ARGV_MAX = ARGV_LIMIT
 
@@ -137,104 +135,6 @@ def make_client(cfg: LLMConfig | None = None) -> ModelClient:
 # ---------- provider: Anthropic ----------
 
 # ---------- provider: OpenAI-compatible (không cần SDK) ----------
-
-class OpenAICompatClient:
-    """POST {base_url}/chat/completions. Dùng `response_format: json_schema` nếu server hỗ trợ; nếu server từ chối
-    (400) thì lùi về `json_object` + schema nhúng trong prompt."""
-
-    def __init__(self, cfg: LLMConfig | None = None, timeout: float = 600.0):
-        self.cfg = cfg or load_config()
-        self.base_url = (self.cfg.base_url or "https://api.openai.com/v1").rstrip("/")
-        self.api_key = self.cfg.api_key or os.environ.get("OPENAI_API_KEY", "")
-        self.timeout = timeout
-        self._json_schema_ok: bool | None = None
-        self._cache_key_ok: bool | None = None
-
-    def _post(self, body: dict[str, Any]) -> dict[str, Any]:
-        req = urllib.request.Request(f"{self.base_url}/chat/completions", data=json.dumps(body).encode("utf-8"),
-                                     headers={"Content-Type": "application/json",
-                                              **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})})
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            raise LLMError(f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:500]}") from e
-        except urllib.error.URLError as e:
-            raise LLMError(f"lỗi mạng: {e.reason}") from e
-
-    def _post_cacheable(self, body: dict[str, Any]) -> dict[str, Any]:
-        try:
-            data = self._post(body)
-        except LLMError as e:
-            if "prompt_cache_key" not in body or not str(e).startswith("HTTP 400"):
-                raise
-            self._cache_key_ok = False
-            data = self._post({k: v for k, v in body.items() if k != "prompt_cache_key"})
-        else:
-            if "prompt_cache_key" in body: self._cache_key_ok = True
-        return data
-
-    @staticmethod
-    def _messages(system: str, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = [{"role": "system", "content": system}]
-        for m in msgs:
-            if m["role"] == "assistant":
-                a: dict[str, Any] = {"role": "assistant", "content": m.get("content") or None}
-                if m.get("tool_calls"):
-                    a["tool_calls"] = [{"id": t["id"], "type": "function", "function": {
-                        "name": t["name"], "arguments": json.dumps(t["args"], ensure_ascii=False)}} for t in m["tool_calls"]]
-                out.append(a)
-            elif m["role"] == "tool":
-                out.append({"role": "tool", "tool_call_id": m["tool_call_id"], "content": m["content"]})
-            else:
-                out.append({"role": "user", "content": m["content"]})
-        return out
-
-    def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
-        # `workdir` là của company (chạy CLI trong worktree khách); studio không có worktree nên bỏ qua.
-        # Có mặt vì `ModelClient` nay là MỘT giao diện chung ở core — đặc tả K3.3 đã ghi đúng điều này.
-        model = self.cfg.model_for(model_tier)
-        msgs = self._messages(system, neutral_messages(user, messages))
-        base: dict[str, Any] = {"model": model, "max_tokens": self.cfg.max_tokens, **self.cfg.extra, "messages": msgs}
-        if tools:
-            base["tools"] = [{"type": "function", "function": {"name": t.name, "description": t.description,
-                                                               "parameters": t.parameters}} for t in tools]
-        if cache_key and self._cache_key_ok is not False:
-            base["prompt_cache_key"] = cache_key
-        data: dict[str, Any] | None = None
-        if self._json_schema_ok is not False:
-            try:
-                data = self._post_cacheable({**base, "response_format": {"type": "json_schema", "json_schema": {
-                    "name": "payload", "strict": True, "schema": strict_schema(schema)}}})
-                self._json_schema_ok = True
-            except LLMError as e:
-                if not str(e).startswith("HTTP 400"): raise
-                self._json_schema_ok = False
-        if data is None:
-            hint = "\n\n# JSON Schema bắt buộc\n```json\n" + json.dumps(schema, ensure_ascii=False) + "\n```"
-            fb = [*msgs]; i = max(k for k, m in enumerate(fb) if m["role"] == "user")
-            fb[i] = {**fb[i], "content": fb[i]["content"] + hint}
-            # json_object ép mọi lượt là JSON, kể cả lượt model muốn gọi tool → có tool thì không ép; runner chốt JSON sau
-            data = self._post_cacheable({**base, "messages": fb, **({} if tools else {"response_format": {"type": "json_object"}})})
-        choice = (data.get("choices") or [{}])[0]
-        finish = choice.get("finish_reason") or "stop"
-        if finish == "content_filter":
-            raise Refused("model từ chối (content_filter)")
-        calls: list[ToolCall] = []
-        for tc in (choice.get("message") or {}).get("tool_calls") or []:
-            fn = tc.get("function") or {}
-            try: args = json.loads(fn.get("arguments") or "{}")
-            except json.JSONDecodeError: args = {"_raw": fn.get("arguments")}
-            calls.append(ToolCall(id=tc.get("id") or f"call_{len(calls)}", name=fn.get("name", ""), args=args))
-        usage = data.get("usage") or {}
-        cached = int((usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0)
-        return Completion(text=(choice.get("message") or {}).get("content") or "",
-                          input_tokens=int(usage.get("prompt_tokens", 0)), output_tokens=int(usage.get("completion_tokens", 0)),
-                          model=data.get("model", model), stop_reason=finish, cached_input_tokens=cached, tool_calls=calls)
-
-
 
 # ---------- provider: Claude Code CLI (dùng đăng nhập sẵn có của máy, không cần API key) ----------
 
