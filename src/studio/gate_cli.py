@@ -49,6 +49,11 @@ class PersistentGate(CorePersistentGate[Envelope, AuditLog], HumanGate):
 
     UAT_PREFIX = None  # không có gate nghiệm thu: không actor hệ thống nào ký thay người
 
+    #: Vai được mở gate ở phòng video (ADR-0008), đo từ chính các call site `gate.request` trong
+    #: `orchestrator.py`: `channel-strategist` (gate `plan`), `desk` (gate `publish`), `community-manager`
+    #: (gate `replies`), `supervisor` (gate `escalation`). Người (`human:*`) không cần có tên ở đây.
+    REQUEST_ACTORS = frozenset({"channel-strategist", "desk", "community-manager", "supervisor"})
+
     def __init__(self, bus: InMemoryBus, **kw):
         super().__init__(bus, envelope_cls=Envelope, audit_cls=AuditLog, request_cls=GateRequest, **kw)
 
@@ -96,8 +101,11 @@ def main(argv: list[str] | None = None) -> int:
         if not gate.pending: print("(không có gate chờ)")
         return 0
     if ns.cmd == "request":
-        gate.request(GateRequest(kind=ns.kind, subject_id=ns.subject_id, created_by=ns.by,
-                                 checklist=[c for c in ns.checklist.split(",") if c]))
+        try:  # `--by` là vai không có quyền mở gate (ADR-0008): báo như mọi lỗi quyền khác, không traceback
+            gate.request(GateRequest(kind=ns.kind, subject_id=ns.subject_id, created_by=ns.by,
+                                     checklist=[c for c in ns.checklist.split(",") if c]))
+        except PermissionError as e:
+            print(str(e), file=sys.stderr); return 3
         print(f"requested {ns.kind} {ns.subject_id}"); return 0
     if ns.cmd == "rollback" and ns.subject_id.startswith("PUB-") and rollback_target(bus, ns.subject_id[4:]) is None:
         print(f"không có gì để rollback: {ns.subject_id[4:]} chưa có publish-event scheduled/published với platform_ref", file=sys.stderr)

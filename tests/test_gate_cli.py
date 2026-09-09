@@ -79,3 +79,15 @@ def test_cli_decide_permission_error_returns_3(tmp_path, monkeypatch, capsys):
     rc = main(["--db", db, "approve", "PUB-V3", "--by", "ai:not-allowed"])
     assert rc == 3
     assert capsys.readouterr().err
+
+
+def test_vai_ngoai_allowlist_khong_mo_duoc_gate(tmp_path, capsys):
+    """ADR-0008: chỉ bốn vai thật sự mở gate của phòng video được `gate.request`; `editor` thì không."""
+    db = str(tmp_path / "s.sqlite")
+    rc = main(["--db", db, "request", "publish", "PUB-VX", "--by", "editor", "--checklist", "review:fact:pass"])
+    assert rc == 3 and "không có quyền tạo gate" in capsys.readouterr().err
+
+    rc = main(["--db", db, "request", "publish", "PUB-V9", "--by", "desk", "--checklist", "review:fact:pass"])
+    assert rc == 0
+    rc = main(["--db", db, "list"]); out = capsys.readouterr().out
+    assert rc == 0 and "PUB-V9" in out and "PUB-VX" not in out   # gate bị từ chối không lọt vào sổ
