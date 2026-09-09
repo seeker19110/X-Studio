@@ -32,6 +32,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from .analytics import judge_experiment, retention_drops
 from .blackboard import Blackboard
 from .bus import InMemoryBus
@@ -44,11 +46,13 @@ from .events import (
     MediaAsset,
     MetadataPackage,
     PerformanceSnapshot,
+    PublishEvent,
+    ReviewResult,
     SceneManifest,
     ThumbnailSpec,
     can_transition,
 )
-from .gate_cli import PersistentGate, rollback_target
+from .gate_cli import PersistentGate, rollback_target, trusted_decision
 from .gates import GateRequest, gate_approvers
 from .llm import LLMError, ModelClient, TransientError
 from .media import MediaError, MediaSuite, frame_size
@@ -255,6 +259,11 @@ class StepResult:
     actions: list[str] = field(default_factory=list)
     deferred: str | None = None
     transient: bool = False   # một agent chưa gọi được vì transport → event được HOÃN, không tính lỗi agent (K3.3d)
+    # Ai kẹt và backend nói gì, dưới dạng TRƯỜNG chứ không phải chuỗi `transient:<agent>:<msg>` trong `actions`:
+    # `msg` là văn bản tự do (chứa `:` như "timeout: ... 10.0.0.1:443") và bị rút gọn khi vào `actions`, nên cắt
+    # lại từ đó là đọc phải mảnh cụt — hẹn "thử lại sau Ns" nằm sau chỗ rút gọn thì mất (4L-6b).
+    transient_agent: str = ""
+    transient_msg: str = ""
 
 
 class Orchestrator:
@@ -303,8 +312,12 @@ class Orchestrator:
                 elif a["actor"] == ACTOR and a["action"] == "once": self.once.add(d["key"])
                 elif a["action"] == "plan.proposed": self.plans[d["plan_id"]] = d
                 elif a["action"] == "replies.proposed": self.reply_batches[d["batch_id"]] = d["drafts"]
-                elif a["action"] == "gate.decide" and d.get("decision") == "approve" and d["subject_id"] in self.plans:
-                    approved.append((d["subject_id"], env.event_id)); self._remember_trigger(d["subject_id"], str(d.get("by")))
+                elif a["action"] == "gate.decide" and (td := trusted_decision(env)) is not None \
+                        and td.get("decision") == "approve" and td["subject_id"] in self.plans:
+                    # `trusted_decision`, không phải `d` thô: một `gate.decide` mạo danh ở đây không chỉ hiện sai
+                    # `triggered_by` trên checklist người duyệt (đã biết trước bản vá), mà còn tự thêm vào
+                    # `approved` — dispatch một plan thật khi tiến trình mở lại bus (`sc-security`, PR 4L-6).
+                    approved.append((td["subject_id"], env.event_id)); self._remember_trigger(td["subject_id"], str(td.get("by")))
             elif env.topic == "supervisor-actions": self._track_pause(env)
             elif env.topic == "shared-context": self.blackboard._on(env)
             elif env.topic == "metadata-packages":
@@ -506,15 +519,25 @@ class Orchestrator:
     def _defer_transient(self, env: Envelope, res: StepResult) -> StepResult:
         """Một agent chưa chạy được vì transport: giữ event lại, nhịp `tick` sau thử tiếp. KHÔNG `_done` —
         `_done` ghi `orchestrated` và event coi như xong vĩnh viễn, tức một nhịp mạng chập làm mất hẳn một bước
-        của video. Backend đã nói rõ phải chờ bao lâu ("thử lại sau 1515s") thì tôn trọng nó."""
-        stuck = next((a for a in res.actions if a.startswith("transient:")), "transient:?")
-        return self._defer(env, res, ":".join(stuck.split(":")[:2]), wait_s=retry_after_seconds(stuck))
+        của video. Backend đã nói rõ phải chờ bao lâu ("thử lại sau 1515s") thì tôn trọng nó.
+
+        Lý do hoãn và hẹn giờ đọc từ `res.transient_agent`/`transient_msg` — hai trường có kiểu `_transient` vừa
+        đặt — chứ KHÔNG cắt lại từ dòng `transient:<agent>:<msg>` trong `res.actions`: dòng ấy rút gọn `msg` ở 120
+        ký tự và `msg` là văn bản tự do có dấu `:`, nên `split(":")` trên nó vừa cắt nhầm vừa làm hẹn "thử lại sau
+        Ns" của backend biến mất — mất hẹn nghĩa là hỏi lại ngay nhịp sau, đúng thứ hẹn sinh ra để tránh."""
+        return self._defer(env, res, f"transient:{res.transient_agent}", wait_s=retry_after_seconds(res.transient_msg))
 
     def _transient(self, agent: str, e: TransientError, res: StepResult) -> None:
         """Lỗi vận chuyển sau khi client đã thử lại: KHÔNG phải lỗi agent, nên không ghi `agent_failed` (nó là
         thứ desk/supervisor đếm để rework rồi block video). Ba chỗ gọi model đều phải đi qua đây — `_call`,
-        `_plan`, `_decide` — vì chúng là ba bản sao của cùng một bước, sửa một chỗ là để lại hai chỗ y hệt."""
+        `_plan`, `_decide` — vì chúng là ba bản sao của cùng một bước, sửa một chỗ là để lại hai chỗ y hệt.
+
+        Dòng `actions` giữ nguyên hình cũ (console và test đọc tiền tố `transient:<agent>`) nhưng nó chỉ để
+        NGƯỜI đọc: agent và thông điệp gốc — nguyên văn, không rút gọn — đi vào `res.transient_agent`/
+        `transient_msg` cho `_defer_transient` dùng. Giữ lần kẹt ĐẦU TIÊN, đúng cái `next(...)` trên `actions`
+        vẫn chọn khi một lượt có nhiều route cùng hỏng."""
         res.actions.append(f"transient:{agent}:{str(e)[:120]}"); res.transient = True
+        if not res.transient_agent: res.transient_agent, res.transient_msg = agent, str(e)
         self.stats["transient"] += 1
 
     def _done(self, env: Envelope, res: StepResult) -> None:
@@ -615,14 +638,36 @@ class Orchestrator:
             self._call(SEO_RETRY_ROUTE, env, res, extra={"preflight_findings": [f.model_dump() for f in rep.findings],
                                                         "instruction": "sửa các finding mức block, giữ nguyên phần đã tốt"})
 
+    def _unhandled(self, vid: str, model: str, topic: str, e: ValidationError, res: StepResult) -> None:
+        """Payload không hợp `model`: KHÔNG nuốt lỗi và KHÔNG đoán nhánh (rẽ nhánh mò trên dict hỏng là làm lại
+        nhầm video, hoặc tệ hơn, chạm nền tảng nhầm). Ghi `agent_error_unhandled` — cùng tên hành động với
+        software-company để trace/metrics đọc chung — rồi mở gate escalation cho video: mọi lỗi phải có người nhận.
+        KHÔNG đặt khoá `once` ở đây: gate đã chặn trùng bằng `gate.pending`, còn một khoá tĩnh (`unhandled:<vid>`)
+        sẽ làm mọi lần hỏng sau của cùng video im lặng vĩnh viễn — đúng cái bẫy khuôn 3 trong TRAPS.md."""
+        self._audit("agent_error_unhandled", {"subject": vid, "model": model, "topic": topic, "error": str(e)[:300]}, video_id=vid)
+        sid = f"ESC-{vid}"
+        if sid not in self.gate.pending:
+            self.gate.request(GateRequest(kind="escalation", subject_id=sid, created_by="supervisor",
+                                          checklist=[f"payload không hợp `{model}` trên `{topic}`", "sửa nguồn phát rồi mở lại"]))
+        res.actions.append(f"unhandled:{vid}:{model}")
+
     def _rework(self, env: Envelope, res: StepResult, hint: str | None = None) -> None:
-        vid = env.payload["video_id"]
-        if vid not in self.desk.briefs: return
+        """`hint is None` = đường review-results: đọc qua `ReviewResult` (Literal `source`/`verdict`/`level` đã
+        được kiểm) chứ không so chuỗi trên dict thô. Đường còn lại (`publish-events` rolled_back) đã có hint sẵn
+        và KHÔNG phải ReviewResult — không validate nhầm kiểu ở đó."""
+        vid = str(env.payload.get("video_id") or env.key)
+        stage = "production"
         if hint is None:
-            f = env.payload.get("findings", [])
-            hint = env.payload.get("root_cause") or "; ".join(x["text"] for x in f if x.get("level") == "block") or "; ".join(x["text"] for x in f)
-            hint = f"{env.payload.get('source')}: {hint}"
-        out = self.desk.rework(vid, hint, stage="script" if env.payload.get("source") == "fact" else "production")
+            try:
+                rr = ReviewResult.model_validate(env.payload)
+            except ValidationError as e:
+                self._unhandled(vid, "ReviewResult", env.topic, e, res); return
+            vid = rr.video_id
+            blocks = "; ".join(f.text for f in rr.findings if f.level == "block")
+            hint = f"{rr.source}: {rr.root_cause or blocks or '; '.join(f.text for f in rr.findings)}"
+            stage = "script" if rr.source == "fact" else "production"
+        if vid not in self.desk.briefs: return
+        out = self.desk.rework(vid, hint, stage=stage)
         res.actions.append("rework" if out else "blocked")
 
     # ---------- kế hoạch biên tập → gate plan → dispatch ----------
@@ -701,7 +746,18 @@ class Orchestrator:
             if e.topic == "reply-drafts" and e.payload in drafts: self.queue.remove(e); self.processed.add(e.event_id)
 
     def _on_gate_decision(self, env: Envelope, res: StepResult) -> None:
-        d = _evidence(env.payload); sid, dec, reason = d["subject_id"], d.get("decision"), d.get("reason", "")
+        """Quyết định gate là thứ mở khoá mọi hành động không quay lại được của phòng ban (đăng video, đóng
+        video, mở lại escalation), nên chữ ký phải là `env.actor` — thứ bus kiểm — chứ không phải `evidence.by`,
+        một chuỗi bất kỳ trên topic MỞ `audit-log`. `trusted_decision` bỏ qua bản ghi mạo danh; ở đây chỉ còn
+        việc ghi lại rằng đã bỏ qua, vì một quyết định bị làm ngơ trong im lặng thì không ai đi tìm được."""
+        d = trusted_decision(env)
+        if d is None:
+            raw = _evidence(env.payload)
+            raw = raw if isinstance(raw, dict) else {}
+            self._audit("gate.decide_untrusted", {"actor": env.actor, "subject_id": raw.get("subject_id"),
+                                                  "by": raw.get("by"), "decision": raw.get("decision")})
+            res.actions.append(f"untrusted:{env.actor}"); return
+        sid, dec, reason = d["subject_id"], d.get("decision"), d.get("reason", "")
         if sid in self.plans:
             if dec == "approve":
                 self._remember_trigger(sid, str(d.get("by"))); self._dispatch_plan(sid); res.actions.append(f"dispatch:{sid}")
@@ -785,12 +841,39 @@ class Orchestrator:
         pick = next((a for a in thumbs if spec.get("chosen") and a.get("variant_id") == spec["chosen"]), thumbs[0])
         return pick["path"]
 
+    def _live_publish(self, vid: str) -> PublishEvent | None:
+        """`publish-events` kind=video gần nhất của video, đọc qua MODEL chứ không phải dict thô: trả về nó nếu
+        video ĐÃ lên sóng (`status="published"` kèm `platform_ref` thật). Bus validate payload ngay lúc publish
+        (`Bus.validate` → `payload_models`) nên event cũ trong SQLite vẫn đọc được; nếu vẫn hỏng thì
+        `ValidationError` đi lên người gọi để ra gate, không nuốt."""
+        for env in reversed(list(self.bus.replay("publish-events", vid))):
+            pe = PublishEvent.model_validate(env.payload)
+            if pe.kind != "video": continue  # trả lời bình luận dùng chung topic, không phải trạng thái của video
+            return pe if pe.status == "published" and pe.platform_ref else None
+        return None
+
     def _publish_video(self, meta_env: Envelope, res: StepResult, approved_by: str, reason: str) -> None:
         vid = meta_env.payload["video_id"]
+        # Đã live thì lần duyệt sau KHÔNG được chạm adapter nữa: gọi lại là đăng hai lần (ADR-0002 ở chiều ngược).
+        # `_prior_upload` chỉ lo phần upload; đây chặn cả thumbnail/lịch/phụ đề của một video đã công khai.
+        try:
+            live = self._live_publish(vid)
+        except ValidationError as e:
+            self._unhandled(vid, "PublishEvent", "publish-events", e, res); return
+        if live is not None:
+            # Chỉ audit, KHÔNG phát thêm `publish-events`: video đã có event "published" của lần trước, phát bản
+            # sao chỉ làm desk phải chuyển trạng thái published → published và nhân đôi số liệu "đã đăng".
+            self._audit("platform.skipped_live", {"video_id": vid, "platform_ref": live.platform_ref, "approved_by": approved_by,
+                                                  "reason": "đã live, duyệt lại không gọi nền tảng lần nữa"}, video_id=vid)
+            res.actions.append(f"platform:skip_live:{live.platform_ref}"); return
         p, g = self._decide(PUBLISH_ROUTE, meta_env, res, {"approved_by": approved_by, "gate_reason": reason})
         if p is None: return
         p.setdefault("kind", "video")
-        if p.get("status") not in {"scheduled", "published"}:  # model tự thấy không đủ điều kiện → không chạm adapter
+        try:  # quyết định của model phải hợp `PublishEvent` TRƯỚC khi code chạm nền tảng, không so chuỗi trên dict thô
+            pe = PublishEvent.model_validate(p)
+        except ValidationError as e:
+            self._unhandled(vid, "PublishEvent", PUBLISH_ROUTE.topic_out, e, res); return
+        if pe.status not in {"scheduled", "published"}:  # model tự thấy không đủ điều kiện → không chạm adapter
             self._emit(PUBLISH_ROUTE, meta_env, p, g, res); return
         final = next((a for a in reversed(_assets_of(self, vid)) if a["kind"] == "final_video"), None)
         thumb = self._chosen_thumbnail(vid); meta = MetadataPackage.model_validate(meta_env.payload)

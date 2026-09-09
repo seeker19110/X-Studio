@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import get_args
 
-from .bus import InMemoryBus
+from .bus import InMemoryBus, is_human
 from .events import AuditLog, Envelope
 from .gates import Decision, GateKind, GateRequest, HumanGate, gate_approvers
 
@@ -24,6 +24,28 @@ ITEM_WIDTH = 80  # `list` cắt mỗi mục checklist (vd. văn bản reply) ở
 
 def format_checklist(items: list[str], full: bool = False) -> str:
     return ",".join(x if full or len(x) <= ITEM_WIDTH else x[:ITEM_WIDTH] + "…" for x in items)
+
+
+def trusted_decision(env: Envelope) -> dict | None:
+    """Đọc một quyết định gate từ envelope `audit-log`; trả `None` nếu KHÔNG đáng tin.
+
+    `audit-log` là topic MỞ (`core.OPEN_TOPICS` — mọi actor ghi được, kể cả agent), nên người tiêu thụ KHÔNG được
+    đọc `evidence.by` như thể nó là chữ ký: `by` chỉ là một chuỗi tự do trong payload; thứ bus thật sự kiểm là
+    `env.actor` (qua ACL producer lúc publish). Vì vậy đây là ALLOWLIST mặc định TỪ CHỐI — giống hệt
+    `company/gate_cli.py:trusted_decision` — chứ không phải danh sách chặn: chỉ tin khi `env.actor` là người
+    THẬT SỰ (`is_human`) và trùng `by`. Một actor không hình người (`"orchestrator"`, `"desk"`, chuỗi bất kỳ)
+    mang `by="human:x"` giả không còn qua được — trước bản vá này nó qua được, vì phép kiểm cũ chỉ CHẶN khi
+    actor hình người mà lệch `by`, mặc định TIN mọi actor khác (`sc-security` phát hiện, xem PR 4L-6)."""
+    if env.topic != "audit-log" or env.payload.get("action") != "gate.decide": return None
+    try: d = json.loads(env.payload.get("evidence") or "{}")
+    except (ValueError, TypeError): return None
+    if not isinstance(d, dict): return None
+    sid, by, dec = d.get("subject_id"), d.get("by"), d.get("decision")
+    if not isinstance(sid, str) or not sid: return None
+    if not isinstance(by, str) or not by: return None
+    if dec not in get_args(Decision): return None
+    if is_human(env.actor) and env.actor == by: return d
+    return None
 
 
 class PersistentGate(HumanGate):
@@ -54,7 +76,11 @@ class PersistentGate(HumanGate):
                 super().request(GateRequest(kind=d["kind"], subject_id=sid, checklist=d.get("checklist", []),
                                             created_by=d.get("created_by"), triggered_by=d.get("triggered_by"), created_at=env.ts))
         elif sid in self.pending:
-            if not isinstance(d.get("decision"), str) or not isinstance(d.get("by"), str): return
+            # `trusted_decision` (không phải đọc `d` thô ở trên): actor không đáng tin thì KHÔNG được đóng gate,
+            # dù `apply` chạy trong tiến trình nào (CLI, orchestrator, replay lúc mở bus) — bản ghi mạo danh trước
+            # bản vá này vẫn đóng được gate thật (`sc-security`, PR 4L-6), dù `_on_gate_decision` phía orchestrator
+            # đã từ chối hành động: gate biến mất khỏi `pending`, `history` mang `decided_by` giả.
+            if trusted_decision(env) is None: return
             super().decide(sid, d["decision"], by=d["by"], reason=d.get("reason", ""), enforce=False)
 
     def _envelope(self, actor: str, action: str, data: dict) -> Envelope:
