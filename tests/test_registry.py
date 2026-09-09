@@ -55,3 +55,31 @@ def test_no_orphan_skill():
     used = {s for a in load_agents().values() for s in a.all_skills}
     on_disk = {p.stem for p in SKILLS_DIR.glob("*.md")}
     assert on_disk == used, {"unused": on_disk - used, "missing": used - on_disk}
+
+
+# ---------- K3.6a: registry lên xagents_core ----------
+
+def test_agentspec_studio_van_giu_truong_tools():
+    """`tools` là trường core KHÔNG được biết (ADR-0007 của studio). `load_agents` dựng đúng lớp con của studio;
+    dựng bằng `AgentSpec` của core là làm rơi trường này im lặng — mọi agent mất quyền dùng tool web."""
+    from xagents_core.registry import AgentSpec as CoreAgentSpec
+
+    from studio.registry import AgentSpec
+
+    agents = load_agents()
+    assert issubclass(AgentSpec, CoreAgentSpec) and all(type(s) is AgentSpec for s in agents.values())
+    assert {i: s.tools for i, s in agents.items() if s.tools} == {
+        "fact-checker": ["web"], "trend-researcher": ["web"]}
+
+
+def test_ba_skill_chua_co_agent_chu_quan_la_no_co_that_khong_phai_khau_vi():
+    """`check_owners` mặc định `False` ở studio vì ba skill này, không phải vì cổng ấy vô nghĩa với studio.
+
+    Ca này là bản ghi của khoản nợ: khi nào `Studio-creators/agents/` nạp đầy đủ ba skill ấy thì ca này đỏ, và
+    lúc đó việc phải làm là đổi mặc định thành `True` chứ không phải sửa danh sách ở đây cho khớp."""
+    import pytest
+
+    with pytest.raises(ValueError) as e:
+        load_agents(check_owners=True)
+    thieu = str(e.value).rsplit(": ", 1)[1].split(", ")
+    assert thieu == ["content-policy", "cost-estimation", "finops"]

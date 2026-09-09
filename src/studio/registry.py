@@ -1,84 +1,43 @@
+"""Registry của studio — cơ chế ở `xagents_core.registry` (K3.6a của ADR gốc 0001).
+
+Hai chỗ studio khác company, cả hai đã đo:
+
+- **`AgentSpec` của studio có thêm `tools`** (toolset chỉ đọc bật cho agent, ADR-0007 của studio: hiện chỉ
+  `web`, cho `fact-checker` và `trend-researcher`). Company cấp tool theo cách khác nên core không biết trường
+  này; `load_agents` dựng đúng lớp con nên nó không rơi mất.
+- **`check_owners=False` mặc định.** Cổng ADR-0008 của company đòi mọi skill trên đĩa có ít nhất một agent nạp
+  đầy đủ; `skills/` của studio hiện có **ba skill không đạt**: `content-policy`, `cost-estimation`, `finops`.
+  Bật cổng ở đây là làm studio đỏ ngay lần nạp đầu — đó là một khoản nợ có thật, và chỗ trả nó là
+  `Studio-creators/agents/`, không phải một tham số ở đây. `load_agents(check_owners=True)` gọi được bất cứ lúc
+  nào để xem nợ còn không.
+"""
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
-from pathlib import Path
 
-import yaml
+from xagents_core.registry import CORE_SECTIONS as CORE_SECTIONS
+from xagents_core.registry import AgentSpec as CoreAgentSpec
+from xagents_core.registry import Phase as Phase
+from xagents_core.registry import load_agents as _load_agents
+from xagents_core.registry import load_skill as _load_skill
+from xagents_core.registry import split_front_matter as split_front_matter
 
-ROOT = Path(__file__).resolve().parents[2]
-AGENTS_DIR, SKILLS_DIR = ROOT / "agents", ROOT / "skills"
-_FM = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
+from .core import CORE
+
+_split = split_front_matter  # tên cũ (có gạch dưới) mà test và script cũ nhập
+
+ROOT = CORE.root
+AGENTS_DIR, SKILLS_DIR = CORE.agents_dir, CORE.skills_dir
+
 
 @dataclass
-class AgentSpec:
-    id: str
-    block: str
-    model_tier: str
-    reads: list[str]
-    writes: list[str]
-    context_namespace_write: str | list[str] | None
-    skills: list[str]
-    budget_tokens_per_task: int
-    max_retries: int
-    timeout_minutes: int
-    prompt: str
-    version: int = 1  # prompt là code: tăng mỗi khi nội dung prompt đổi
-    skills_core: list[str] = field(default_factory=list)  # skill phụ, chỉ nạp quy trình + checklist
+class AgentSpec(CoreAgentSpec):
     tools: list[str] = field(default_factory=list)  # toolset chỉ đọc được bật cho agent (ADR-0007): hiện chỉ `web`
-    skill_text: str = field(default="")
-    skill_core_text: str = field(default="")
-
-    @property
-    def all_skills(self) -> list[str]:
-        return [*self.skills, *self.skills_core]
-
-    @property
-    def namespaces_write(self) -> list[str]:
-        ns = self.context_namespace_write
-        return [] if ns is None else ([ns] if isinstance(ns, str) else list(ns))
-
-    def system_prompt(self) -> str:
-        out = f"{self.prompt}\n\n# Skills\n{self.skill_text}"
-        if self.skill_core_text:
-            out += ("\n\n# Skills phụ (chỉ quy trình + checklist)\n"
-                    "Bản rút gọn: bạn vẫn phải đạt checklist bên dưới, nhưng KHÔNG sở hữu các lĩnh vực này — "
-                    "phần chuyên sâu thuộc agent chủ quản, cần chi tiết thì hỏi qua topic thay vì tự quyết.\n\n"
-                    f"{self.skill_core_text}")
-        return out
-
-def _split(text: str) -> tuple[dict, str]:
-    m = _FM.match(text)
-    if not m:
-        raise ValueError("thiếu front matter")
-    return yaml.safe_load(m.group(1)), text[m.end():]
-
-CORE_SECTIONS = ("## Quy trình", "## Checklist")  # phần bắt buộc của mọi skill
 
 
 def load_skill(name: str, core_only: bool = False) -> str:
-    """Toàn văn skill, hoặc chỉ phần lõi (H1 + quy trình + checklist) khi `core_only`."""
-    p = SKILLS_DIR / f"{name}.md"
-    _, body = _split(p.read_text(encoding="utf-8"))
-    body = body.strip()
-    if not core_only:
-        return body
-    parts = re.split(r"\n(?=## )", body)
-    keep = [parts[0].split("\n## ", 1)[0].strip()]
-    keep += [s.strip() for s in parts if s.startswith(CORE_SECTIONS)]
-    if len(keep) == 1:
-        raise ValueError(f"skill {name}: không tìm thấy mục lõi {CORE_SECTIONS}")
-    return "\n\n".join(keep)
+    return _load_skill(SKILLS_DIR, name, core_only)
 
-def load_agents() -> dict[str, AgentSpec]:
-    out: dict[str, AgentSpec] = {}
-    for p in sorted(AGENTS_DIR.rglob("*.md")):
-        fm, body = _split(p.read_text(encoding="utf-8"))
-        spec = AgentSpec(prompt=body.strip(), **fm)
-        dup = set(spec.skills) & set(spec.skills_core)
-        if dup:
-            raise ValueError(f"{spec.id}: skill vừa đầy đủ vừa rút gọn: {sorted(dup)}")
-        spec.skill_text = "\n\n".join(load_skill(s) for s in spec.skills)
-        spec.skill_core_text = "\n\n".join(load_skill(s, core_only=True) for s in spec.skills_core)
-        out[spec.id] = spec
-    return out
+
+def load_agents(check_owners: bool = False) -> dict[str, AgentSpec]:
+    return _load_agents(AGENTS_DIR, SKILLS_DIR, AgentSpec, check_owners=check_owners)
