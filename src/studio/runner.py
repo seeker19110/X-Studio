@@ -14,9 +14,10 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from xagents_core.context import fit
+from xagents_core.runner import AgentRunner as CoreAgentRunner
 from xagents_core.runner import Generated as CoreGenerated
 from xagents_core.runner import RunnerError as RunnerError
 from xagents_core.runner import RunResult as CoreRunResult
@@ -25,7 +26,7 @@ from xagents_core.runner import payload_schema as _core_payload_schema
 
 from .blackboard import Blackboard
 from .bus import SCHEMA_DIR, BusError, InMemoryBus
-from .events import AuditLog, Envelope, Topic
+from .events import AuditLog, Envelope
 from .guard import LABEL as FILTERED
 from .guard import guard_payload, has_injection, sanitize_tool_output
 from .guard import sanitize as sanitize_obj
@@ -106,21 +107,33 @@ class Generated(CoreGenerated):
 
 
 
-class AgentRunner:
+class AgentRunner(CoreAgentRunner[Envelope, AgentSpec]):
+    """Runner của studio — phần ngoài ở `xagents_core.runner` (K3.6d2).
+
+    Studio KHÔNG bật `wants_content` và KHÔNG dùng `inp.child()`: `context_writes` của studio không có `content`
+    (prompt không hỏi), và event studio giữ nguyên hình dạng cũ. Đổi hai thứ đó là đổi hành vi, không phải
+    chuyển mã — xem docstring core."""
+
+    envelope_cls = Envelope
+    audit_cls = AuditLog
+    generated_cls = Generated
+    run_result_cls = RunResult
+
     def __init__(self, bus: InMemoryBus, client: ModelClient, agents: dict[str, AgentSpec] | None = None,
                  blackboard: Blackboard | None = None, toolbox_factory: ToolboxFactory = spec_toolbox,
                  max_input_chars: int | None = None):
-        self.bus, self.client = bus, client
-        self.agents = agents or load_agents()
-        self.blackboard = blackboard
-        self.max_input_chars = max_input_chars or getattr(client, "max_input_chars", None) or DEFAULT_MAX_INPUT_CHARS
+        super().__init__(bus, client, agents or load_agents(), blackboard, max_input_chars,
+                         default_max_input_chars=DEFAULT_MAX_INPUT_CHARS)
         self.toolbox_factory = toolbox_factory  # test/orchestrator thay bằng toolbox giả hoặc tắt (lambda s: None)
 
-    def _audit(self, spec: AgentSpec, action: str, inp: Envelope, evidence: str, tokens: int = 0) -> None:
-        a = AuditLog(actor=spec.id, action=action, tokens=tokens, evidence=evidence,
-                     video_id=inp.payload.get("video_id"), channel_id=inp.payload.get("channel_id"))
-        self.bus.publish(Envelope(topic="audit-log", key=spec.id, actor=spec.id, payload=a.model_dump()))
+    def _audit_scope(self, inp: Envelope) -> dict[str, Any]:
+        return {"video_id": inp.payload.get("video_id"), "channel_id": inp.payload.get("channel_id")}
 
+    def _produced_evidence(self, g: Generated, event_id: str) -> str:
+        # Giữ nguyên từng byte hai câu cũ của studio: `produced:shared-context` chỉ có model, `produced:<topic>`
+        # có thêm event + cache_hit. Đổi câu này là đổi thứ người trực đọc trong sổ.
+        if not event_id: return f"{g.model}"
+        return f"{g.model} event={event_id} cache_hit={g.cache_hit_ratio:.0%}"
     def _complete(self, spec: AgentSpec, inp: Envelope, user: str, schema: dict[str, Any],
                   tools: ToolBox | None = None, messages: list[dict[str, Any]] | None = None) -> Completion:
         try:
@@ -266,46 +279,6 @@ class AgentRunner:
             self._audit(spec, "injection_detected", inp, evidence="mọi bình luận trong lô đều nghi prompt injection")
             raise RunnerError(f"{spec.id}: lô bình luận {inp.event_id} toàn mẫu prompt injection, không chạy")
         return inp.model_copy(update={"payload": {**inp.payload, "comments": keep}})
-
-    def write_context(self, agent_id: str, inp: Envelope, writes: list[dict[str, Any]]) -> list[str]:
-        spec = self.agents[agent_id]; done: list[str] = []
-        for w in writes:
-            ns = w["namespace"]
-            if ns not in spec.namespaces_write or self.blackboard is None:
-                self._audit(spec, "context_rejected", inp, evidence=f"namespace {ns} không thuộc {agent_id} hoặc không có blackboard")
-                continue
-            self.blackboard.write(spec.id, ns, str(w["content_ref"]), str(w.get("summary", "")))
-            done.append(ns)
-        if done:
-            self._audit(spec, "context_written", inp, evidence=",".join(done))
-        return done
-
-    def publish(self, agent_id: str, inp: Envelope, topic_out: str, payload: dict[str, Any], key: str | None = None,
-                tokens: int = 0, model: str = "", context_writes: list[dict[str, Any]] | None = None,
-                cache_hit_ratio: float = 0.0) -> Envelope:
-        spec = self.agents[agent_id]
-        try:
-            out = self.bus.publish(Envelope(topic=cast(Topic, topic_out), key=key or inp.key, actor=spec.id, payload=payload))
-        except BusError as e:
-            self._audit(spec, "invalid_output", inp, evidence=str(e)[:500], tokens=tokens)
-            raise RunnerError(f"{agent_id}: đầu ra không hợp lệ cho {topic_out}: {e}") from e
-        if context_writes: self.write_context(agent_id, inp, context_writes)
-        self._audit(spec, f"produced:{topic_out}", inp,
-                    evidence=f"{model} event={out.event_id} cache_hit={cache_hit_ratio:.0%}", tokens=tokens)
-        return out
-
-    def run(self, agent_id: str, inp: Envelope, topic_out: str, key: str | None = None,
-            extra: dict[str, Any] | None = None) -> RunResult:
-        g = self.generate(agent_id, inp, topic_out, extra=extra)
-        out = self.publish(agent_id, inp, topic_out, g.payloads[0], key=key, tokens=g.tokens, model=g.model,
-                           context_writes=g.context_writes, cache_hit_ratio=g.cache_hit_ratio)
-        return RunResult(output=out, tokens=g.tokens, model=g.model)
-
-    def run_context(self, agent_id: str, inp: Envelope, extra: dict[str, Any] | None = None) -> Generated:
-        g = self.generate(agent_id, inp, CONTEXT_ONLY, extra=extra)
-        self.write_context(agent_id, inp, g.context_writes)
-        self._audit(self.agents[agent_id], "produced:shared-context", inp, evidence=f"{g.model}", tokens=g.tokens)
-        return g
 
 
 def main(argv: list[str] | None = None) -> int:
