@@ -9,12 +9,15 @@ Trạng thái gate không lưu riêng: dựng lại từ replay `audit-log` (act
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import get_args
 
-from .bus import InMemoryBus, is_human
+from xagents_core.gate_cli import PersistentGate as CorePersistentGate
+from xagents_core.gate_cli import trusted_decision as core_trusted_decision
+from xagents_core.gates import GateRequest as CoreGateRequest
+
+from .bus import InMemoryBus
 from .events import AuditLog, Envelope
 from .gates import Decision, GateKind, GateRequest, HumanGate, gate_approvers
 
@@ -29,85 +32,35 @@ def format_checklist(items: list[str], full: bool = False) -> str:
 def trusted_decision(env: Envelope) -> dict | None:
     """Đọc một quyết định gate từ envelope `audit-log`; trả `None` nếu KHÔNG đáng tin.
 
-    `audit-log` là topic MỞ (`core.OPEN_TOPICS` — mọi actor ghi được, kể cả agent), nên người tiêu thụ KHÔNG được
-    đọc `evidence.by` như thể nó là chữ ký: `by` chỉ là một chuỗi tự do trong payload; thứ bus thật sự kiểm là
-    `env.actor` (qua ACL producer lúc publish). Vì vậy đây là ALLOWLIST mặc định TỪ CHỐI — giống hệt
-    `company/gate_cli.py:trusted_decision` — chứ không phải danh sách chặn: chỉ tin khi `env.actor` là người
-    THẬT SỰ (`is_human`) và trùng `by`. Một actor không hình người (`"orchestrator"`, `"desk"`, chuỗi bất kỳ)
-    mang `by="human:x"` giả không còn qua được — trước bản vá này nó qua được, vì phép kiểm cũ chỉ CHẶN khi
-    actor hình người mà lệch `by`, mặc định TIN mọi actor khác (`sc-security` phát hiện, xem PR 4L-6)."""
-    if env.topic != "audit-log" or env.payload.get("action") != "gate.decide": return None
-    try: d = json.loads(env.payload.get("evidence") or "{}")
-    except (ValueError, TypeError): return None
-    if not isinstance(d, dict): return None
-    sid, by, dec = d.get("subject_id"), d.get("by"), d.get("decision")
-    if not isinstance(sid, str) or not sid: return None
-    if not isinstance(by, str) or not by: return None
-    if dec not in get_args(Decision): return None
-    if is_human(env.actor) and env.actor == by: return d
-    return None
+    Allowlist mặc định TỪ CHỐI nằm ở `xagents_core.gate_cli.trusted_decision` từ K3.7 (cùng một logic từng
+    phải vá cùng một lỗ hổng hai lần ở hai công ty, 2026-09-09): `audit-log` là topic MỞ, nên `evidence.by`
+    chỉ là chuỗi tự do — thứ bus thật sự kiểm là `env.actor`. Hai chỗ studio siết thêm so với core:
+    `uat_prefix=None` (phòng ban video không có gate nghiệm thu, nên actor hệ thống KHÔNG bao giờ ký thay
+    người) và `decision` phải nằm trong `Decision` của studio."""
+    d = core_trusted_decision(env, uat_prefix=None)
+    if d is None or d["decision"] not in get_args(Decision): return None
+    return d
 
 
-class PersistentGate(HumanGate):
-    """HumanGate + ghi mọi request/decision lên bus (audit-log) và dựng lại từ replay khi mở."""
+class PersistentGate(CorePersistentGate[Envelope, AuditLog], HumanGate):
+    """HumanGate + ghi mọi request/decision lên bus (audit-log) và dựng lại từ replay khi mở.
+
+    Cơ chế ở core; ở đây chỉ nói core dùng LỚP nào của studio và mang thêm `triggered_by` của miền video."""
+
+    UAT_PREFIX = None  # không có gate nghiệm thu: không actor hệ thống nào ký thay người
 
     def __init__(self, bus: InMemoryBus, **kw):
-        super().__init__(**kw)
-        self.bus = bus
-        for env in bus.replay(topic="audit-log"):
-            self.apply(env)
-        bus.subscribe("audit-log", self.apply)
+        super().__init__(bus, envelope_cls=Envelope, audit_cls=AuditLog, request_cls=GateRequest, **kw)
 
-    def apply(self, env: Envelope) -> None:
-        if env.topic != "audit-log": return
-        a = AuditLog.model_validate(env.payload)
-        if a.action not in {"gate.request", "gate.decide"}:
-            return
-        # Bản ghi dị thường (evidence hỏng hoặc thiếu khoá) chỉ bị bỏ qua: một dòng log xấu
-        # không được làm sập replay của cả gate — `gate_cli list` và console đều đi qua đây.
-        try: d = json.loads(a.evidence or "{}")
-        except (ValueError, TypeError): return
-        if not isinstance(d, dict): return
-        sid = d.get("subject_id")
-        if not isinstance(sid, str) or not sid: return
-        if a.action == "gate.request":
-            if not isinstance(d.get("kind"), str): return
-            if sid not in self.pending and not any(r.subject_id == sid and r.created_at == env.ts for r in self.history):
-                super().request(GateRequest(kind=d["kind"], subject_id=sid, checklist=d.get("checklist", []),
-                                            created_by=d.get("created_by"), triggered_by=d.get("triggered_by"), created_at=env.ts))
-        elif sid in self.pending:
-            # `trusted_decision` (không phải đọc `d` thô ở trên): actor không đáng tin thì KHÔNG được đóng gate,
-            # dù `apply` chạy trong tiến trình nào (CLI, orchestrator, replay lúc mở bus) — bản ghi mạo danh trước
-            # bản vá này vẫn đóng được gate thật (`sc-security`, PR 4L-6), dù `_on_gate_decision` phía orchestrator
-            # đã từ chối hành động: gate biến mất khỏi `pending`, `history` mang `decided_by` giả.
-            if trusted_decision(env) is None: return
-            super().decide(sid, d["decision"], by=d["by"], reason=d.get("reason", ""), enforce=False)
+    def _trusted(self, env: Envelope) -> dict | None:
+        return trusted_decision(env)
 
-    def _envelope(self, actor: str, action: str, data: dict) -> Envelope:
-        a = AuditLog(actor=actor, action=action, evidence=json.dumps(data, ensure_ascii=False))
-        return Envelope(topic="audit-log", key=actor, actor=actor, payload=a.model_dump())
+    def _request_kwargs(self, d: dict) -> dict:
+        return {**super()._request_kwargs(d), "triggered_by": d.get("triggered_by")}
 
-    def _log(self, actor: str, action: str, data: dict) -> None:
-        self.bus.publish(self._envelope(actor, action, data))
-
-    def request(self, req: GateRequest) -> GateRequest:
-        r = super().request(req)
-        env = self._envelope(req.created_by or "human", "gate.request",
-                             {"kind": req.kind, "subject_id": req.subject_id, "checklist": req.checklist,
-                              "created_by": req.created_by, "triggered_by": req.triggered_by})
-        # `created_at` phải là ts của CHÍNH envelope `gate.request`, không phải thời điểm dựng dataclass.
-        # Tiến trình khác dựng lại gate từ replay bằng `created_at=env.ts` (xem `apply`), nên giữ mốc khởi tạo
-        # ở đây là cùng một gate mang HAI mốc lệch nhau vài trăm micro giây tuỳ tiến trình nào đang đọc. Mọi
-        # khoá `once` lấy `created_at` làm THẾ HỆ vì thế đổi sau mỗi lần mở lại bus: nhắc lại, escalate lại một
-        # gate đã nhắc rồi (TRAPS §1 khuôn 2 + khuôn 3). Gán TRƯỚC `publish`: `publish` gọi subscriber đồng bộ.
-        r.created_at = env.ts
-        self.bus.publish(env)
-        return r
-
-    def decide(self, subject_id: str, decision: Decision, by: str, reason: str = "", enforce: bool = True) -> GateRequest:
-        r = super().decide(subject_id, decision, by=by, reason=reason, enforce=enforce)
-        self._log(by, "gate.decide", {"subject_id": subject_id, "decision": decision, "by": by, "reason": reason})
-        return r
+    def _request_payload(self, req: CoreGateRequest) -> dict:
+        # Chữ ký giữ lớp cơ sở (Liskov); `triggered_by` là trường của studio nên đọc qua `getattr`.
+        return {**super()._request_payload(req), "triggered_by": getattr(req, "triggered_by", None)}
 
 
 def rollback_target(bus: InMemoryBus, vid: str) -> dict | None:
@@ -150,12 +103,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"không có gì để rollback: {ns.subject_id[4:]} chưa có publish-event scheduled/published với platform_ref", file=sys.stderr)
         return 4
     try:
-        r = gate.decide(ns.subject_id, ns.cmd, by=ns.by, reason=ns.reason)
+        done = gate.decide(ns.subject_id, ns.cmd, by=ns.by, reason=ns.reason)
     except KeyError:
         print(f"không có gate chờ: {ns.subject_id}", file=sys.stderr); return 2
     except PermissionError as e:
         print(str(e), file=sys.stderr); return 3
-    print(f"{r.subject_id}: {r.decision} by {r.decided_by}"); return 0
+    print(f"{done.subject_id}: {done.decision} by {done.decided_by}"); return 0
 
 
 if __name__ == "__main__":  # pragma: no cover

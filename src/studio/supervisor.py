@@ -7,42 +7,55 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from xagents_core.supervisor import Budget as CoreBudget
+from xagents_core.supervisor import SupervisorBase
+from xagents_core.ticket_model import Budgeted
+
 from .bus import InMemoryBus
 from .events import NAMESPACE_OWNERS, AuditLog, Envelope, SupervisorAction, SupervisorActionKind, VideoBrief
 
 
 @dataclass
-class Budget:
-    limit: int
-    used: int = 0
+class Budget(CoreBudget):
+    """Sổ token của một video. Trần đo bằng TỔNG token (`used`), không phải token đầu ra như company: studio
+    chưa tách `output_tokens` trong `audit-log`, và đổi mẫu số ở đây là đổi lúc nào video bị cắt — một thay
+    đổi hành vi thật, không phải hợp nhất. Nên chỉ đúng một property được ghi đè."""
+
     @property
     def ratio(self) -> float: return self.used / self.limit if self.limit else 0.0
 
-class Supervisor:
-    """Watchdog + cost controller + knowledge base. Subscribe mọi topic. Ngân sách token theo video."""
-    WARN_AT, CUT_AT = 0.8, 1.0
+
+class Supervisor(SupervisorBase):
+    """Watchdog + cost controller + knowledge base. Subscribe mọi topic. Ngân sách token theo video.
+
+    Cơ chế chung (`_act_once`, `escalate_gate`, sổ nợ kiến trúc) ở `xagents_core.supervisor.SupervisorBase` từ
+    K3.7; `report()` Ở LẠI đây vì nó nói về video, không phải về ticket."""
+
+    escalate_once = False  # xem `escalate_gate`: chống lặp nằm ở khoá `once` BỀN của orchestrator, không ở RAM
 
     def __init__(self, bus: InMemoryBus, max_retries: int = 3, video_timeout: timedelta = timedelta(hours=6)):
+        super().__init__()
         self.bus, self.max_retries, self.video_timeout = bus, max_retries, video_timeout
         self.budgets: dict[str, Budget] = {}
         self.last_seen: dict[str, datetime] = {}
         self.error_signatures: dict[str, list[str]] = defaultdict(list)
         self.actions: list[SupervisorAction] = []
         self.knowledge: list[dict] = []
-        self.notified: dict[str, set[str]] = defaultdict(set)  # video → ngưỡng đã báo (warn/budget_cut): mỗi ngưỡng đúng một lần
+        # `notified` (video → ngưỡng đã báo, mỗi ngưỡng đúng một lần) ở `SupervisorBase` cùng `_act_once`.
         self.replaying = False
         bus.subscribe("*", self._on)
+
+    def _budget(self, item: Budgeted) -> Budget:
+        """Sổ ngân sách của một đơn vị công việc có trần token. `Budgeted` là Protocol CẤU TRÚC
+        (`xagents_core.ticket_model`): `VideoBrief` không kế thừa gì và cố ý KHÔNG có `project_id` như `Task`
+        của company — thứ mã chung cần biết chỉ là "vật này có trần token"."""
+        return Budget(item.budget_tokens)
 
     def _act(self, target: str, action: SupervisorActionKind, reason: str, evidence: str | None = None) -> None:
         a = SupervisorAction(target=target, action=action, reason=reason, evidence=evidence)
         self.actions.append(a)
         if not self.replaying:
             self.bus.publish(Envelope(topic="supervisor-actions", key=target, actor="supervisor", payload=a.model_dump()))
-
-    def _act_once(self, target: str, action: SupervisorActionKind, reason: str) -> None:
-        # Mỗi audit-log sau ngưỡng đều qua đây; chỉ phát hành động lần đầu, tránh spam warn/budget_cut lên bus.
-        if action in self.notified[target]: return
-        self.notified[target].add(action); self._act(target, action, reason)
 
     def replay(self, env: Envelope) -> None:
         prev, self.replaying = self.replaying, True
@@ -55,7 +68,7 @@ class Supervisor:
         self.last_seen[env.key] = env.ts
         if env.topic == "video-briefs":
             b = VideoBrief.model_validate(env.payload)
-            self.budgets.setdefault(b.video_id, Budget(b.budget_tokens))
+            self.budgets.setdefault(b.video_id, self._budget(b))
             if b.retry > self.max_retries:  # desk cho phép retry ≤ max; vượt mới là bất thường
                 self._act(b.video_id, "escalate", f"retry {b.retry} > {self.max_retries}")
         elif env.topic == "audit-log":
@@ -73,11 +86,12 @@ class Supervisor:
             if env.actor not in NAMESPACE_OWNERS.get(env.payload["namespace"], set()):
                 self._act(env.actor, "pause", "ghi sai namespace")
 
-    def escalate_gate(self, subject_id: str, reason: str) -> None:
+    def escalate_gate(self, subject_id: str, reason: str, once_key: str | None = None) -> None:
         """Gate quá hạn: người duyệt im lặng cũng là một dạng bế tắc, phải hiện ra như mọi bế tắc khác.
-        Chống lặp KHÔNG nằm ở đây mà ở khoá `once` bền của orchestrator: `Supervisor.actions` được dựng lại
-        bằng replay nên một cờ RAM ở đây sẽ nói "đã escalate rồi" sai bét sau mỗi lần mở lại bus (khuôn 2)."""
-        self._act(subject_id, "escalate", reason)
+        Chống lặp KHÔNG nằm ở đây mà ở khoá `once` bền của orchestrator (`escalate_once = False`):
+        `Supervisor.actions` được dựng lại bằng replay nên một cờ RAM ở đây sẽ nói "đã escalate rồi" sai bét
+        sau mỗi lần mở lại bus (khuôn 2)."""
+        super().escalate_gate(subject_id, reason, once_key)
 
     def check_timeouts(self, now: datetime | None = None, active: set[str] | None = None) -> list[str]:
         now = now or datetime.now(UTC); stuck = []

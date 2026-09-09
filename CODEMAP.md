@@ -27,7 +27,7 @@
 | Namespace blackboard (10) | `topics/README.md` + owner trong `events.py` |
 | Checklist 4 gate | `gates/checklists.md` |
 | Vòng đời video, gom review, rework có hint | `src/studio/desk.py` |
-| Gate: hạn, four-eyes | `src/studio/gates.py`, `gate_cli.py` |
+| Gate: hạn, four-eyes | Cơ chế chung ở `xagents-core/src/xagents_core/gates.py` + `gate_cli.py` (K3.7); `src/studio/gates.py` giữ `GateKind`/`triggered_by`/`STUDIO_GATE_APPROVERS`, `gate_cli.py` giữ `format_checklist`/`rollback_target` (miền video) |
 | Dòng thời gian một video / kế hoạch / kênh (chỉ đọc) | `src/studio/trace.py` — `resolve`/`_belongs`/`_domain` riêng studio; cấu trúc dòng, đọc `audit-log`, tổng kết, cách in ở `xagents-core/src/xagents_core/trace.py` (4L-7) |
 | Hẹn hoãn sống sót restart (`defer.until` → `deferred`/`defer_until`) | `Orchestrator._defer` + `_nap_lai_hen` trong `src/studio/orchestrator.py` (4L-7) |
 
@@ -52,7 +52,7 @@
 |---|---|
 | Adapter provider, retry | `src/studio/llm.py` |
 | Chọn backend theo tier, xoay quota | `xagents-core/src/xagents_core/routing.py` (ADR-0006; K3.3d — `src/studio/routing.py` chỉ còn là shim); `llm.yaml` |
-| Ngân sách, watchdog, calibration ước lượng | `src/studio/supervisor.py` |
+| Ngân sách, watchdog, calibration ước lượng | `src/studio/supervisor.py` (kế thừa `xagents_core.supervisor.SupervisorBase`; `report()` và `Budget.ratio` theo TỔNG token ở lại đây) |
 | Vòng lặp tool | `src/studio/runner.py` |
 | Chống prompt injection | Bảng mẫu + lọc: `xagents-core/src/xagents_core/guard.py` (K3.4). Mẫu RIÊNG của phòng ban (`developer mode`, `jailbreak`) và chính sách topic/trường: `src/studio/core.py`; `src/studio/guard.py` là shim gắn `CORE`. Luật bỏ TỪNG bình luận của lô `audience-comments` ở lại `runner._filter_comments` | `tests/test_guard_studio_duoc_nang.py`, `xagents-core/tests/test_guard.py` |
 | Eval ghi / phát lại | `src/studio/evals.py` |
