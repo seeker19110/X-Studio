@@ -1,0 +1,56 @@
+# Sàn điểm eval theo agent (p3.3). Cổng CI (`evals all --replay --strict`): agent trong file này mà bản ghi
+# tụt dưới `min_pass_ratio`, hoặc bộ ca thu nhỏ dưới `cases`, thì đỏ — khác `evals/recordings/REQUIRED.txt`
+# (gác bản ghi thiếu/lệch phiên bản prompt), file này gác ĐIỂM CHẤM không được tụt so với hôm đo.
+#
+# Trước file này, `--replay` của studio chỉ đỏ khi ca KHÔNG CHẠY ĐƯỢC (`errored`): ca chạy được nhưng chấm sai
+# nội dung vẫn xanh, nên 14 agent có thể tụt điểm dần qua từng lần ghi lại mà không ai thấy.
+#
+# Đo ngày 2026-09-09 bằng `uv run python -m studio.evals all --replay` trên bản ghi đã commit — cả 14 agent
+# 2/2 = 1.00. Sàn làm tròn xuống 0.05 theo quy ước (CONTRIBUTING §3): điểm chấm dao động, đặt sàn bằng đúng
+# điểm đo là một lần đỏ ngẫu nhiên cũng chặn merge. `cases` = số ca đo được hôm đó, chống thu nhỏ bộ ca.
+# Studio chỉ có 2 ca/agent nên một ca hỏng là 0.50 → đỏ; đó là chủ ý.
+#
+# Ghi lại eval bằng model thật mà điểm tụt dưới sàn thì phải nâng chất lượng prompt/skill trước khi commit bản
+# ghi mới — KHÔNG hạ số trong file này để né đỏ (cùng nguyên tắc `fail_under = 100` ở AGENTS.md).
+analytics-analyst:
+  min_pass_ratio: 0.95
+  cases: 2
+channel-strategist:
+  min_pass_ratio: 0.95
+  cases: 2
+community-manager:
+  min_pass_ratio: 0.95
+  cases: 2
+editor:
+  min_pass_ratio: 0.95
+  cases: 2
+fact-checker:
+  min_pass_ratio: 0.95
+  cases: 2
+production-manager:
+  min_pass_ratio: 0.95
+  cases: 2
+publisher:
+  min_pass_ratio: 0.95
+  cases: 2
+quality-reviewer:
+  min_pass_ratio: 0.95
+  cases: 2
+rights-checker:
+  min_pass_ratio: 0.95
+  cases: 2
+script-writer:
+  min_pass_ratio: 0.95
+  cases: 2
+seo-optimizer:
+  min_pass_ratio: 0.95
+  cases: 2
+supervisor:
+  min_pass_ratio: 0.95
+  cases: 2
+thumbnail-designer:
+  min_pass_ratio: 0.95
+  cases: 2
+trend-researcher:
+  min_pass_ratio: 0.95
+  cases: 2

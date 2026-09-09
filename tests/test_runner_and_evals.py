@@ -220,9 +220,13 @@ def test_record_and_replay_roundtrip(tmp_path, monkeypatch):
 
 
 def test_replay_exit_code_ignores_grading_but_not_stale_recordings(tmp_path, monkeypatch):
-    """CI phát lại: ca chấm không đạt là tín hiệu chất lượng, không làm đỏ — kể cả với --strict.
+    """CI phát lại: ca chấm không đạt KHÔNG làm đỏ vì CỔNG BẢN GHI — kể cả với --strict.
     Đỏ khi bản ghi lệch prompt (LLMError), hoặc khi --strict + agent có tên trong REQUIRED.txt mà bản ghi
-    thiếu / ghi ở phiên bản prompt cũ."""
+    thiếu / ghi ở phiên bản prompt cũ.
+
+    p3.3: điểm chấm nay có cổng RIÊNG (`evals/thresholds.yaml`). Hai khẳng định đầu chạy với `--no-thresholds`
+    để giữ nguyên thứ chúng sinh ra để đo — cổng bản ghi — thay vì im lặng đo cổng ngưỡng mới (publisher ở
+    1/2 = 0.50 nên cổng ngưỡng đỏ đúng, xem `tests/test_evals_thresholds.py`)."""
     from studio import evals as ev
     monkeypatch.setattr(ev, "RECORDINGS_DIR", tmp_path)
     version = ev.load_agents()["publisher"].version
@@ -236,8 +240,9 @@ def test_replay_exit_code_ignores_grading_but_not_stale_recordings(tmp_path, mon
         cases[probe.key] = {"text": json.dumps(bad), "model": "m"}
     rec = {"agent": "publisher", "prompt_version": version, "cases": cases}
     (tmp_path / "publisher.json").write_text(json.dumps(rec), encoding="utf-8")
-    assert ev.main(["publisher", "--replay"]) == 0
-    assert ev.main(["publisher", "--replay", "--strict"]) == 0   # chấm không đạt không làm đỏ CI
+    assert ev.main(["publisher", "--replay", "--no-thresholds"]) == 0
+    assert ev.main(["publisher", "--replay", "--strict", "--no-thresholds"]) == 0   # cổng bản ghi không đỏ vì điểm
+    assert ev.main(["publisher", "--replay"]) == 1   # nhưng cổng NGƯỠNG đỏ: 0.50 < 0.95 (p3.3)
 
     # có tên trong REQUIRED.txt: bản ghi ghi ở phiên bản prompt cũ → đỏ
     (tmp_path / ev.REQUIRED_NAME).write_text("# ghi chú" + chr(10) + "publisher" + chr(10), encoding="utf-8")
