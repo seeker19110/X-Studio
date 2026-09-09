@@ -293,8 +293,9 @@ class Orchestrator:
         self.queue: list[Envelope] = []
         self.deferred: dict[str, tuple[Envelope, str]] = {}
         # Mốc hẹn của backend ("thử lại sau 1515s"): hỏi lại sớm hơn chỉ tốn một dòng lỗi và làm bẩn audit-log.
-        # Chỉ sống trong RAM như `deferred` — mở lại tiến trình là mất hẹn (giới hạn đã biết, xem company
-        # `orch/scheduler.py:_defer`); bù lại `defer.until` có trong audit-log để người trực đọc được.
+        # Biến này ở trong RAM, nhưng hẹn KHÔNG mất khi mở lại tiến trình: `defer.until` trên audit-log là bản
+        # ghi bền, và `_nap_lai_hen` dựng lại đúng hai biến này lúc `_rehydrate` (4L-7, đối xứng với company
+        # `orch/rehydrate.py:_nap_lai_hen`).
         self.defer_until: dict[str, float] = {}
         self.once: set[str] = set()
         self.stats: Counter[str] = Counter()
@@ -305,6 +306,7 @@ class Orchestrator:
 
     def _rehydrate(self) -> None:
         approved: list[tuple[str, str]] = []  # (plan_id, event_id của gate.decide approve)
+        hen: dict[str, tuple[str, str]] = {}  # event_id → (mốc hẹn ISO, lý do hoãn) — xem `_nap_lai_hen`
         for env in self.bus.replay():
             if env.topic == "audit-log":
                 a = env.payload; d = _evidence(a)
@@ -312,6 +314,10 @@ class Orchestrator:
                 elif a["actor"] == ACTOR and a["action"] == "once": self.once.add(d["key"])
                 elif a["action"] == "plan.proposed": self.plans[d["plan_id"]] = d
                 elif a["action"] == "replies.proposed": self.reply_batches[d["batch_id"]] = d["drafts"]
+                elif a["action"] == "defer.until" and d.get("event_id"):
+                    # Thế hệ của hẹn là `event_id` của CHÍNH event bị hoãn (TRAPS §1 khuôn 3): khoá theo
+                    # `video_id` thì lần làm lại (rework/retry) sinh event mới sẽ dính hẹn của lần trước.
+                    hen[str(d["event_id"])] = (str(d.get("until") or ""), str(d.get("reason") or "transient:?"))
                 elif a["action"] == "gate.decide" and (td := trusted_decision(env)) is not None \
                         and td.get("decision") == "approve" and td["subject_id"] in self.plans:
                     # `trusted_decision`, không phải `d` thô: một `gate.decide` mạo danh ở đây không chỉ hiện sai
@@ -333,6 +339,32 @@ class Orchestrator:
             if eid in self.processed or any(b.get("video_id") in briefed for b in plan.get("briefs", [])):
                 self._dispatch_plan(pid, replaying=True)
         self.queue = [e for e in self.bus.replay() if self._actionable(e) and e.event_id not in self.processed]
+        self._nap_lai_hen(hen)
+
+    def _nap_lai_hen(self, hen: dict[str, tuple[str, str]]) -> None:
+        """Event còn hẹn chờ thì vào `deferred`, KHÔNG vào hàng đợi chạy ngay (4L-7).
+
+        Không có bước này thì `defer.until` chỉ là một dòng log đẹp: hàng đợi dựng lại vẫn chứa event và nhịp
+        `tick` đầu tiên gọi thẳng backend vừa nói "thử lại sau 1515s".
+
+        Hàng đợi ở đây đã loại mọi event có bằng chứng `orchestrated`, nên hẹn cũ của một việc ĐÃ XONG không
+        bao giờ được nạp lại — nạp lại là xử lý lại một việc đã làm. Mốc hẹn lưu theo GIỜ TƯỜNG nên quy được
+        về `monotonic` của tiến trình này; hẹn đã qua (hoặc mốc hỏng) thì bỏ, để event chạy bình thường."""
+        if not hen: return
+        gio, mono = datetime.now(UTC), time.monotonic()
+        giu: list[Envelope] = []
+        for e in self.queue:
+            moc, ly_do = hen.get(e.event_id, ("", ""))
+            con = 0.0
+            if moc:
+                try: con = (datetime.fromisoformat(moc) - gio).total_seconds()
+                except ValueError: con = 0.0      # mốc hỏng: thà chạy còn hơn kẹt vĩnh viễn
+            if con > 0:
+                self.deferred[e.event_id] = (e, ly_do or "transient:?")
+                self.defer_until[e.event_id] = mono + con
+            else:
+                giu.append(e)
+        self.queue = giu
 
     def _actionable(self, env: Envelope) -> bool:
         if env.topic == "audit-log": return env.payload.get("action") == "gate.decide"

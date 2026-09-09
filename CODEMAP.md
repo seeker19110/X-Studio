@@ -28,6 +28,8 @@
 | Checklist 4 gate | `gates/checklists.md` |
 | Vòng đời video, gom review, rework có hint | `src/studio/desk.py` |
 | Gate: hạn, four-eyes | `src/studio/gates.py`, `gate_cli.py` |
+| Dòng thời gian một video / kế hoạch / kênh (chỉ đọc) | `src/studio/trace.py` — `resolve`/`_belongs`/`_domain` riêng studio; cấu trúc dòng, đọc `audit-log`, tổng kết, cách in ở `xagents-core/src/xagents_core/trace.py` (4L-7) |
+| Hẹn hoãn sống sót restart (`defer.until` → `deferred`/`defer_until`) | `Orchestrator._defer` + `_nap_lai_hen` trong `src/studio/orchestrator.py` (4L-7) |
 
 ## Media và nền tảng (code, không phải model)
 
