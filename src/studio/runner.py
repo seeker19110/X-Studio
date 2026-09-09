@@ -12,11 +12,16 @@ import argparse
 import json
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 from xagents_core.context import fit
+from xagents_core.runner import Generated as CoreGenerated
+from xagents_core.runner import RunnerError as RunnerError
+from xagents_core.runner import RunResult as CoreRunResult
+from xagents_core.runner import output_schema as _core_output_schema
+from xagents_core.runner import payload_schema as _core_payload_schema
 
 from .blackboard import Blackboard
 from .bus import SCHEMA_DIR, BusError, InMemoryBus
@@ -39,14 +44,11 @@ def spec_toolbox(spec: AgentSpec) -> ToolBox | None:
     return default_toolbox(spec.tools)
 
 
-class RunnerError(Exception): ...
 
 
 def payload_schema(topic: str) -> dict[str, Any]:
-    p = SCHEMA_DIR / f"{topic}.json"
-    if not p.exists():
-        raise RunnerError(f"không có schema cho topic {topic}")
-    return json.loads(p.read_text(encoding="utf-8"))["properties"]["payload"]
+    """Chữ ký cũ `(topic)` — thư mục schema nay là tham số của core."""
+    return _core_payload_schema(SCHEMA_DIR, topic)
 
 
 def build_user_message(spec: AgentSpec, inp: Envelope, topic_out: str, context: dict[str, Any],
@@ -84,32 +86,24 @@ def context_writes_schema(namespaces: list[str]) -> dict[str, Any]:
 
 
 def output_schema(schema: dict[str, Any] | None, namespaces: list[str], many: bool) -> dict[str, Any]:
-    if schema is None:
-        return {"type": "object", "properties": {"context_writes": context_writes_schema(namespaces)}, "required": ["context_writes"]}
-    if not namespaces and not many:
-        return schema
-    props: dict[str, Any] = {"items": {"type": "array", "items": schema}} if many else {"payload": schema}
-    if namespaces: props["context_writes"] = context_writes_schema(namespaces)
-    return {"type": "object", "properties": props, "required": ["items" if many else "payload"]}
+    """Chữ ký cũ. `context_writes_schema` của studio (KHÔNG có `content`) truyền xuống core làm tham số: hình
+    dạng ấy là hợp đồng đầu ra của agent, tức prompt — đổi nó là mọi bản ghi eval lệch (xem docstring core)."""
+    return _core_output_schema(schema, namespaces, many, context_writes_schema(namespaces))
 
 
 @dataclass
-class RunResult:
-    output: Envelope
-    tokens: int
-    model: str
+class RunResult(CoreRunResult):
+    output: Envelope        # thu hẹp `Any` của core về Envelope của studio (tiền lệ K3.5a)
 
 
 @dataclass
-class Generated:
-    """Đầu ra model đã qua kiểm tra schema nhưng CHƯA publish (để code xác định quyết định, vd. plan → gate)."""
-    payloads: list[dict[str, Any]]
-    tokens: int
-    model: str
-    context_writes: list[dict[str, Any]] = field(default_factory=list)
-    cache_hit_ratio: float = 0.0
-    turns: int = 1
-    tool_calls: dict[str, int] = field(default_factory=dict)
+class Generated(CoreGenerated):
+    """Đầu ra model đã qua kiểm tra schema nhưng CHƯA publish (để code xác định quyết định, vd. plan → gate).
+
+    KHÔNG thêm trường nào: bảy trường của studio trùng đúng phần chung ở `xagents_core.runner.Generated`.
+    Năm trường company có thêm (`output_tokens`, `cost_usd`, `priced`, `duration_ms`, `phase`) ở lớp con của
+    company — đưa chúng lên core là bắt studio mang trường nó không bao giờ ghi (bài học `AuditLog` K3.5a)."""
+
 
 
 class AgentRunner:
