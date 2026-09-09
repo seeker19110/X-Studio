@@ -63,6 +63,20 @@
         "summary": {
           "default": "",
           "type": "string"
+        },
+        "project_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "K3.6b: phân vùng theo dự án của blackboard chung. Studio chưa dùng (luôn null) — khai ở đây để schema nói đúng thứ đi qua nó."
+        },
+        "content": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "K3.6b: toàn văn artifact (ADR-0012 của company). Studio chưa dùng (luôn null)."
         }
       },
       "required": [

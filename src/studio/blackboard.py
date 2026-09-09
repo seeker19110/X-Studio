@@ -1,30 +1,30 @@
+"""Blackboard của studio — cơ chế ở `xagents_core.blackboard` (K3.6b của ADR gốc 0001).
+
+Bản trước K3.6b dài 30 dòng và chỉ giữ bản mới nhất mỗi namespace trong một `dict`. Từ đây studio nhận toàn bộ
+cơ chế của blackboard company: khoá khi đánh version (hai agent cùng sở hữu một namespace chạy song song không
+còn mất bản ghi), `content` toàn văn, `rehydrate()` dựng lại từ bus khi mở lại SQLite, `all()`/`overview()`, và
+phân vùng theo dự án.
+
+`store` để `None` như trước: studio chưa có artifact store, nên nhánh mirror không chạy. Phân vùng theo dự án
+cũng chưa dùng — studio không truyền `project_id` ở đâu cả — nhưng `global_namespaces` vẫn khai `knowledge` cho
+đúng nghĩa: khi nào studio phân vùng theo kênh thì nó đã đúng sẵn, không phải nhớ sửa.
+"""
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
+from xagents_core.blackboard import Blackboard as CoreBlackboard
+from xagents_core.blackboard import Scope as Scope
+
 from .bus import InMemoryBus
-from .events import Envelope, Namespace, SharedContext
+from .core import CORE
+from .events import Envelope, SharedContext
 
 
-class Blackboard:
-    """Đọc/ghi shared-context. Ghi đi qua bus nên được kiểm quyền owner."""
-    def __init__(self, bus: InMemoryBus):
-        self.bus = bus
-        self._latest: dict[str, SharedContext] = {}
-        bus.subscribe("shared-context", self._on)
+class Blackboard(CoreBlackboard[Envelope, SharedContext]):
+    envelope_cls = Envelope
+    context_cls = SharedContext
 
-    def _on(self, env: Envelope) -> None:
-        sc = SharedContext.model_validate(env.payload)
-        cur = self._latest.get(sc.namespace)
-        if cur is None or sc.version > cur.version:
-            self._latest[sc.namespace] = sc
-
-    def write(self, actor: str, namespace: Namespace, content_ref: str, summary: str = "") -> SharedContext:
-        v = (self._latest[namespace].version + 1) if namespace in self._latest else 1
-        sc = SharedContext(namespace=namespace, version=v, content_ref=content_ref, summary=summary)
-        self.bus.publish(Envelope(topic="shared-context", key=namespace, actor=actor, payload=sc.model_dump()))
-        return sc
-
-    def read(self, namespace: str) -> SharedContext | None:
-        return self._latest.get(namespace)
-
-    def snapshot(self) -> dict[str, SharedContext]:
-        return dict(self._latest)
+    def __init__(self, bus: InMemoryBus, store: Path | None = None, cfg: Any = CORE):
+        super().__init__(cfg, bus, store)

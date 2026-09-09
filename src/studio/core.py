@@ -63,6 +63,7 @@ CORE = CoreConfig(
     prefix="STUDIO",
     root=Path(__file__).resolve().parents[2],   # Studio-creators/ : llm.yaml, agents/, skills/, topics/schemas/
     db_name="studio.sqlite",
+    global_namespaces=frozenset({"knowledge"}),   # ADR-0018: namespace toàn công ty, không thuộc dự án nào
     topic_acl=TopicACL(producers=TOPIC_PRODUCERS, human_topics=HUMAN_TOPICS, open_topics=OPEN_TOPICS),
     payload_models=PAYLOAD_MODELS,
     namespace_owners=NAMESPACE_OWNERS,
