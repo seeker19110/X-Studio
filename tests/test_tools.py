@@ -10,7 +10,7 @@ from studio.blackboard import Blackboard
 from studio.bus import InMemoryBus
 from studio.evals import RecordingClient, ReplayClient, prompt_key
 from studio.events import Envelope
-from studio.llm import ClaudeCodeClient, FakeClient, LLMConfig
+from studio.llm import CLI_NO_TOOL_TURNS, ClaudeCodeClient, FakeClient, LLMConfig
 from studio.registry import load_agents
 from studio.runner import AgentRunner, RunnerError
 from studio.tools import (
@@ -370,7 +370,11 @@ def test_claude_code_delegates_web_tools_to_cli():
     assert int(args[args.index("--max-turns") + 1]) > 1 and prompts[0].startswith("U\n\n# Tool") and c.delegated_tools
     assert out.tool_calls == [] and out.model == "claude-sonnet-5"  # không phải model phụ của WebFetch
     c.complete(system="S", user="U", schema={}, model_tier="standard")
-    a2 = seen[1]; assert a2[a2.index("--tools") + 1] == "" and a2[a2.index("--max-turns") + 1] == "1" and not c.delegated_tools
+    a2 = seen[1]
+    # `> 1` chứ không phải `== 1`: đường KHÔNG tool vẫn cần lượt CLI ép `--json-schema` (đo 2026-09-09 trên
+    # `seo-optimizer/kich-ban-phai-ra-metadata-dung-gioi-han`: `--max-turns 1` → `error_max_turns`).
+    assert a2[a2.index("--tools") + 1] == "" and not c.delegated_tools
+    assert int(a2[a2.index("--max-turns") + 1]) == CLI_NO_TOOL_TURNS > 1
 
 
 def test_claude_code_tools_used_audit_marks_delegation():

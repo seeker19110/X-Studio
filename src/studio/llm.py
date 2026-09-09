@@ -142,6 +142,12 @@ def make_client(cfg: LLMConfig | None = None) -> ModelClient:
 
 CLI_WEB_TOOLS = "WebFetch,WebSearch"  # tool sẵn có của CLI, bản đồ 1-1 của web_fetch/web_search (ADR-0007)
 CLI_TOOL_TURNS = 8
+# Lượt cho đường KHÔNG tool. Không phải 1: `--json-schema` (ADR-0026) ép JSON bằng một lượt nội bộ nữa của
+# CLI, nên `--max-turns 1` cắt đúng lượt ép đó → `error_max_turns`, không có `result`. Company đã đo và vá
+# 2026-09-05 (`company.llm.CLI_NO_TOOL_TURNS`, TRAPS.md của company); studio giữ nguyên `1` tới khi đo lại
+# 2026-09-09 trên `seo-optimizer/kich-ban-phai-ra-metadata-dung-gioi-han`. 6 = 1 trả lời + ép + dư cho 2-3
+# vòng model tự sửa JSON.
+CLI_NO_TOOL_TURNS = 6
 class ClaudeCodeClient(CoreClaudeCodeClient):
     """Gọi `claude -p --output-format json` như một model backend: mỗi lượt là một tiến trình con, system prompt
     truyền qua `--system-prompt-file` (ADR-0026: argv có trần ~32 KB trên Windows), schema đi cả `--json-schema`
@@ -168,7 +174,7 @@ class ClaudeCodeClient(CoreClaudeCodeClient):
             user = next((m["content"] for m in messages if m["role"] == "user"), user)
         self.delegated_tools = bool(tools)
         tool_args = (["--tools", CLI_WEB_TOOLS, "--allowedTools", CLI_WEB_TOOLS, "--max-turns", str(CLI_TOOL_TURNS)]
-                     if tools else ["--tools", "", "--max-turns", "1"])
+                     if tools else ["--tools", "", "--max-turns", str(CLI_NO_TOOL_TURNS)])
         # ADR-0026: schema đi CẢ HAI đường — `--json-schema` để CLI ép và kiểm, `hint` trong prompt để model thấy mô
         # tả từng trường. `--effort` theo tier, và không ghi transcript ra máy.
         base = [self.binary, "-p", "--output-format", "json", "--model", model, *CLI_BASE_FLAGS,
