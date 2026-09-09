@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from xagents_core.context import fit
+from xagents_core.context import _prune, fit
 from xagents_core.runner import AgentRunner as CoreAgentRunner
 from xagents_core.runner import Generated as CoreGenerated
 from xagents_core.runner import RunnerError as RunnerError
@@ -35,7 +35,11 @@ from .registry import AgentSpec, load_agents
 from .tools import ToolBox, ToolError, default_toolbox, tools_prompt
 
 CONTEXT_ONLY = "shared-context"  # topic_out đặc biệt: agent chỉ ghi blackboard, không publish topic
-MAX_TOOL_TURNS = 10  # trần lượt model ↔ tool mỗi lần generate (ADR-0007)
+MAX_TOOL_TURNS = 10  # trần lượt model ↔ tool mỗi lần generate (docs/adr/0007-web-tools.md, package này)
+# Tỉa role=tool cũ (docs/adr/0007-tia-tool-output-cu-trong-vong-tool.md, CẤP REPO — khác ADR-0007 của package
+# này ở trên; hai đánh số trùng vì mỗi thư mục docs/adr/ đánh số riêng). Studio chưa có `_stagnant`/4L-3 nên
+# không có hằng số NO_PROGRESS_WARN sẵn có để dùng chung — 3 là giá trị công ty company đã đo và ADR-0007 dùng.
+PRUNE_KEEP_TURNS = 3
 DEFAULT_MAX_INPUT_CHARS = 120_000  # dùng khi client không mang `max_input_chars` (test dựng client trần)
 ToolboxFactory = Callable[[AgentSpec], ToolBox | None]
 
@@ -153,6 +157,12 @@ class AgentRunner(CoreAgentRunner[Envelope, AgentSpec]):
         total, turn, c = 0, 0, None
         while turn < max_turns:
             turn += 1
+            # docs/adr/0007-tia-tool-output-cu-trong-vong-tool.md: tỉa role=tool cũ hơn PRUNE_KEEP_TURNS lượt.
+            if turn > PRUNE_KEEP_TURNS:
+                msgs, dropped = _prune(msgs, keep_turns=PRUNE_KEEP_TURNS)
+                if dropped:
+                    self._audit(spec, "context_pruned", inp,
+                               evidence=json.dumps({"turn": turn, "dropped_chars": dropped}, ensure_ascii=False))
             c = self._complete(spec, inp, user, schema, tools=tools, messages=msgs); total += c.tokens
             if budget is not None and total > budget:
                 self._audit(spec, "budget_exhausted", inp, tokens=total,

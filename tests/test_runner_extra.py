@@ -12,8 +12,8 @@ from studio.bus import InMemoryBus
 from studio.events import Envelope
 from studio.llm import FakeClient
 from studio.registry import load_agents
-from studio.runner import AgentRunner, RunnerError, main, payload_schema
-from studio.tools import ToolBox, ToolCall
+from studio.runner import PRUNE_KEEP_TURNS, AgentRunner, RunnerError, main, payload_schema
+from studio.tools import ToolBox, ToolCall, ToolSpec
 
 AGENTS = load_agents()
 
@@ -95,6 +95,31 @@ def test_tool_loop_wraps_tool_error_when_toolbox_call_raises():
     runner = AgentRunner(bus, client, AGENTS, bb, toolbox_factory=lambda s: tb)
     g = runner.generate("fact-checker", _script_env(), "review-results")
     assert g.payloads[0]["verdict"] == "pass"
+
+
+def test_tool_loop_tia_tool_output_cu_docs_adr_0007():
+    """docs/adr/0007-tia-tool-output-cu-trong-vong-tool.md (cấp repo): `_tool_loop` của studio gọi `_prune` như
+    `_turns` của company — quá `PRUNE_KEEP_TURNS` lượt thì audit `context_pruned` xuất hiện, và `msgs` gửi đi
+    không còn phình tuyến tính theo số lượt."""
+    bus = InMemoryBus(); bb = Blackboard(bus)
+    tb = ToolBox(max_output=None)
+    tb.add(ToolSpec("doc_lon", "đọc một khối 6k ký tự", {"type": "object", "properties": {}}),
+           lambda: "Y" * 6000)
+    n_luot = [0]
+
+    def tool_handler(msgs, tools):
+        n_luot[0] += 1
+        if n_luot[0] > 8: return []
+        return [ToolCall(id=f"t{n_luot[0]}", name="doc_lon", args={})]
+
+    client = FakeClient(responses=[{"video_id": "V1", "source": "fact", "verdict": "pass", "findings": []}],
+                        tool_handler=tool_handler)
+    runner = AgentRunner(bus, client, AGENTS, bb, toolbox_factory=lambda s: tb)
+    g = runner.generate("fact-checker", _script_env(), "review-results", max_turns=10)
+    assert g.payloads[0]["verdict"] == "pass"
+    acts = [e.payload["action"] for e in bus.replay(topic="audit-log") if e.payload.get("action") == "context_pruned"]
+    assert acts, "quá PRUNE_KEEP_TURNS lượt tool 6k mỗi lượt phải kích ít nhất một lần tỉa"
+    assert PRUNE_KEEP_TURNS == 3, "hằng số dùng chung với company (NO_PROGRESS_WARN), đổi thì đổi cả ADR"
 
 
 def test_filter_comments_drops_batch_entirely_when_all_injected():
