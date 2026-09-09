@@ -15,210 +15,110 @@ gọi tool, không gọi mạng.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import yaml
+from xagents_core.evals import CaseResult as CaseResult
+from xagents_core.evals import EvalSuite
+from xagents_core.evals import RecordingClient as CoreRecordingClient
+from xagents_core.evals import ReplayClient as CoreReplayClient
+from xagents_core.evals import _get as _core_get
+from xagents_core.evals import _Probe as _Probe
+from xagents_core.evals import check as check
+from xagents_core.evals import prompt_key as prompt_key
 
 from .blackboard import Blackboard
 from .bus import InMemoryBus
+from .core import CORE
 from .events import Envelope
-from .llm import Completion, LLMError, ModelClient
+from .llm import LLMError, ModelClient
 from .registry import load_agents
 from .runner import AgentRunner, RunnerError, RunResult
-from .tools import ToolSpec
 
-EVALS_DIR = Path(__file__).resolve().parents[2] / "evals"
+EVALS_DIR = CORE.root / "evals"
 RECORDINGS_DIR = EVALS_DIR / "recordings"
 REQUIRED_NAME = "REQUIRED.txt"  # agent BẮT BUỘC có bản ghi tươi; thiếu hoặc lệch phiên bản prompt → CI đỏ
 
 
-def prompt_key(system: str, user: str) -> str:
-    return hashlib.sha256(json.dumps([system, user], ensure_ascii=False).encode("utf-8")).hexdigest()[:24]
+class Suite(EvalSuite):
+    """Bộ eval của studio. Chỉ khai thứ core không được biết; phần còn lại ở `xagents_core.evals`."""
+
+    case_errors = (RunnerError, LLMError)
+
+    # Đọc từ BIẾN MODULE, không từ `self.root`: `monkeypatch.setattr(ev, "RECORDINGS_DIR", …)` là seam có sẵn
+    # của nhiều ca test — tính từ `self.root` là seam ấy im lặng hết tác dụng (xem chú cùng chỗ ở company).
+    @property
+    def evals_dir(self) -> Path: return EVALS_DIR
+
+    @property
+    def recordings_dir(self) -> Path: return RECORDINGS_DIR
+
+    def load_cases(self, agent_id: str) -> list[dict[str, Any]]:
+        # Qua HÀM MODULE: `monkeypatch.setattr(evals, "load_cases", …)` là seam của nhiều ca test.
+        # Hàm module gọi thẳng bản cơ sở `EvalSuite.load_cases` nên không có đệ quy.
+        return load_cases(agent_id)
+
+    def load_agents(self) -> dict[str, Any]:
+        return load_agents()
+
+    def new_bus(self) -> InMemoryBus:
+        return InMemoryBus()
+
+    def new_blackboard(self, bus: InMemoryBus) -> Blackboard:
+        return Blackboard(bus)
+
+    def run_case(self, agent_id: str, case: dict[str, Any], client: ModelClient,
+                 agents: dict[str, Any] | None, bb: Blackboard, bus: InMemoryBus) -> Any:
+        # Gọi HÀM MODULE, không viết thân ở đây: `monkeypatch.setattr(evals, "_run_case", spy)` là seam có sẵn
+        # của nhiều ca test. Viết thân trong phương thức là seam ấy im lặng hết tác dụng — ca vẫn xanh mà spy
+        # không bao giờ chạy, tức nó thôi đo cái nó sinh ra để đo.
+        return _run_case(agent_id, case, client, agents, bb, bus)
+
+SUITE = Suite(CORE.root)
 
 
-def recording_path(agent_id: str) -> Path:
-    return RECORDINGS_DIR / f"{agent_id}.json"
+# Tên cũ, chữ ký cũ — mọi nơi gọi và mọi test giữ nguyên; cơ chế ở core.
+def recording_path(agent_id: str) -> Path: return SUITE.recording_path(agent_id)
+def load_recording(agent_id: str) -> dict[str, Any] | None: return SUITE.load_recording(agent_id)
+def load_cases(agent_id: str) -> list[dict[str, Any]]: return EvalSuite.load_cases(SUITE, agent_id)
+def required_agents() -> list[str]: return SUITE.required_agents()
+def outdated_versions(ids: list[str] | None = None) -> dict[str, str]: return SUITE.outdated_versions(ids)
+def stale_recordings(ids: list[str] | None = None) -> dict[str, list[str]]: return SUITE.stale_recordings(ids)
+def _lines(agent_id: str, res: list[CaseResult]) -> list[str]: return SUITE.lines(agent_id, res)
+def _get(d: Any, dotted: str) -> Any: return _core_get(d, dotted)
 
 
-def load_recording(agent_id: str) -> dict[str, Any] | None:
-    p = recording_path(agent_id)
-    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+def run_eval(agent_id: str, client: ModelClient, agents: dict[str, Any] | None = None) -> list[CaseResult]:
+    return SUITE.run_eval(agent_id, client, agents)
 
 
-class RecordingClient:
+class RecordingClient(CoreRecordingClient):
     def __init__(self, inner: ModelClient, agent_id: str):
-        self.inner, self.agent_id = inner, agent_id
-        self.entries: dict[str, dict[str, Any]] = {}
-
-    def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
-        c = self.inner.complete(system=system, user=user, schema=schema, model_tier=model_tier, cache_key=cache_key,
-                                tools=tools, messages=messages, workdir=workdir)
-        if not c.tool_calls:  # chỉ lưu câu trả lời cuối; các lượt gọi tool không ghi (phát lại bỏ qua tool)
-            self.entries[prompt_key(system, user)] = {"text": c.text, "model": c.model, "input_tokens": c.input_tokens,
-                                                      "output_tokens": c.output_tokens}
-        return c
-
-    def save(self) -> Path:
-        spec = load_agents()[self.agent_id]
-        data = {"agent": self.agent_id, "prompt_version": spec.version, "recorded_at": datetime.now(UTC).isoformat(),
-                "models": sorted({e["model"] for e in self.entries.values()}), "cases": self.entries}
-        RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
-        p = recording_path(self.agent_id)
-        p.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
-        return p
+        super().__init__(inner, agent_id, SUITE)
 
 
-class ReplayClient:
+class ReplayClient(CoreReplayClient):
     def __init__(self, agent_id: str):
-        self.agent_id = agent_id
-        data = load_recording(agent_id)
-        if data is None:
-            raise LLMError(f"chưa có bản ghi eval cho {agent_id}: chạy `make eval-record AGENT={agent_id}` với model thật")
-        self.data = data
-
-    def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
-        e = self.data["cases"].get(prompt_key(system, user))
-        if e is None:
-            raise LLMError(f"bản ghi eval của {self.agent_id} lệch prompt hiện tại: chạy `make eval-record AGENT={self.agent_id}` "
-                           "với model thật rồi commit bản ghi")
-        return Completion(text=e["text"], input_tokens=int(e.get("input_tokens", 0)),
-                          output_tokens=int(e.get("output_tokens", 0)), model=f"replay:{e.get('model', '?')}")
+        super().__init__(agent_id, SUITE)
 
 
-class _Probe:
-    key: str | None = None
-
-    def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
-                 cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
-        self.key = prompt_key(system, user)
-        raise LLMError("probe")
-
-
-def required_agents() -> list[str]:
-    """Agent phải có bản ghi eval tươi. Thêm id vào `evals/recordings/REQUIRED.txt` ngay khi commit bản ghi đầu tiên
-    của agent đó; từ lúc ấy CI đỏ nếu bản ghi biến mất hoặc lệch phiên bản prompt."""
-    p = RECORDINGS_DIR / REQUIRED_NAME
-    if not p.exists(): return []
-    return [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines()
-            if ln.strip() and not ln.lstrip().startswith("#")]
-
-
-def outdated_versions(agent_ids: list[str] | None = None) -> dict[str, str]:
-    """Bản ghi ghi bằng phiên bản prompt cũ hơn phiên bản hiện tại → {agent: "ghi v3, hiện v5"}.
-    Kiểm offline, không gọi model: đây là răng của "đổi prompt thì phải chạy lại eval"."""
-    agents = load_agents(); out: dict[str, str] = {}
-    for aid in agent_ids or sorted(agents):
-        rec = load_recording(aid)
-        if rec is None: continue
-        got, want = int(rec.get("prompt_version", 0)), agents[aid].version
-        if got != want: out[aid] = f"bản ghi ở prompt v{got}, agent hiện v{want}"
-    return out
-
-
-def stale_recordings(agent_ids: list[str] | None = None) -> dict[str, list[str]]:
-    agents = load_agents(); out: dict[str, list[str]] = {}
-    for aid in agent_ids or sorted(agents):
-        rec = load_recording(aid)
-        if rec is None: continue
-        missing = []
-        for case in load_cases(aid):
-            bus = InMemoryBus(); bb = Blackboard(bus)
-            for ctx in case.get("context", []):
-                bb.write(ctx["actor"], ctx["namespace"], ctx["content_ref"], ctx.get("summary", ""))
-            probe = _Probe()
-            try: _run_case(aid, case, probe, agents, bb, bus)
-            except (RunnerError, LLMError): pass
-            if probe.key is not None and probe.key not in rec["cases"]: missing.append(case["name"])
-        if missing: out[aid] = missing
-    return out
-
-
-@dataclass
-class CaseResult:
-    name: str
-    passed: bool
-    failures: list[str] = field(default_factory=list)
-    tokens: int = 0
-    error: bool = False  # không chạy được (bản ghi lệch/thiếu, model lỗi, đầu ra sai schema) — khác với chấm không đạt
-
-
-def _get(d: Any, dotted: str) -> Any:
-    cur = d
-    for part in dotted.split("."):
-        if isinstance(cur, list) and part.isdigit(): cur = cur[int(part)] if int(part) < len(cur) else None
-        elif isinstance(cur, dict): cur = cur.get(part)
-        else: return None
-        if cur is None: return None
-    return cur
-
-
-def check(payload: dict[str, Any], expect: dict[str, Any]) -> list[str]:
-    fails: list[str] = []
-    for f, v in (expect.get("equals") or {}).items():
-        if _get(payload, f) != v: fails.append(f"{f} == {v!r}, thực tế {_get(payload, f)!r}")
-    for f, v in (expect.get("contains") or {}).items():
-        if str(v).lower() not in str(_get(payload, f) or "").lower(): fails.append(f"{f} phải chứa {v!r}")
-    for f, n in (expect.get("min_len") or {}).items():
-        if len(_get(payload, f) or []) < n: fails.append(f"len({f}) ≥ {n}")
-    for f, n in (expect.get("max_len") or {}).items():
-        if len(_get(payload, f) or []) > n: fails.append(f"len({f}) ≤ {n}, thực tế {len(_get(payload, f) or [])}")
-    for f, vs in (expect.get("one_of") or {}).items():
-        if _get(payload, f) not in vs: fails.append(f"{f} ∈ {vs}")
-    return fails
-
-
-def load_cases(agent_id: str) -> list[dict[str, Any]]:
-    p = EVALS_DIR / f"{agent_id}.yaml"
-    return (yaml.safe_load(p.read_text(encoding="utf-8")) or {}).get("cases", []) if p.exists() else []
-
-
-def _run_case(agent_id: str, case: dict[str, Any], client: ModelClient, agents: dict | None, bb: Blackboard, bus: InMemoryBus):
-    runner = AgentRunner(bus, client, agents, blackboard=bb)
-    i = case["input"]
-    inp = Envelope(topic=i["topic"], key=i["key"], actor=i.get("actor", "human"), payload=i["payload"])
-    if not case.get("many"):
-        return runner.run(agent_id, inp, case["topic_out"], extra=case.get("extra"))
-    # agent sinh nhiều payload một lượt (channel-strategist, community-manager): chấm phần tử đầu, `min_len: {items}` qua metrics
-    g = runner.generate(agent_id, inp, case["topic_out"], many=True, extra=case.get("extra"))
-    first = {**g.payloads[0], "_items": len(g.payloads)} if g.payloads else {"_items": 0}
-    if g.payloads:
-        runner.publish(agent_id, inp, case["topic_out"], g.payloads[0], tokens=g.tokens, model=g.model,
-                       context_writes=g.context_writes)
-    env = Envelope(topic=case["topic_out"], key=inp.key, actor=agent_id, payload=first)
-    return RunResult(output=env, tokens=g.tokens, model=g.model)
-
-
-def run_eval(agent_id: str, client: ModelClient, agents: dict | None = None) -> list[CaseResult]:
-    results = []
-    for case in load_cases(agent_id):
-        bus = InMemoryBus(); bb = Blackboard(bus)
-        for ctx in case.get("context", []):
-            bb.write(ctx["actor"], ctx["namespace"], ctx["content_ref"], ctx.get("summary", ""))
-        try:
-            r = _run_case(agent_id, case, client, agents, bb, bus)
-        except (RunnerError, LLMError) as e:
-            results.append(CaseResult(case["name"], False, [str(e)], error=True)); continue
-        fails = check(r.output.payload, case.get("expect", {}))
-        results.append(CaseResult(case["name"], not fails, fails, r.tokens))
-    return results
-
-
-def _lines(agent_id: str, res: list[CaseResult]) -> list[str]:
-    out = [f"{'PASS' if r.passed else 'FAIL'} {agent_id}/{r.name} ({r.tokens} tok)"
-           + "".join(f"\n   - {f}" for f in r.failures) for r in res]
-    return [*out, f"{agent_id}: {sum(r.passed for r in res)}/{len(res)} pass"]
+def _run_case(agent_id: str, case: dict[str, Any], client: ModelClient, agents: dict[str, Any] | None,
+              bb: Blackboard, bus: InMemoryBus) -> Any:
+        runner = AgentRunner(bus, client, agents, blackboard=bb)
+        i = case["input"]
+        inp = Envelope(topic=i["topic"], key=i["key"], actor=i.get("actor", "human"), payload=i["payload"])
+        if not case.get("many"):
+            return runner.run(agent_id, inp, case["topic_out"], extra=case.get("extra"))
+        # agent sinh nhiều payload một lượt (channel-strategist, community-manager): chấm phần tử đầu, `min_len: {items}` qua metrics
+        g = runner.generate(agent_id, inp, case["topic_out"], many=True, extra=case.get("extra"))
+        first = {**g.payloads[0], "_items": len(g.payloads)} if g.payloads else {"_items": 0}
+        if g.payloads:
+            runner.publish(agent_id, inp, case["topic_out"], g.payloads[0], tokens=g.tokens, model=g.model,
+                           context_writes=g.context_writes)
+        env = Envelope(topic=case["topic_out"], key=inp.key, actor=agent_id, payload=first)
+        return RunResult(output=env, tokens=g.tokens, model=g.model)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -263,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         # --replay (CI): cổng là "bản ghi còn khớp prompt và đầu ra hợp lệ" — ca chấm không đạt là tín hiệu chất lượng
         # cho vòng sau, không làm CI đỏ (đỏ khi bản ghi lệch/thiếu prompt, hoặc --strict + REQUIRED.txt). Model thật: mọi ca phải đạt.
         passed = all(r.passed for r in res)
-        return aid, lines, (passed if not ns.replay else not any(r.error for r in res))
+        return aid, lines, (passed if not ns.replay else not any(r.errored for r in res))
 
     # Thứ tự IN theo id kể cả khi chạy song song: log so được giữa hai lần chạy.
     if ns.jobs > 1 and len(ids) > 1:
