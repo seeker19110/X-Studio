@@ -95,13 +95,14 @@ def _lines(agent_id: str, res: list[CaseResult]) -> list[str]: return SUITE.line
 def _get(d: Any, dotted: str) -> Any: return _core_get(d, dotted)
 
 
-def run_eval(agent_id: str, client: ModelClient, agents: dict[str, Any] | None = None) -> list[CaseResult]:
-    return SUITE.run_eval(agent_id, client, agents)
+def run_eval(agent_id: str, client: ModelClient, agents: dict[str, Any] | None = None,
+             runs: int = 1) -> list[CaseResult]:
+    return SUITE.run_eval(agent_id, client, agents, runs)
 
 
 class RecordingClient(CoreRecordingClient):
-    def __init__(self, inner: ModelClient, agent_id: str):
-        super().__init__(inner, agent_id, SUITE)
+    def __init__(self, inner: ModelClient, agent_id: str, runs: int = 1):
+        super().__init__(inner, agent_id, SUITE, runs)
 
 
 class ReplayClient(CoreReplayClient):
@@ -163,8 +164,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--jobs", type=int, default=1, metavar="N",
                     help="chạy N agent song song (K5.3). Mỗi agent một client và một file bản ghi riêng nên "
                          "không tranh nhau; thứ tự IN vẫn theo id. Song song ở đây là chờ MẠNG, không phải CPU")
+    ap.add_argument("--runs", type=int, default=1, metavar="N",
+                    help="với --record: chạy mỗi ca N lần và ghi `score` = tỉ lệ đạt vào bản ghi (p3.3b). "
+                         "Thời gian chạy nhân lên N lần. --replay tất định nên N > 1 vô nghĩa ở đó")
     ns = ap.parse_args(argv)
     if ns.jobs < 1: ap.error("--jobs phải >= 1")
+    if ns.runs < 1: ap.error("--runs phải >= 1")
+    # `--runs N` không kèm `--record` là tốn N lần thời gian mà điểm không đi đâu cả — báo lỗi thay vì chiều theo.
+    if ns.runs > 1 and not ns.record: ap.error("--runs > 1 chỉ có nghĩa với --record")
     if hasattr(sys.stdout, "reconfigure"): sys.stdout.reconfigure(encoding="utf-8")
     agents = load_agents()
     ids = sorted(agents) if ns.agent == "all" else [ns.agent]
@@ -190,11 +197,14 @@ def main(argv: list[str] | None = None) -> int:
                 return _AgentOutcome(aid), lines, aid not in required
         else:
             from .llm import make_client
-            client = RecordingClient(make_client(), aid) if ns.record else make_client()
+            client = RecordingClient(make_client(), aid, runs=ns.runs) if ns.record else make_client()
         res = run_eval(aid, client, agents)
         lines += _lines(aid, res)
         if ns.record and isinstance(client, RecordingClient):
-            lines.append(f"đã ghi {client.save()}")
+            # Dọn khoá rác (p3.3c) CHỈ khi lượt này chạy ĐỦ bộ (`all`) và không ca nào lỗi — xem chú thích
+            # cùng chỗ ở company: tập khoá của một lượt thiếu ca không đại diện cho bộ ca.
+            du_bo = ns.agent == "all" and not any(r.errored for r in res)
+            lines.append(f"đã ghi {client.save(prune_to=set(client.entries) if du_bo else None)}")
         # --replay (CI): cổng là "bản ghi còn khớp prompt và đầu ra hợp lệ" — ca chấm không đạt là tín hiệu chất lượng
         # cho vòng sau, không làm CI đỏ (đỏ khi bản ghi lệch/thiếu prompt, hoặc --strict + REQUIRED.txt). Model thật: mọi ca phải đạt.
         passed = all(r.passed for r in res)

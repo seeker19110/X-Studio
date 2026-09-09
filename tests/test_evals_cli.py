@@ -112,3 +112,46 @@ def test_main_jobs_khong_hop_le_bi_chan_o_argparse(monkeypatch):
     with pytest.raises(SystemExit) as e:
         main(["all", "--replay", "--jobs", "0"])
     assert e.value.code == 2
+
+
+def _chi_supervisor(monkeypatch):
+    """Chạy `all` trong test mà không cần phản hồi giả cho 13 agent kia."""
+    from studio.llm import FakeClient
+    that = evals_mod.load_agents
+    monkeypatch.setattr(evals_mod, "load_agents", lambda: {"supervisor": that()["supervisor"]})
+    monkeypatch.setattr("studio.llm.make_client", lambda cfg=None: FakeClient(responses=[
+        {"target": "CH1-V1", "action": "escalate", "reason": "cùng lỗi lặp lại nhiều lần", "evidence": "x"},
+        {"target": "CH1-V2", "action": "budget_cut", "reason": "vượt ngân sách token đáng kể", "evidence": "y"},
+    ] * 4))
+
+
+def test_don_khoa_rac_CHI_khi_chay_du_bo(monkeypatch):
+    """Điều kiện dọn nằm ở CALL-SITE (`ns.agent == "all"`) — đo ở đây, không chỉ ở `save()`."""
+    rec_path = evals_mod.RECORDINGS_DIR / "supervisor.json"
+    rec_path.write_text(json.dumps({"agent": "supervisor", "prompt_version": 1,
+                                    "cases": {"rac-cu": {"text": "x", "model": "m"}}}), encoding="utf-8")
+    _chi_supervisor(monkeypatch)
+
+    main(["supervisor", "--record"])
+    cases = json.loads(rec_path.read_text(encoding="utf-8"))["cases"]
+    assert "rac-cu" in cases and len(cases) == 3, "một agent lẻ: KHÔNG dọn"
+
+    main(["all", "--record"])
+    cases = json.loads(rec_path.read_text(encoding="utf-8"))["cases"]
+    assert "rac-cu" not in cases and len(cases) == 2, "chạy đủ bộ: dọn khoá ngoài bộ ca hiện tại"
+
+
+def test_record_ghi_score_va_runs_con_runs_lon_hon_1_doi_hoi_record(monkeypatch, capsys):
+    _chi_supervisor(monkeypatch)
+    main(["supervisor", "--record", "--runs", "2"])
+    cases = json.loads((evals_mod.RECORDINGS_DIR / "supervisor.json").read_text(encoding="utf-8"))["cases"]
+    assert all(e["runs"] == 2 and "score" in e for e in cases.values())
+
+    # Khẳng định cả LÝ DO: argparse cũng thoát mã 2 khi không biết `--runs`, nên chỉ bắt `SystemExit` là ca
+    # xanh cả khi tính năng chưa tồn tại.
+    for argv, vi_sao in ((["supervisor", "--runs", "2"], "chỉ có nghĩa với --record"),
+                         (["supervisor", "--replay", "--runs", "2"], "chỉ có nghĩa với --record"),
+                         (["supervisor", "--runs", "0"], "phải >= 1")):
+        with pytest.raises(SystemExit):
+            main(argv)
+        assert vi_sao in capsys.readouterr().err

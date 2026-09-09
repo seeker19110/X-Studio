@@ -76,8 +76,8 @@ def test_main_record_mode_calls_recording_client_save(monkeypatch, tmp_path):
     saved = {}
     orig_save = RecordingClient.save
 
-    def spy_save(self):
-        p = orig_save(self)
+    def spy_save(self, **kw):   # save(prune_to=...) từ p3.3c: spy phải nhận tham số khoá
+        p = orig_save(self, **kw)
         saved["path"] = p
         return p
 

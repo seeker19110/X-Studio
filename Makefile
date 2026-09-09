@@ -23,8 +23,9 @@ gate:
 	uv run python -m studio.gate_cli list
 eval:
 	uv run python -m studio.evals $(AGENT)
-eval-record:   # chạy model thật, lưu evals/recordings/$(AGENT).json — bắt buộc sau khi đổi prompt/skill
-	uv run python -m studio.evals $(AGENT) --record --jobs $(or $(JOBS),1)
+eval-record:   # RUNS=N chạy mỗi ca N lần và ghi `score` = tỉ lệ đạt (p3.3b); thời gian × N.
+               # chạy model thật, lưu evals/recordings/$(AGENT).json — bắt buộc sau khi đổi prompt/skill
+	uv run python -m studio.evals $(AGENT) --record --jobs $(or $(JOBS),1) $(if $(RUNS),--runs $(RUNS),)
 eval-replay:   # như CI: phát lại từ bản ghi, không gọi model
 	uv run python -m studio.evals all --replay --strict
 run:
