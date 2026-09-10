@@ -15,6 +15,12 @@ uv run python -m studio.orchestrator status
 uv run python -m studio.youtube login | status | sync-*     # nối YouTube thật (client_secret.json)
 ```
 
+## TDD ở package này
+
+`../AGENTS.md` luật bắt buộc 4 áp nguyên vẹn: viết test đỏ trong `tests/` trước, chạy `uv run pytest -q --cov -k
+<tên test>` thấy đỏ đúng lý do, rồi mới viết code trong `src/studio/` cho nó xanh. Test ghép video tự bỏ qua khi
+thiếu `ffmpeg` không tính là "đỏ đúng lý do" — kiểm bằng test khác không phụ thuộc `ffmpeg` nếu máy không có.
+
 ## Ba điều không được phá
 
 1. **Approval-first (ADR-0002)**: không có gì lên lịch / đăng / trả lời công khai trước gate `publish` / `replies`.
