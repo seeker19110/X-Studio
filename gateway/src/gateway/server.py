@@ -1,0 +1,339 @@
+"""HTTP server OpenAI-compatible của gateway (aiohttp).
+
+Endpoint:
+- GET  /health
+- GET  /v1/models
+- POST /v1/chat/completions   (hỗ trợ `stream: true` qua SSE)
+- GET  /auth/status           (toàn bộ pool: email, cooldown, hạn token)
+- POST /auth/login            (mở trình duyệt thêm tài khoản)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import logging
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+import httpx
+from aiohttp import web
+
+from gateway.auth import AntigravityAuthManager, get_gateway_dir, get_home_dir
+from gateway.client import (
+    UPSTREAM_TIMEOUT_S,
+    AntigravityClient,
+    discovery_is_stale,
+    fetch_available_models,
+    reset_hint_seconds,
+    serving_models,
+    set_discovered_models,
+)
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_HOST = os.getenv("GATEWAY_HOST", "127.0.0.1")
+DEFAULT_PORT = int(os.getenv("GATEWAY_PORT", "1123"))
+_DUMMY_BEARERS = {"dummy", "none", "token", "default", "antigravity", "gateway-local", "sk-gateway"}
+
+
+def get_pid_file() -> Path:
+    return get_gateway_dir() / "gateway.pid"
+
+
+def get_log_file() -> Path:
+    log_dir = get_home_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "gateway.log"
+
+
+def upstream_status(exc: Exception) -> int:
+    """Mã HTTP thật từ UpstreamError; lỗi khác đoán an toàn từ nội dung."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and 400 <= status < 600:
+        return status
+    if isinstance(exc, httpx.TimeoutException):
+        return 504   # hết giờ chờ upstream, KHÔNG phải upstream trả 500 — client cần phân biệt để chờ lâu hơn
+    text = str(exc).lower()
+    if "429" in text or "exhausted" in text or "cooldown" in text:
+        return 429
+    return 500
+
+
+def error_message(exc: Exception) -> str:
+    """Thông điệp lỗi luôn có nội dung. `str(httpx.ReadTimeout(""))` là chuỗi RỖNG, nên lỗi hết giờ trước đây
+    tới client dưới dạng `{"message": "", "code": 500}` — không phân biệt được với upstream hỏng thật, khiến
+    người vận hành mò rất lâu. Luôn kèm tên lớp ngoại lệ khi không có nội dung."""
+    text = str(exc).strip()
+    if isinstance(exc, httpx.TimeoutException):
+        return (f"hết giờ chờ upstream sau {UPSTREAM_TIMEOUT_S:.0f}s ({type(exc).__name__}"
+                + (f": {text}" if text else "") + "); lượt gọi model nặng có thể lâu hơn mức này")
+    return text or f"{type(exc).__name__} (không có mô tả)"
+
+
+def _error_type(status: int) -> str:
+    """Phân loại theo chuẩn OpenAI để client phía trên xử lý đúng: 400 (model lạ, payload hỏng) là lỗi
+    cấu hình, không phải lỗi tạm thời — không được retry hay xoay tài khoản."""
+    if status == 429:
+        return "rate_limit_error"
+    if status in {401, 403}:
+        return "authentication_error"
+    if status == 404:
+        return "not_found_error"
+    if 400 <= status < 500:
+        return "invalid_request_error"
+    return "api_error"
+
+
+def _error_response(exc: Exception) -> web.Response:
+    status = upstream_status(exc)
+    err_type = _error_type(status)
+    msg = error_message(exc)
+    headers = {}
+    # Gateway BIẾT chính xác còn phải chờ bao lâu (nó tự tính "Thử lại sau khoảng 1543s") nhưng trước đây chỉ
+    # nhét vào câu tiếng Việt, buộc client phải regex trên văn bản người-đọc. Đổi từ ngữ thông điệp là cơ chế
+    # chờ của client hỏng ngay và không test nào bắt được. Gửi đúng header chuẩn.
+    if status == 429 and (secs := reset_hint_seconds(msg)) is not None:
+        headers["Retry-After"] = str(secs)
+    return web.json_response({"error": {"message": msg, "type": err_type, "code": status}},
+                             status=status, headers=headers)
+
+
+def _stream_error_chunk(exc: Exception) -> str:
+    status = upstream_status(exc)
+    err_type = _error_type(status)
+    payload = {"error": {"message": error_message(exc), "type": err_type, "code": status}}
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\ndata: [DONE]\n\n"
+
+
+def is_loopback_host(host: str) -> bool:
+    return host in {"127.0.0.1", "localhost", "::1", "[::1]"} or host.startswith("127.")
+
+
+def host_header_is_loopback(header: str | None) -> bool:
+    """`Host` có thể kèm cổng và IPv6 trong ngoặc vuông. Thiếu header (HTTP/1.0) thì cho qua.
+
+    Chống DNS rebinding: trình duyệt gửi `Host` là tên miền kẻ tấn công điều khiển (`evil.example`), dù bản ghi
+    A của nó đã trỏ về 127.0.0.1. KHÔNG phân giải DNS ở đây — tên lạ là không loopback, chấm hết."""
+    if header is None: return True
+    value = header.strip()
+    if not value: return True
+    if value.startswith("["):
+        value = value[1 : value.find("]")] if "]" in value else value[1:]
+    elif value.count(":") == 1:
+        value = value.split(":", 1)[0]
+    return is_loopback_host(value.lower())
+
+
+def origin_is_local(origin: str | None) -> bool:
+    """`Origin` vắng mặt = client không phải trình duyệt (curl, SDK OpenAI) → cho qua: trình duyệt LUÔN gắn
+    `Origin` cho request cross-origin, nên đây đúng là lằn ranh cắt CSRF mà không chạm client dòng lệnh.
+
+    Cho qua mọi origin loopback bất kể CỔNG: một trang dev chạy ở `http://localhost:3000` gọi sang gateway là
+    việc hợp lệ và thường gặp, mà trang từ Internet thì không thể tự đặt `Origin` thành loopback. `"null"`
+    (sandbox iframe, `file://`) coi là nguồn lạ."""
+    if origin is None: return True
+    value = origin.strip()
+    if not value: return True
+    scheme, sep, rest = value.partition("://")
+    if not sep or scheme.lower() not in {"http", "https"} or not rest: return False
+    return host_header_is_loopback(rest)
+
+
+def guard_middleware(enforce: bool) -> Any:
+    """Gateway KHÔNG có xác thực client, nên hai header này là toàn bộ hàng rào giữa pool tài khoản Google và
+    một trang web bất kỳ người dùng đang mở: CORS chặn trang đó ĐỌC phản hồi, nhưng không chặn tác dụng phụ —
+    `POST /v1/chat/completions` vẫn đốt quota thật, `POST /auth/login` vẫn mở luồng thêm tài khoản. Console đã
+    phòng thủ đúng hai thứ này từ đầu (`console/server.py::_guard`); gateway thì chưa, tới bản này.
+
+    `enforce=False` khi người vận hành CỐ Ý bind ra ngoài loopback: khi đó `Host` hợp lệ là tên miền thật và
+    `Origin` hợp lệ là ứng dụng web thật, hai luật dưới đây sẽ chặn nhầm. Đó là chế độ đã được cảnh báo ở
+    `warn_if_public_host` và vốn đòi firewall/reverse proxy lo xác thực."""
+    @web.middleware
+    async def guard(request: web.Request, handler: Any) -> web.StreamResponse:
+        if enforce:
+            if not host_header_is_loopback(request.headers.get("Host")):
+                # 404 chứ không 403: không xác nhận cho kẻ tấn công rằng có server ở đây.
+                return web.json_response({"error": {"message": "không có", "type": "invalid_request_error"}}, status=404)
+            if not origin_is_local(request.headers.get("Origin")):
+                return web.json_response(
+                    {"error": {"message": "Origin không hợp lệ", "type": "permission_error"}}, status=403)
+        return await handler(request)
+    return guard
+
+
+def warn_if_public_host(host: str) -> None:
+    """Gateway không có xác thực client: mở ra ngoài loopback là ai trong mạng cũng dùng được pool tài khoản."""
+    if not is_loopback_host(host):
+        logger.warning(
+            "Gateway lắng nghe trên %s (không phải loopback): endpoint KHÔNG có xác thực, "
+            "mọi máy trong mạng đều dùng được tài khoản Google trong pool. Chỉ làm vậy sau firewall/reverse proxy.",
+            host,
+        )
+
+
+class GatewayServer:
+    def __init__(
+        self,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        auth_manager: AntigravityAuthManager | None = None,
+        client: AntigravityClient | None = None,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.auth_manager = auth_manager or AntigravityAuthManager()
+        self.client = client or AntigravityClient(self.auth_manager)
+        self.app = web.Application(client_max_size=32 * 1024**2,   # lịch sử chat dài kèm ảnh vượt 1MB mặc định
+                                   middlewares=[guard_middleware(is_loopback_host(host))])
+        self.app.router.add_get("/health", self.handle_health)
+        self.app.router.add_get("/auth/status", self.handle_auth_status)
+        self.app.router.add_post("/auth/login", self.handle_auth_login)
+        self.app.router.add_get("/v1/models", self.handle_list_models)
+        self.app.router.add_post("/v1/chat/completions", self.handle_chat_completions)
+        self.app.on_cleanup.append(self._cleanup)
+
+    async def _cleanup(self, _app: web.Application) -> None:
+        await self.client.close()
+
+    async def handle_health(self, request: web.Request) -> web.Response:
+        return web.json_response({"status": "ok", "service": "gateway", "version": "0.1.0", "timestamp": time.time()})
+
+    async def handle_auth_status(self, request: web.Request) -> web.Response:
+        now = time.time()
+        accounts = []
+        for c in self.auth_manager.load_all_stored_credentials():
+            accounts.append(
+                {
+                    "email": c.email,
+                    "project_id": c.project_id,
+                    "expires_at": c.expires_at,
+                    "is_expired": c.is_expired,
+                    "has_refresh_token": bool(c.refresh_token),
+                    "cooldown_remaining": max(0, int(c.unavailable_until - now)),
+                    "last_failure_status": c.last_failure_status,
+                    "source": c.source,
+                }
+            )
+        available = sum(1 for a in accounts if a["cooldown_remaining"] == 0)
+        return web.json_response(
+            {"logged_in": bool(accounts), "total": len(accounts), "available": available, "accounts": accounts}
+        )
+
+    async def handle_auth_login(self, request: web.Request) -> web.Response:
+        try:
+            creds = await asyncio.to_thread(self.auth_manager.login_pkce)
+            return web.json_response({"ok": True, "email": creds.email, "project_id": creds.project_id})
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    async def _refresh_catalog(self) -> None:
+        """Hỏi upstream danh sách model (TTL 1 giờ). Hỏng thì im lặng dùng bảng tĩnh —
+        không có model mới còn hơn là gateway chết vì một lần discovery lỗi."""
+        if not discovery_is_stale():
+            return
+        try:
+            candidates = await asyncio.to_thread(self.auth_manager.resolve_credential_candidates)
+        except Exception as e:
+            logger.warning("Không lấy được tài khoản để dò model: %s", e)
+            return
+        for creds in candidates:
+            try:
+                models = await asyncio.to_thread(fetch_available_models, creds.access_token, creds.project_id)
+            except Exception as e:
+                logger.warning("Dò model qua %s thất bại: %s", creds.email or "primary", e)
+                continue
+            if models:
+                set_discovered_models(models)
+                logger.info("Đã dò %d model từ upstream: %s", len(models), ", ".join(m["id"] for m in models))
+                return
+
+    async def handle_list_models(self, request: web.Request) -> web.Response:
+        await self._refresh_catalog()
+        created = int(time.time())
+        return web.json_response(
+            {
+                "object": "list",
+                "data": [
+                    {"id": m["id"], "object": "model", "created": created, "owned_by": "antigravity", "name": m["name"]}
+                    for m in serving_models()
+                ],
+            }
+        )
+
+    async def handle_chat_completions(self, request: web.Request) -> web.StreamResponse:
+        try:
+            payload = await request.json()
+        except Exception as e:
+            return web.json_response(
+                {"error": {"message": f"JSON không hợp lệ: {e}", "type": "invalid_request_error"}}, status=400
+            )
+        auth_header = request.headers.get("Authorization") or ""
+        bearer = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+        if bearer in _DUMMY_BEARERS:
+            bearer = ""
+
+        await self._refresh_catalog()
+        if not payload.get("stream"):
+            try:
+                return web.json_response(await self.client.create_chat_completion(payload, bearer_token=bearer))
+            except Exception as e:
+                logger.error("Chat completion lỗi (%s): %s", upstream_status(e), error_message(e))
+                return _error_response(e)
+
+        gen = self.client.stream_chat_completion(payload, bearer_token=bearer)
+        try:
+            first = await gen.__anext__()
+        except Exception as e:
+            logger.error("Không mở được stream: %s", e)
+            with contextlib.suppress(Exception):
+                await gen.aclose()
+            return _error_response(e)
+
+        response = web.StreamResponse(
+            status=200,
+            headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+        try:
+            await response.prepare(request)
+            await response.write(first.encode("utf-8"))
+            try:
+                async for chunk in gen:
+                    await response.write(chunk.encode("utf-8"))
+            except Exception as e:
+                # Báo lỗi cho client dạng chunk rồi [DONE], thay vì cắt stream im lặng.
+                logger.error("Lỗi giữa stream: %s", e)
+                await response.write(_stream_error_chunk(e).encode("utf-8"))
+            await response.write_eof()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError) as e:
+            logger.debug("Client ngắt giữa stream: %s", e)
+        except Exception as e:
+            if "closing transport" in str(e).lower() or "connection" in str(e).lower():
+                logger.debug("Mất kết nối client giữa stream: %s", e)
+            else:
+                logger.error("Lỗi bất ngờ khi stream: %s", e)
+        finally:
+            # Đóng generator để trả kết nối httpx về pool ngay cả khi client ngắt giữa chừng.
+            with contextlib.suppress(Exception):
+                await gen.aclose()
+        return response
+
+
+def run_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    warn_if_public_host(host)
+    server = GatewayServer(host=host, port=port)
+    web.run_app(server.app, host=host, port=port)
+
+
+def is_server_running(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> bool:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=1.0) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("service") == "gateway"
+    except Exception:
+        return False
