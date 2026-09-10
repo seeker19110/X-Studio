@@ -54,9 +54,11 @@ tests/         pytest 585 ca / 48 file: bus, registry, golden 14 agent, prefligh
 
 ## Chạy
 
+Repo này tự chứa: `xagents-core/` (lõi chung) và `gateway/` (proxy tài khoản) vendor tại chỗ, làm thành viên uv
+workspace của `pyproject.toml` gốc — không cần clone repo nào khác.
+
 ```bash
-cd Studio-creators
-uv sync
+make sync                                  # = uv sync --all-packages, cài cả studio + gateway + xagents-core
 make test                                  # pytest offline (client giả, media giả; ffmpeg test tự bỏ qua nếu thiếu)
 make demo                                  # cả phòng ban với client giả + media giả, dừng ở 2 gate rồi tự duyệt
 make lint                                  # ruff (make fix = ruff --fix); make status = orchestrator status
@@ -64,7 +66,7 @@ make lint                                  # ruff (make fix = ruff --fix); make 
 # Model thật (provider bất kỳ): cp llm.example.yaml llm.yaml ; cp media.example.yaml media.yaml ; hoặc biến môi trường
 #   STUDIO_LLM_PROVIDER=openai STUDIO_LLM_BASE_URL=https://openrouter.ai/api/v1 STUDIO_MODEL_STRONG=... STUDIO_LLM_API_KEY=...
 #   STUDIO_LLM_PROVIDER=anthropic STUDIO_MODEL_STRONG=claude-opus-5   (uv sync --extra anthropic)
-#   Qua gateway xoay vòng tài khoản Google Antigravity (../gateway, xem README ở đó):
+#   Qua gateway xoay vòng tài khoản Google Antigravity (gateway/, xem README ở đó):
 #   STUDIO_LLM_PROVIDER=openai STUDIO_LLM_BASE_URL=http://127.0.0.1:1123/v1 STUDIO_LLM_API_KEY=gateway-local STUDIO_MODEL_STRONG=claude-sonnet-4-6
 #   Gói Claude Pro/Max (CLI `claude -p`, không key, không tool-use của công ty): STUDIO_LLM_PROVIDER=claude-code STUDIO_MODEL_STRONG=claude-opus-5
 #   Gói ChatGPT Plus/Pro (Codex CLI `codex exec --json`, không key, không tool-use): STUDIO_LLM_PROVIDER=codex STUDIO_MODEL_STRONG=gpt-5.6-terra
