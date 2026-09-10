@@ -15,6 +15,12 @@ uv run python -m gateway login | start | stop | status | models | setup | reset 
 `status` exit 1 khi server tắt **hoặc** 0 tài khoản sẵn sàng (`manage.py:196`) — dùng được trong script, nhưng mã
 thoát không phân biệt hai ca.
 
+## TDD ở package này
+
+`../AGENTS.md` luật bắt buộc 4 áp nguyên vẹn: viết test đỏ trong `tests/` trước (dùng `httpx.MockTransport`/
+`aiohttp TestClient` — không gọi Google thật, xem "Không bao giờ" dưới), chạy `uv run pytest -q --cov -k <tên
+test>` thấy đỏ đúng lý do, rồi mới viết code trong `src/gateway/` cho nó xanh.
+
 ## Ba điều không được phá
 
 1. **Hợp đồng OpenAI Chat Completions ở mặt ngoài**: `usage` trả token thật từ `usageMetadata` (kể cả cache) —
