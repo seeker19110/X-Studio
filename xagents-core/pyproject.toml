@@ -1,0 +1,76 @@
+[project]
+name = "xagents-core"
+version = "0.1.0"
+description = "Lõi chung của mọi công ty AI trong X-Agents: bus, llm, runner, guard, gate (ADR gốc 0001)"
+requires-python = ">=3.11"
+# Chỉ phụ thuộc thứ mà CẢ HAI công ty đã dùng. Core không biết tên công ty nào (ADR-0001 §2).
+dependencies = [
+    "jsonschema>=4.21",
+    "pydantic>=2.7",
+    "pyyaml>=6",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.10",
+    # `types-PyYAML`/`types-jsonschema` chỉ cần ở core: bốn package kia chạy mypy với `--ignore-missing-imports`
+    # nên thư viện không có stub im lặng thành `Any`; core cố ý KHÔNG có cờ đó (ADR gốc 0001 §6 — lõi không được
+    # lỏng hơn nơi gọi nó), nên nó phải khai stub thật. `types-jsonschema` vào ở K3.5b cùng `bus.py`: company
+    # dùng `jsonschema` từ lâu mà không cần stub vì nó CÓ cờ ấy — đúng cái bẫy "chạy sạch ở nơi gọi, đỏ ở lõi".
+    "types-PyYAML>=6",
+    "types-jsonschema>=4.21",
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xagents_core"]
+# PEP 561: không có marker này thì mypy coi CẢ package là untyped — mọi shim `from xagents_core.X import *`
+# ở company/studio mang sang 0 tên, và caller nhận "has no attribute" hoặc tệ hơn là `Any` im lặng.
+# Tức là `strict = true` ở trên chỉ bảo vệ được chính core, không bảo vệ được ai gọi nó.
+[tool.hatch.build.targets.wheel.force-include]
+"src/xagents_core/py.typed" = "xagents_core/py.typed"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "RUF"]
+# E701/E702: cùng quy ước viết gọn một dòng như bốn package kia. RUF001-003: ký tự Unicode tiếng Việt.
+ignore = ["E701", "E702", "RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.11"
+# K6.1 (kịch bản B): core `strict` từ NGÀY ĐẦU. Bốn package kia siết dần theo module vì chúng có sẵn hàng nghìn
+# dòng chưa chú kiểu; core chưa có dòng nào, nên đây là lần duy nhất bật strict mà không phải trả nợ.
+# Core là chỗ mọi công ty tin cậy — nó không được lỏng hơn nơi gọi nó (ADR-0001 §6).
+strict = true
+
+# Ngoại lệ DUY NHẤT, và hẹp đúng một module: SDK `anthropic` là extra tuỳ chọn (`uv sync --extra anthropic`),
+# không cài trong CI. Đây không phải nới `strict` — `ignore_missing_imports` chỉ nói "không có stub thì đừng
+# đỏ", mọi luật strict khác vẫn áp cho mã của ta. Không dùng cờ toàn cục `--ignore-missing-imports` như bốn
+# package kia, vì cờ đó biến MỌI import thiếu thành `Any` im lặng, kể cả import gõ sai tên.
+[[tool.mypy.overrides]]
+module = "anthropic.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src/xagents_core"]
+# Phủ NHÁNH, không chỉ dòng — xem lý do ở `keeper/pyproject.toml`. core đi cùng đợt vì nó là lõi hai
+# công ty dùng chung: một nhánh sai ở đây hỏng cả sáu package, nên nó đáng chặn chặt nhất.
+branch = true
+
+[tool.coverage.report]
+# Như bốn package kia: ngưỡng bằng đúng mức đạt được, mất một dòng phủ là CI đỏ.
+fail_under = 100

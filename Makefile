@@ -1,4 +1,6 @@
-.PHONY: llm test cov types demo lint fix golden gate eval eval-record eval-replay run watch status
+.PHONY: llm sync test cov types demo lint fix golden gate eval eval-record eval-replay run watch status test-all cov-all lint-all
+sync:           # một venv chung cho studio + gateway + xagents-core (vendor tại chỗ, xem pyproject.toml)
+	uv sync --all-packages
 llm:           # cài hồ sơ model chạy thật: make llm PROFILE=claude-gateway (không ghi đè llm.yaml đang có)
 	@test -f llm.yaml && echo "llm.yaml đã có, không ghi đè (xoá nó nếu muốn cài lại)" || \
 	 (uv run python -m gateway ready --quiet && \
@@ -8,6 +10,21 @@ test:
 	uv run pytest -q
 cov:
 	uv run pytest -q --cov
+test-all:       # studio + gateway + xagents-core, ba pytest riêng (ba `fail_under=100` độc lập)
+	uv run pytest -q
+	cd gateway && uv run pytest -q
+	cd xagents-core && uv run pytest -q
+cov-all:
+	uv run pytest -q --cov
+	cd gateway && uv run pytest -q --cov
+	cd xagents-core && uv run pytest -q --cov
+lint-all:
+	uv run ruff check src tests
+	cd gateway && uv run ruff check src tests
+	cd xagents-core && uv run ruff check src tests
+	uv run mypy src/studio --ignore-missing-imports
+	cd gateway && uv run mypy src --ignore-missing-imports
+	cd xagents-core && uv run mypy src
 types:
 	uv run mypy src/studio --ignore-missing-imports
 demo:

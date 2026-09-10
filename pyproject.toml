@@ -12,6 +12,11 @@ dependencies = [
 [tool.uv.sources]
 xagents-core = { workspace = true }
 
+[tool.uv.workspace]
+# Vendor tại chỗ (không phải sibling repo) để cả studio lẫn gateway chạy được từ một `uv sync` duy nhất
+# ở gốc repo này — xem CLAUDE.md/README.md. Nguồn gốc: seeker19110/Claude-Agents (monorepo gốc).
+members = ["gateway", "xagents-core"]
+
 [project.optional-dependencies]
 anthropic = ["anthropic>=1.0"]   # provider anthropic cho text; provider openai-compatible (text/TTS/ảnh) không cần SDK
 

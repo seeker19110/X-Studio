@@ -6,13 +6,18 @@ gate (`plan`, `publish`, `replies`, `escalation`). Kế thừa kiến trúc củ
 
 ## Chạy ở đâu
 
+Repo này là gốc: `xagents-core/` và `gateway/` vendor tại chỗ (từ `seeker19110/Claude-Agents`) làm thành viên
+uv workspace của chính `pyproject.toml` gốc — một `uv sync --all-packages` cài cả ba vào một `.venv` chung, không
+cần clone repo khác hay `cd` đi đâu.
+
 ```bash
-cd Studio-creators
+make sync                                 # = uv sync --all-packages, một lần cho cả ba package
 uv run pytest -q --cov                    # ffmpeg thiếu thì test ghép video tự bỏ qua — không phải lỗi
 uv run ruff check src tests && uv run mypy src/studio --ignore-missing-imports
 uv run python -m studio.demo              # cả phòng ban offline, dừng ở 2 gate rồi tự duyệt
 uv run python -m studio.orchestrator status
 uv run python -m studio.youtube login | status | sync-*     # nối YouTube thật (client_secret.json)
+make test-all cov-all lint-all            # cả studio + gateway + xagents-core (mỗi package tự fail_under=100)
 ```
 
 ## TDD ở package này

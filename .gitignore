@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.coverage
+.coverage.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+llm.yaml
