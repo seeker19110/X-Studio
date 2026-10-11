@@ -193,3 +193,58 @@ def test_creator_format_and_language_bind_actual_scene_manifest(tmp_path, monkey
         assert metadata and all(event.payload["language"] == language for event in metadata)
     finally:
         f.close()
+
+
+@pytest.mark.parametrize("stage", ["bus", "commands", "client", "autopilot", "settings", "refresh"])
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_factory_startup_failure_closes_bus_and_releases_lease(tmp_path, monkeypatch, stage, error_type):
+    import sqlite3
+
+    from studio import factory as module
+
+    db = tmp_path / "startup.sqlite"
+    cfg = MediaConfig(output_dir=tmp_path / "out")
+    if stage == "settings":
+        saved = CommandStore(db); saved.add("saved", "settings", {"threads": 2}); saved.complete("saved")
+    buses = []
+    real_bus = module.SQLiteBus
+
+    def open_bus(*args, **kwargs):
+        bus = real_bus(*args, **kwargs); buses.append(bus); return bus
+
+    def fail(*args, **kwargs):
+        raise error_type(f"injected {stage}")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "SQLiteBus", open_bus)
+        if stage == "bus": patch.setattr(module, "SQLiteBus", fail)
+        elif stage == "commands": patch.setattr(module, "CommandStore", fail)
+        elif stage == "client": patch.setattr(module, "make_client", fail)
+        elif stage == "autopilot": patch.setattr(module, "Autopilot", fail)
+        elif stage == "settings": patch.setattr(Factory, "apply_settings", fail)
+        else: patch.setattr(Factory, "refresh", fail)
+        with pytest.raises(error_type, match=f"injected {stage}"):
+            Factory(db, cfg, demo=stage != "client")
+        assert not db.with_name(db.name + ".lock").exists()
+        for bus in buses:
+            with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+                bus.poll()
+    restarted = Factory(db, cfg, demo=True)
+    restarted.close()
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_factory_close_failure_still_releases_lease(tmp_path, monkeypatch, error_type):
+    db = tmp_path / "closing.sqlite"
+    factory = Factory(db, MediaConfig(output_dir=tmp_path / "out"), demo=True)
+    real_close = factory.bus.close
+
+    def fail():
+        real_close()
+        raise error_type("injected close")
+
+    monkeypatch.setattr(factory.bus, "close", fail)
+    with pytest.raises(error_type, match="injected close"):
+        factory.close()
+    assert factory.stop.is_set()
+    assert not db.with_name(db.name + ".lock").exists()

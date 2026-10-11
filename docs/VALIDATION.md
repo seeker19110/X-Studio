@@ -71,7 +71,45 @@ Location cần đối soát thủ công; không có lệnh tự reset hay đoán
 published sai từ lịch sử cũ cũng cần đối soát, vì thiếu trạng thái để tự sửa chắc
 chắn. SHA-256 đọc file theo block 1 MiB, upload giữ chunk tối đa 8 MiB như PR #6;
 file đầu vào cần bất biến trong lúc gửi. Kiểm tra size/mtime hỗ trợ phát hiện thay
-đổi, không thay snapshot filesystem. Xem [ADR-0014](adr/0014-durable-youtube-upload-reconciliation.md).
+đổi, không thay snapshot filesystem. Xem [ADR-0016](adr/0016-durable-youtube-upload-reconciliation.md).
+
+## Website → Video và hai video Đồng Hành 4K (2026-10-11)
+
+Luồng mới của [ADR-0015](adr/0015-website-to-local-video.md) đã chạy qua form thật,
+HTTP command, SQLite, worker, model CLI đã cấu hình, Chromium, Edge TTS và FFmpeg.
+Tác vụ `13774411f6754cc5849079b27fb772bc` dùng chế độ cả hai, 60 giây/video,
+4K, giọng `vi-VN-HoaiMyNeural`; ảnh nguồn là giao diện khách thật của trang chủ
+và Góc học tập tại donghanhcungban.org. Không đăng nhập website hay thực hiện
+các thao tác tài khoản. Video hướng dẫn giới thiệu cách bắt đầu và chọn môn học.
+
+- Cả `intro.mp4` và `tutorial.mp4` đã lưu tại
+  `C:\Videos\X-Studio\donghanhcungban.org-13774411f6754cc5849079b27fb772bc`.
+  Mỗi video đúng **60,000 giây**, **3840×2160**, **30 fps / 1.800 frame**,
+  H.264 High/yuv420p, color space BT.709, AAC stereo 48 kHz.
+  Pipeline giải mã toàn bộ trước khi công bố file; ffprobe độc lập xác nhận
+  metadata và SHA-256 khớp báo cáo. Có SRT, poster, kịch bản/nguồn và báo cáo QC.
+- Chromium tại console thật: phát cả hai video, tua đến giây 32, giữ nguyên
+  video/điểm tua qua polling; tám liên kết MP4/SRT/kịch bản/báo cáo trả HTTP 200.
+  Preset thời lượng và nhập số tùy chọn hoạt động. 1440×1080 và 390×844:
+  không lỗi JavaScript, không tràn ngang. Đây là lượt media thật, không phải demo.
+- Regression được viết đỏ trước khi sửa: URL/thư mục C, dữ liệu model,
+  demo offline, request/DNS/redirect, ảnh trắng/chưa tải nội dung, giới hạn
+  request của SPA, phụ đề, thời lượng giọng đọc, TTS lỗi tạm thời,
+  cache/staging, hủy và tiếp tục tác vụ. File website có **55 ca**.
+- `PATH=/home/liend/.local/bin:/tmp/xstudio-stability-tools/bin:$PATH
+  UV_PROJECT_ENVIRONMENT=/tmp/xstudio-website-test-venv make verify` đạt trên
+  bản sao nguồn đối chiếu byte với workspace: **1.030 Studio + 273 Gateway +
+  478 core = 1.781 test Python**, không skip. Coverage dòng **100%** cả ba
+  package, core có coverage nhánh **100%**. Ruff/mypy cả ba package và replay
+  strict **28/28** đạt; `node --check` và `git diff --check` đạt.
+
+Nhật ký cục bộ trong `output/website-verify.log`, metadata video trong
+`output/website-4k-verification.json`, đối chiếu nguồn trong
+`output/website-source-comparison.json` và ảnh/kết quả browser trong
+`output/website-ui/`. Môi trường Python 3.13.15, Linux/WSL, Chromium 1248,
+FFmpeg n8.1. Không chạy YouTube/upload, model API có khóa hay eval model live.
+Lượt này xác minh pipeline Website → Video và lưu trên ổ C qua WSL;
+không chứng minh quy trình sau đăng nhập hoặc runtime Windows thuần.
 
 ## Phim và hoạt hình (2026-10-11)
 
@@ -328,3 +366,77 @@ Lượt chạy thực phát hiện SVG có `stroke-dasharray` hợp lệ bị va
 Studio hiện tại: 951 ca đạt, 100% của 5.371 dòng thực thi; Ruff và mypy đạt (42 file nguồn). Các test YouTube giả lập dùng hồ sơ riêng, không phụ thuộc `media.yaml` thật của người vận hành. Snapshot chỉ trả trạng thái có cấu hình OAuth, không trả token; trường hợp thiếu hoặc hỏng credential vẫn cho phép dựng MP4 và giao diện ghi “Bản dựng cục bộ · chưa kết nối YouTube”. Trạng thái có credential không xác nhận quyền hoặc quota trên Google. Giọng và hình live đã được kiểm tra với mẫu này; chưa suy rộng thành đánh giá chất lượng cho mọi chủ đề. Theo lựa chọn của người dùng, chỉ tạo MP4, chưa kết nối OAuth hoặc đăng YouTube.
 
 Bản cuối của lượt CLI: `output/Pdec57ced433b4535a79a290a-V1/final_v5.mp4`, 4.670.889 byte, dài 52,349 giây, H.264/AAC, 720×1280, 24 fps, giọng Việt 48 kHz stereo, phụ đề nhúng và SRT riêng. Bản mới được editor thật duyệt cho manifest v5; các bản trước và lịch sử mở lại vẫn giữ trong audit. QC quét đủ file: −14 LUFS, đỉnh −1,4 dBTP, không finding, không đoạn đen hoặc khoảng lặng dài. Đã xem khung hình thực để xác nhận phụ đề Việt và bố cục. `scripts/publishing-smoke.cjs` đạt trên console live: MP4 thực tiến thời gian khi phát, nút Xem video hoạt động, 56 kiểm tra bố cục/navigation, không lỗi JavaScript và không gửi lệnh xuất bản. Đây là bằng chứng render và phát file; review quyền tư liệu/nội dung cuối vẫn là trạng thái riêng trong dashboard, không suy ra đã đăng YouTube.
+
+
+## Bổ sung: rà soát độ ổn định sau bộ video Đồng Hành (11/10/2026)
+
+Base: `b92bc6a` (`feat: run real CLI video production and expose publishing previews`).
+Đợt này ưu tiên lỗi và độ ổn định của X-Studio. Bộ chín video Đồng Hành đã xuất riêng
+ở `C:\Videos\DongHanh-ChatLuongCao`; mã dựng trong output và nguồn ZIP đi kèm.
+Sau khi video hoàn tất, thực hiện TDD cho các lỗi tại [ADR-0014](adr/0014-factory-cleanup-and-thumbnail-staging.md).
+
+- Mốc trước sửa: 951 Studio tests đạt, 100% dòng (5.371 dòng thực thi); lint/typecheck cả ba package đạt.
+- Thêm 24 regression cases: 23 ca thất bại đúng lỗi trước sửa, 1 ca xác nhận nhánh lỗi client đã được bảo vệ. Sau sửa, 24/24 đạt.
+- Ảnh bìa: giữ JPEG đã duyệt khi lỗi ở lần nén 1/2/3; dựng đủ A/B trước commit; B lỗi giữ cả bộ cũ và retry dùng lại ảnh nền trong cache.
+- FFmpeg: kiểm RunSpec thực qua sandbox cho graph ảnh/clip, JPEG và hoàn thiện captions/music. Decoder từng input, filter đơn/complex và encoder áp dụng render.threads; các test media thật vẫn chạy.
+- Factory: chèn RuntimeError và KeyboardInterrupt tại bus, command store, client, autopilot, saved settings, snapshot và đóng bus. Kiểm khóa được xóa, SQLiteBus đã đóng và khởi động lại được.
+- Ba fixture thumbnail cũ được sửa để runner ghi vào output thực trong argv thay vì ghi cứng vào tệp đích. Giữ nguyên kiểm tra chữ phủ, nén, cảnh báo và dọn staging.
+
+`make verify` trên bản cuối đạt:
+
+| Kiểm tra | Kết quả |
+|---|---|
+| Studio | **975 passed**, 100% dòng, 5.381 dòng thực thi; 64 tệp Python trong tests gồm conftest |
+| Gateway | **273 passed**, 100% dòng, 1.617 dòng thực thi |
+| xagents-core | **478 passed**, 100% dòng và nhánh; 2.285 dòng, 638 nhánh |
+| Ruff và mypy | Cả ba package đạt bằng lệnh quy định trong Makefile |
+| Eval replay strict | **28/28** ca ghi sẵn, 14 vai; không gọi model live |
+| JavaScript | node --check đạt cho app.js |
+| Chromium dashboard | 1440×1080 và 390×844: ý tưởng, chuyển thành dự án, undo, kế hoạch lỗi có thể thử lại, brief/ngôn ngữ, long/short, Kanban/search, script/scenes/QC, gate generation, draft settings, playbook và sáu view mobile; 0 lỗi JavaScript |
+
+Tổng **1.726 test Python**, không skip. Gateway giữ một RuntimeWarning runpy có sẵn
+ở test `gateway.manage`; không có lỗi kiểm thử. README và ADR được cập nhật theo
+975 ca/64 file và ADR 0001–0014; test đối chiếu README đạt.
+
+Chạy trên Linux/WSL, Python 3.13.15, FFmpeg/ffprobe BtbN n8.1 có libx264/libass/drawtext,
+font Unicode. Để giảm I/O từ ổ NTFS, kiểm chứng dùng bản sao tại
+`/tmp/xstudio-stability-audit` và venv riêng; 280 tệp source/test/config/prompt/schema/
+recording được so SHA-256 với checkout trên C, không thiếu hoặc khác nội dung.
+Lệnh: `PATH=/home/liend/.local/bin:/tmp/xstudio-stability-tools/bin:$PATH UV_PROJECT_ENVIRONMENT=/tmp/xstudio-stability-venv make verify`.
+Log ở `output/stability-verify.log`; bản đỏ/xanh và so source ở output cùng tên;
+ảnh UI ở `output/stability-browser`. Server demo/DB riêng được đóng sau kiểm tra.
+
+Bộ video gồm 18 MP4 (9 bản 4K và 9 Full HD), 30 fps, tổng nội dung 742,1 giây.
+Tất cả giải mã toàn bộ đạt; đo âm thanh, màu BT.709, số khung, chương và caption/layout
+đạt. Thư viện ngoại tuyến phát được, đổi 1080p, seek chương, tìm không dấu và mobile
+không tràn ngang; 0 lỗi JavaScript. ZIP nguồn kiểm integrity đạt: 44 ảnh giao diện,
+65 đoạn lời đọc gốc và 9 timeline. Số liệu chi tiết lưu trong Kiem-tra và
+Thong-tin-video.json ở thư mục video; không suy ra chất lượng nguồn giọng tăng lên
+khi resample WAV lên 48 kHz.
+
+Giới hạn: chưa kiểm suite cuối trên Windows native, provider/model live, ComfyUI GPU
+hoặc YouTube upload thật. Giới hạn thread không phải quota RAM; graph vẫn tăng theo
+số cảnh. Staging bảo vệ lỗi dựng trước commit, không tạo transaction chung cho nhiều
+filesystem replace và SQLite publish. Không thay prompt, quyền đăng công khai hay
+các giới hạn đã ghi ở ADR-0011/0012.
+
+
+## Hòa giải PR #7 với main sau PR #11 — 2026-10-11
+
+Tích hợp main `13ab96abe9709dcd52876cae2b95a59c677f0625` vào nhánh upload recovery,
+giữ Website → Video, live-export, ExitStack cleanup và thumbnail staging của main.
+ADR upload chuyển sang [0016](adr/0016-durable-youtube-upload-reconciliation.md)
+để giữ nguyên ADR 0014/0015 của PR #11. PR #9 về storage vẫn là thay đổi độc lập.
+
+`UV_CACHE_DIR=/tmp/xstudio-uv-cache make verify` trên Linux/Python 3.12.14 đạt:
+Studio **1.071 passed** (6.096 dòng, 100%, 66 tệp Python trong tests gồm conftest),
+Gateway **273 passed** (1.617 dòng, 100%), core **478 passed** (2.285 dòng,
+638 nhánh, 100%). Tổng **1.822 test**, Ruff/mypy cả ba package và **28/28** eval
+replay strict đạt. Gateway còn RuntimeWarning runpy đã có; không có lỗi test.
+Review độc lập cũng chạy 231 test platform/orchestrator/factory/website/renderer
+và không tìm thấy regression trong phần kết hợp. Log local: `/tmp/pr7-pr11-final.log`.
+
+Các báo cáo video thật và Windows/WSL được giữ từ PR #11 là bằng chứng do bên
+thực hiện cung cấp, không phải lần xác minh live trong đợt hòa giải này. Không chạy
+provider trả phí, upload YouTube, website capture live hoặc xuất lại video 4K.
+Các giới hạn upload recovery, render 12 giờ và Windows native vẫn còn hiệu lực.

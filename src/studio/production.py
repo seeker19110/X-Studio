@@ -91,9 +91,9 @@ def finish(video: VideoAssembler, src: Path, captions: Path | None, music: Path 
         raise MediaError("this video assembler does not support captions/music finishing")
     with tempfile.TemporaryDirectory(prefix=".finish-", dir=src.parent) as temp:
         root = Path(temp)
-        args = ["-i", str(src.resolve())]
+        args = ["-threads", str(video.threads), "-i", str(src.resolve())]
         if music:
-            args += ["-stream_loop", "-1", "-i", str(music.resolve())]
+            args += ["-stream_loop", "-1", "-threads", str(video.threads), "-i", str(music.resolve())]
             graph = (f"[1:a]volume={volume},aresample=48000[bed];[0:a]asplit=2[voice][side];"
                      "[bed][side]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=300[duck];"
                      "[voice][duck]amix=inputs=2:duration=first:normalize=0,"
@@ -105,10 +105,11 @@ def finish(video: VideoAssembler, src: Path, captions: Path | None, music: Path 
             shutil.copyfile(captions, root / "captions.srt")
             args += ["-vf", "subtitles=captions.srt:force_style='FontName=DejaVu Sans,FontSize=20,"
                      "Outline=2,Shadow=0,MarginV=24,Alignment=2'", "-c:v", "libx264", "-crf", "20",
-                     "-preset", "medium", "-threads", str(video.threads)]
+                     "-preset", "medium"]
         else:
             args += ["-c:v", "copy"]
         target = root / "finished.mp4"
-        args += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", str(target.resolve())]
+        args += ["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-threads", str(video.threads),
+                 "-movflags", "+faststart", str(target.resolve())]
         video._run(args, cwd=root)
         target.replace(src)

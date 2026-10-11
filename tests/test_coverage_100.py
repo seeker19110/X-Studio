@@ -91,14 +91,14 @@ def test_scale_contain_them_vien_den(monkeypatch):
 
 # ---------- finish_thumbnail ----------
 
-def _assembler_ghi_file(monkeypatch, out: Path, sizes: list[int]):
-    """FFmpegAssembler với `subprocess.run` giả: mỗi lần chạy ghi ra `out` với kích thước lấy từ `sizes`."""
+def _assembler_ghi_file(monkeypatch, sizes: list[int]):
+    """Runner giả ghi đúng output trong argv, kể cả khi encoder dùng staging."""
     _stub_which(monkeypatch, {"ffmpeg": "/usr/bin/ffmpeg"})
     runs: list[list[str]] = []
 
     def fake_run(argv, *a, **k):
         runs.append(argv)
-        out.write_bytes(b"\xff" * sizes[min(len(runs) - 1, len(sizes) - 1)])
+        Path(argv[-1]).write_bytes(b"\xff" * sizes[min(len(runs) - 1, len(sizes) - 1)])
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     # qua Sandbox (runner giả), không vá `subprocess.run`: gọi thẳng subprocess là `runs` rỗng → test đỏ.
@@ -109,7 +109,7 @@ def test_finish_thumbnail_ve_chu_phu_va_don_thu_muc_tam(tmp_path, monkeypatch):
     font = tmp_path / "f.ttf"; font.write_bytes(b"ttf")
     src = tmp_path / "nen.png"; src.write_bytes(b"png")
     out = tmp_path / "ra" / "thumb.jpg"
-    a, runs = _assembler_ghi_file(monkeypatch, out, [1000])
+    a, runs = _assembler_ghi_file(monkeypatch, [1000])
     a.font = font
     r = a.finish_thumbnail(src, out, text="Bốn từ ngắn gọn")
     assert r.provider == "ffmpeg" and r.model == "mjpeg" and r.path == out
@@ -117,13 +117,14 @@ def test_finish_thumbnail_ve_chu_phu_va_don_thu_muc_tam(tmp_path, monkeypatch):
     assert "drawtext=textfile=t.txt:fontfile=f.ttf" in vf
     assert "chữ=" in r.notes and "KB" in r.notes and "VƯỢT" not in r.notes
     assert len(runs) == 1  # đạt ngay ở q=3, không thử tiếp
+    assert Path(runs[0][-1]) != out and out.stat().st_size == 1000
     assert list(out.parent.glob(".studio-*")) == []  # thư mục tạm đã xoá
 
 
 def test_finish_thumbnail_ha_chat_luong_roi_bao_vuot_gioi_han(tmp_path, monkeypatch):
     src = tmp_path / "nen.png"; src.write_bytes(b"png")
     out = tmp_path / "thumb.jpg"
-    a, runs = _assembler_ghi_file(monkeypatch, out, [9_000_000])
+    a, runs = _assembler_ghi_file(monkeypatch, [9_000_000])
     a.font = None
     monkeypatch.setattr(media, "find_font", lambda video=None: None)
     r = a.finish_thumbnail(src, out, text="Một hai ba bốn năm sáu bảy tám chín mười mười một", max_bytes=2_000_000)
@@ -134,7 +135,7 @@ def test_finish_thumbnail_ha_chat_luong_roi_bao_vuot_gioi_han(tmp_path, monkeypa
 def test_finish_thumbnail_khong_chu_thi_khong_drawtext(tmp_path, monkeypatch):
     src = tmp_path / "nen.png"; src.write_bytes(b"png")
     out = tmp_path / "thumb.jpg"
-    a, runs = _assembler_ghi_file(monkeypatch, out, [1000])
+    a, runs = _assembler_ghi_file(monkeypatch, [1000])
     r = a.finish_thumbnail(src, out, text="   ")
     assert "drawtext" not in runs[0][runs[0].index("-vf") + 1] and "chữ=" not in r.notes
 
