@@ -109,8 +109,8 @@ CI Linux cài FFmpeg/font, khóa phiên bản GitHub Actions và chạy cùng l�
 - `src/studio/web/`: HTML/CSS/JavaScript native, đóng gói cùng Python.
 - `agents/`, `skills/`, `topics/`: 14 vai, 24 skill và schema sự kiện; giữ prompt hiện có.
 - `gateway/`, `xagents-core/`: thành viên uv workspace có test/coverage riêng.
-- `tests/`: pytest 933 ca / 64 file.
-- Test: 933 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
+- `tests/`: pytest 938 ca / 64 file.
+- Test: 938 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
 - `docs/adr/`: ADR 0001–0013; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình.
 
 Tham khảo thêm: [kiến trúc nền](docs/architecture.md), [CLI chi tiết](docs/CLI-REFERENCE.md), [CLAUDE.md](CLAUDE.md). Các hướng dẫn cũ về gate được bổ sung bởi policy ủy quyền ở ADR-0010.

@@ -1,5 +1,24 @@
 # Xác minh bản nâng cấp factory
 
+## Sửa bypass admission qua symlink trước `..` trong PR #9 (2026-10-11)
+
+Review độc lập phát hiện `abspath` rút gọn `link/../output` trước khi filesystem
+resolve symlink, khiến monitor đo nhầm thư mục. Tái hiện đỏ ở cả output/cache,
+external uploads và SQLite/WAL: file 200 byte vẫn được nhận dưới hard limit 100.
+Bản sửa giữ nguyên đường dẫn, kiểm tra từng prefix và báo incomplete nếu gặp
+symlink trước `..`; không âm thầm chuyển sang thư mục khác. Luôn kiểm tra upload
+root riêng, kể cả lexical child chứa `..`; inode dedup tránh cộng trùng.
+
+Năm regression mới xác nhận ba root trên bị chặn, đường dẫn `..` thông thường
+vẫn đo đủ cache/media/DB-sidecar và lỗi quyền ở parent được báo an toàn. Storage:
+**27 test, coverage 100%**. `make verify`: **938 Studio + 273 Gateway + 478 core =
+1.689 test**, không skip, coverage **100%** từng package (Studio 5.398 dòng thực
+thi). Ruff/mypy và **28/28 eval replay** đạt. Review code độc lập không thấy blocker.
+
+Không thay đổi UI hoặc code upload. PR #7/#9 vẫn tách riêng; tài liệu có phần
+chồng nhau và cần hòa giải khi một PR được merge sau phê duyệt. Scan vẫn không
+nguyên tử trước filesystem mutation đồng thời và không phải quota OS.
+
 ## Thống kê dung lượng và admission riêng cho Factory (2026-10-11)
 
 Base main `4350abfc1742d756494fe718a344101cc66ff2e1` sau PR #8. Nhánh này

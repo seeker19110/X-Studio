@@ -37,10 +37,11 @@ class StorageMonitor:
         if self.hard and self.soft > self.hard:
             raise ValueError('production.storage.soft_limit_bytes cannot exceed hard_limit_bytes')
         self.interval = float(interval)
-        # Keep lexical paths so a configured symlink root is detected, not followed.
-        self.output = Path(os.path.abspath(cfg.output_dir))
-        self.uploads = Path(os.path.abspath(cfg.upload_dir or self.output / 'uploads'))
-        database = Path(os.path.abspath(db))
+        # Preserve .. until filesystem traversal: abspath would collapse it before
+        # symlink resolution and could account for a different directory.
+        self.output = Path.cwd() / cfg.output_dir
+        self.uploads = Path.cwd() / (cfg.upload_dir or self.output / 'uploads')
+        database = Path.cwd() / db
         self.databases = [database, *(Path(str(database) + suffix) for suffix in ('-wal', '-shm', '-journal'))]
         self._cached: dict[str, Any] | None = None
         self._scanned_at = 0.0
@@ -93,6 +94,20 @@ class StorageMonitor:
                 error('Storage scan entry limit reached.')
                 return
             scanned += 1
+            if root:
+                # Inspect raw prefixes before any lexical normalization. A symlink
+                # hidden before /../ is still a symlink traversal and is excluded.
+                for parent in reversed(path.parents):
+                    try:
+                        if stat.S_ISLNK(parent.lstat().st_mode):
+                            skipped_symlinks += 1
+                            error('Symlink path components are excluded from storage accounting.')
+                            return
+                    except FileNotFoundError:
+                        break  # absent root is allowed; raw path below remains absent
+                    except OSError:
+                        error(f'Cannot inspect {label} storage path components.')
+                        return
             try:
                 info = path.lstat()
             except FileNotFoundError:
@@ -121,8 +136,9 @@ class StorageMonitor:
         # Database first gives DB bytes a stable category even when inside output.
         roots = [(path, 'database', True) for path in self.databases]
         roots.append((self.output, 'output', False))
-        if not self.uploads.is_relative_to(self.output):
-            roots.append((self.uploads, 'uploads', False))
+        # Always inspect configured uploads: a lexical child containing '..'
+        # may actually be outside output. Inode deduplication handles overlap.
+        roots.append((self.uploads, 'uploads', False))
         for path, label, database in roots:
             inspect(path, label, root=True, database=database)
             if exhausted:

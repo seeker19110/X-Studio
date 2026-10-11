@@ -168,3 +168,58 @@ def test_database_directory_not_recursed_and_limit_counts_roots(tmp_path):
     assert any('database file' in message for message in result['errors'])
     result = monitor(tmp_path, max_scan_entries=1).snapshot()
     assert not result['complete'] and result['scanned_entries'] == 1
+
+
+@pytest.mark.parametrize('root_kind', ['output', 'uploads', 'database'])
+def test_symlink_parent_before_dotdot_cannot_bypass_admission(tmp_path, root_kind):
+    child = tmp_path / 'real' / 'child'
+    child.mkdir(parents=True)
+    (tmp_path / 'link').symlink_to(child, target_is_directory=True)
+    tricky = tmp_path / 'link' / '..'
+    out, uploads, db = tmp_path / 'output', tmp_path / 'uploads', tmp_path / 'bus.sqlite'
+    if root_kind == 'output':
+        out = tricky / 'output'
+        put(out / '.cache' / 'media' / 'video', 200)
+    elif root_kind == 'uploads':
+        uploads = tricky / 'uploads'
+        put(uploads / 'source', 200)
+    else:
+        db = tricky / 'bus.sqlite'
+        put(db, 100); put(Path(str(db) + '-wal'), 100)
+    mon = StorageMonitor(MediaConfig(output_dir=out, upload_dir=uploads,
+                         production={'storage': {'hard_limit_bytes': 100}}), db)
+    with pytest.raises(StorageAdmissionError):
+        mon.check_admission()
+    assert not mon.snapshot()['complete']
+    assert mon.snapshot()['skipped_symlinks'] > 0
+
+
+def test_ordinary_dotdot_and_upload_sibling_preserve_filesystem_meaning(tmp_path):
+    out = tmp_path / 'output'
+    out.mkdir()
+    uploads = out / '..' / 'uploads'
+    put(out / '.cache' / 'media' / 'cache', 30)
+    put(uploads / 'source', 50)
+    db = out / '..' / 'bus.sqlite'
+    put(db, 10); put(Path(str(db) + '-wal'), 10)
+    mon = StorageMonitor(MediaConfig(output_dir=out, upload_dir=uploads,
+                         production={'storage': {'hard_limit_bytes': 100}}), db)
+    result = mon.snapshot()
+    assert result['complete'] and result['total_bytes'] == 100
+    with pytest.raises(StorageAdmissionError): mon.check_admission()
+
+
+def test_unreadable_root_component_fails_closed_without_disclosing_path(tmp_path, monkeypatch):
+    blocked = tmp_path / 'private'
+    original = Path.lstat
+
+    def denied(path, *args, **kwargs):
+        if path == blocked: raise PermissionError('secret credential')
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'lstat', denied)
+    mon = StorageMonitor(MediaConfig(output_dir=blocked / 'output',
+                         production={'storage': {'hard_limit_bytes': 100}}), tmp_path / 'bus.sqlite')
+    with pytest.raises(StorageAdmissionError): mon.check_admission()
+    assert not mon.snapshot()['complete']
+    assert 'secret' not in str(mon.snapshot())

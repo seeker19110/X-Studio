@@ -29,7 +29,11 @@ media người dùng, journal hoặc audit để cố đạt ngưỡng.
 - Không đếm trùng root lồng nhau hoặc hardlink cùng inode. Đây là số byte logic
   của file thường; không phải số block vật lý đã cấp trên ổ đĩa.
 
-Không theo symlink. Scan thiếu quyền, lỗi hoặc vượt số entry được báo không đầy
+Không theo symlink, kể cả symlink trong thành phần đường dẫn trước `..`.
+Đường dẫn được giữ nguyên ngữ nghĩa filesystem thay vì rút gọn `..` bằng chuỗi;
+root có thành phần symlink được báo scan không đầy đủ. `..` thông thường không
+qua symlink vẫn được hỗ trợ. Áp dụng cho output/cache, upload và DB/sidecars.
+Scan thiếu quyền, lỗi hoặc vượt số entry được báo không đầy
 đủ; nếu hard limit bật thì không coi số đo thiếu là đủ điều kiện nhận việc.
 Số liệu giao diện được cache theo khoảng cấu hình. Khi hard limit bật, trước khi
 cho nhận việc luôn quét mới; dự án đang bị chặn trong hàng đợi dùng lại kết quả
