@@ -9,10 +9,12 @@ thiếu quyền thì để 0 và nói rõ trong evidence.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import random
 import re
+import sqlite3
 import stat
 import tempfile
 import time
@@ -20,10 +22,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol
+from typing import Any, BinaryIO, NoReturn, Protocol
 
 from .events import MetadataPackage, PerformanceSnapshot, RetentionPoint
 from .media import THUMBNAIL_MAX_BYTES, MediaConfig, load_media_config
@@ -127,7 +129,12 @@ def make_platform(cfg: MediaConfig | None = None, fetcher: Fetcher | None = None
     cfg = cfg or load_media_config()
     prov = str(cfg.platform.get("provider") or "fake")
     if prov == "fake": return FakePlatform()
-    if prov == "youtube": return YouTubePlatform(TokenStore(_token_path(cfg)), fetcher=fetcher)
+    if prov == "youtube":
+        token_path = _token_path(cfg)
+        if any(path.resolve().is_relative_to(cfg.output_dir.resolve())
+               for path in (token_path, token_path.parent / "youtube-uploads")):
+            raise PlatformError("YouTube credentials and upload journals must be outside media output_dir")
+        return YouTubePlatform(TokenStore(token_path), fetcher=fetcher)
     raise PlatformError(f"platform: provider lạ `{prov}` (fake | youtube)")
 
 
@@ -275,6 +282,32 @@ def parse_duration(s: str) -> float:
     h, mi, se = (int(x or 0) for x in m.groups()); return float(h * 3600 + mi * 60 + se)
 
 
+def _valid_upload_location(location: str) -> bool:
+    try:
+        url = urllib.parse.urlsplit(location)
+        return (url.scheme == "https" and url.hostname == "www.googleapis.com" and url.port in {None, 443}
+                and url.username is None and url.password is None and not url.fragment and url.path.startswith("/upload/"))
+    except ValueError:
+        return False
+
+
+def _save_upload_state(path: Path, data: dict[str, Any]) -> None:
+    """Private journal: commit intent/session/result before the next side effect."""
+    fd, temporary = tempfile.mkstemp(prefix=".upload-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        if os.name == "posix":
+            directory = os.open(path.parent, os.O_RDONLY)
+            try: os.fsync(directory)
+            finally: os.close(directory)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 class YouTubePlatform:
     name = "youtube"
 
@@ -340,17 +373,33 @@ class YouTubePlatform:
 
     # --- upload / thumbnail / lịch ---
 
-    def _upload_chunks(self, video: BinaryIO, location: str, size: int) -> tuple[int, dict[str, str], bytes]:
+    def _session_call(self, method: str, url: str, body: bytes | None = None,
+                      headers: dict[str, str] | None = None, ok: tuple[int, ...] = (200, 201),
+                      *, attempts: int = MAX_ATTEMPTS) -> tuple[int, dict[str, str], bytes]:
+        # Session URLs are credentials. Never retain provider errors in chains.
+        try:
+            return self._call(method, url, body, headers, ok, attempts=attempts)
+        except (PlatformError, OSError) as error:
+            status = error.status if isinstance(error, PlatformError) else None
+            reason = error.reason if isinstance(error, PlatformError) and error.reason in QUOTA_REASONS else None
+            sanitized = PlatformError(f"upload: session request failed HTTP {status or 'unavailable'}", status, reason)
+        raise sanitized
+
+    def _upload_chunks(self, video: BinaryIO, location: str, size: int, offset: int = 0,
+                       signature: tuple[int, int] | None = None) -> tuple[int, dict[str, str], bytes]:
         """Gửi ≤ 8 MiB/lượt; sau lỗi vận chuyển hỏi offset thật, không đoán chunk đã được nhận hay chưa."""
-        offset, failures = 0, 0
+        failures = 0
         while True:
+            current = os.fstat(video.fileno())
+            if signature is not None and signature != (current.st_size, current.st_mtime_ns):
+                raise PlatformError("upload: file đã thay đổi trong khi gửi", reason="file_changed")
             video.seek(offset)
             data = video.read(min(UPLOAD_CHUNK_BYTES, size - offset))
             if not data: raise PlatformError("upload: file đã thay đổi hoặc bị cắt ngắn trong khi gửi")
             end = offset + len(data)
             last_error: PlatformError | None = None
             try:
-                result = self._call("PUT", location, data,
+                result = self._session_call("PUT", location, data,
                                     {"Content-Type": "video/*", "Content-Length": str(len(data)),
                                      "Content-Range": f"bytes {offset}-{end - 1}/{size}"},
                                     ok=(200, 201, 308), attempts=1)
@@ -359,10 +408,13 @@ class YouTubePlatform:
                 last_error = error
                 failures += 1
                 self.sleep(BACKOFF_BASE_S * (2 ** (failures - 1)) + random.uniform(0, 0.25))
-                result = self._call("PUT", location, b"", {"Content-Length": "0", "Content-Range": f"bytes */{size}"},
+                result = self._session_call("PUT", location, b"", {"Content-Length": "0", "Content-Range": f"bytes */{size}"},
                                     ok=(200, 201, 308))
             status, headers, _raw = result
             if status != 308:
+                current = os.fstat(video.fileno())
+                if signature is not None and signature != (current.st_size, current.st_mtime_ns):
+                    raise PlatformError("upload: file đã thay đổi trong khi gửi", reason="file_changed")
                 if end < size: raise PlatformError("upload: máy chủ báo hoàn tất trước khi nhận đủ file", status=status)
                 return result
             received = headers.get("range")
@@ -385,13 +437,66 @@ class YouTubePlatform:
             offset = next_offset
 
     def upload_video(self, path: Path, metadata: MetadataPackage, privacy: str = "private", publish_at: str | None = None,
-                     made_for_kids: bool = False) -> UploadResult:
-        path = Path(path)
+                     made_for_kids: bool = False, *, require_existing: bool = False) -> UploadResult:
+        directory = self.store.path.parent / "youtube-uploads"
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        key = hashlib.sha256(metadata.video_id.encode()).hexdigest()
+        journal = directory / f"{key}.json"
+        lock_path = directory / f"{key}.lock.sqlite"
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        os.close(fd)
+        # A SQLite writer lock is released even on SIGKILL; factories sharing a
+        # credential store cannot concurrently initialize the same local video.
+        lock = sqlite3.connect(lock_path, timeout=0)
+        try:
+            try: lock.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError:
+                raise PlatformError("upload: another worker owns this video session") from None
+            if require_existing and not journal.exists():
+                self._reconcile_upload(journal, {"schema": 1}, "prior receipt has no durable session")
+            try:
+                return self._durable_upload(Path(path), metadata, privacy, publish_at, made_for_kids, journal)
+            except PlatformError as error:
+                if error.status in {404, 410} or error.reason == "file_changed":
+                    state = json.loads(journal.read_text()) if journal.exists() else {"schema": 1}
+                    self._reconcile_upload(journal, state, "file đã thay đổi" if error.reason == "file_changed"
+                                           else "session expired or unavailable", error.status)
+                raise
+            except (OSError, ValueError, TypeError):
+                raise PlatformError("upload: private session state unavailable; preserve the journal and retry recovery") from None
+        finally:
+            lock.close()
+
+    def _reconcile_upload(self, journal: Path, state: dict[str, Any], reason: str,
+                          status: int | None = None) -> NoReturn:
+        state.update(state="reconciliation_needed", reason=reason)
+        _save_upload_state(journal, state)
+        raise PlatformError(f"upload: reconciliation_needed ({reason}); verify the existing remote video before retry", status,
+                            "reconciliation_needed") from None
+
+    def _durable_upload(self, path: Path, metadata: MetadataPackage, privacy: str, publish_at: str | None,
+                        made_for_kids: bool, journal: Path) -> UploadResult:
+        state: dict[str, Any] = {}
+        if journal.exists():
+            try:
+                state = json.loads(journal.read_text(encoding="utf-8"))
+                if not isinstance(state, dict) or state.get("schema") != 1:
+                    raise ValueError("invalid journal")
+            except (ValueError, OSError):
+                self._reconcile_upload(journal, {"schema": 1}, "corrupt journal")
+            if state.get("state") not in {"active", "completed"}:
+                self._reconcile_upload(journal, state, "initialization unresolved or reconciliation already required")
+            if state.get("init_status") not in {200, 201}:
+                self._reconcile_upload(journal, state, "corrupt initialization receipt")
         if not path.exists(): raise PlatformError(f"không có file {path}")
-        # Ghim file trước khi POST mở phiên: thay tên file nguyên tử trong lúc chờ HTTP không được đổi nội dung gửi.
         with path.open("rb") as video:
-            size = os.fstat(video.fileno()).st_size
+            initial = os.fstat(video.fileno())
+            size = initial.st_size
+            signature = (size, initial.st_mtime_ns)
             if not size: raise PlatformError("upload: file video rỗng")
+            digest = hashlib.sha256()
+            while block := video.read(1024 * 1024): digest.update(block)
+            video.seek(0)
             desc = metadata.description
             if metadata.chapters: desc += "\n\n" + "\n".join(f"{c.time} {c.label}" for c in metadata.chapters)
             snippet: dict[str, Any] = {"title": metadata.title[:100], "description": desc[:5000], "tags": metadata.tags[:50],
@@ -399,20 +504,82 @@ class YouTubePlatform:
             if metadata.category.isdigit(): snippet["categoryId"] = metadata.category
             status: dict[str, Any] = {"privacyStatus": "private" if publish_at else privacy, "selfDeclaredMadeForKids": made_for_kids}
             if publish_at: status["publishAt"] = publish_at
-            st1, rh, _ = self._call("POST", f"{UPLOAD_URL}?uploadType=resumable&part=snippet,status",
-                                    json.dumps({"snippet": snippet, "status": status}).encode(),
-                                    {"Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": "video/*",
-                                     "X-Upload-Content-Length": str(size)})
-            loc = rh.get("location")
-            if not loc: raise PlatformError(f"upload: không có Location sau bước 1 (HTTP {st1})", status=st1)
-            st2, _, raw = self._upload_chunks(video, loc, size)
-        v = json.loads(raw) if raw.strip() else {}
-        vid = v.get("id")
-        if not vid: raise PlatformError(f"upload: phản hồi không có id (HTTP {st2})", status=st2)
-        ps = (v.get("status") or {}).get("privacyStatus", status["privacyStatus"])
-        ev = json.dumps({"init": st1, "put": st2, "id": vid, "bytes": size, "privacy": ps, "publishAt": publish_at,
-                         "uploadStatus": (v.get("status") or {}).get("uploadStatus")}, ensure_ascii=False)
-        return UploadResult(vid, f"https://youtu.be/{vid}", "scheduled" if publish_at else ps, evidence=ev)
+            request = {"snippet": snippet, "status": status}
+            _, _, channel_raw = self._session_call("GET", f"{API_URL}/channels?part=id&mine=true")
+            tokens = self._tokens
+            assert tokens is not None
+            credential = hashlib.sha256(json.dumps([tokens.client_id, tokens.refresh_token]).encode()).hexdigest()
+            try:
+                channels = json.loads(channel_raw)["items"]
+                channel = channels[0]["id"] if len(channels) == 1 else None
+                if not isinstance(channel, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", channel): raise ValueError()
+            except (ValueError, KeyError, TypeError, IndexError):
+                self._reconcile_upload(journal, state or {"schema": 1}, "cannot identify exactly one authenticated channel")
+            identity = {"sha256": digest.hexdigest(), "bytes": size, "request": request,
+                        "credential": credential, "channel": channel}
+            if state:
+                if state.get("identity") != identity:
+                    self._reconcile_upload(journal, state, "file, request or account identity changed")
+                if state["state"] == "completed":
+                    try:
+                        result = UploadResult(**state["result"])
+                        evidence = json.loads(result.evidence)
+                        if (not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", result.platform_ref)
+                                or result.url != f"https://youtu.be/{result.platform_ref}"
+                                or result.status not in {"private", "public", "unlisted", "scheduled"}
+                                or not isinstance(evidence, dict) or "://" in result.evidence
+                                or evidence.get("id") != result.platform_ref or evidence.get("bytes") != size):
+                            raise ValueError()
+                    except (KeyError, TypeError, ValueError):
+                        self._reconcile_upload(journal, state, "corrupt completed result")
+                    return result
+                loc = state.get("location")
+                if not isinstance(loc, str) or not _valid_upload_location(loc):
+                    self._reconcile_upload(journal, state, "missing session Location")
+                try:
+                    result_tuple = self._session_call("PUT", loc, b"", {
+                        "Content-Length": "0", "Content-Range": f"bytes */{size}"}, ok=(200, 201, 308))
+                except PlatformError as error:
+                    if error.status in {404, 410}:
+                        self._reconcile_upload(journal, state, "session expired or unavailable", error.status)
+                    raise
+                if result_tuple[0] == 308:
+                    received = result_tuple[1].get("range")
+                    match = re.fullmatch(r"bytes=0-([0-9]+)", received) if received else None
+                    offset = int(match.group(1)) + 1 if match else 0
+                    if (received and match is None) or offset >= size:
+                        self._reconcile_upload(journal, state, "invalid or ambiguous server offset")
+                    result_tuple = self._upload_chunks(video, loc, size, offset, signature)
+            else:
+                state = {"schema": 1, "state": "initiating", "identity": identity}
+                _save_upload_state(journal, state)
+                try:
+                    st1, rh, _ = self._session_call("POST", f"{UPLOAD_URL}?uploadType=resumable&part=snippet,status",
+                        json.dumps(request).encode(), {"Content-Type": "application/json; charset=UTF-8",
+                        "X-Upload-Content-Type": "video/*", "X-Upload-Content-Length": str(size)}, attempts=1)
+                except PlatformError as error:
+                    self._reconcile_upload(journal, state, "initialization response lost or rejected", error.status)
+                loc = rh.get("location")
+                if not isinstance(loc, str) or not _valid_upload_location(loc):
+                    self._reconcile_upload(journal, state, "missing session Location", st1)
+                state.update(state="active", location=loc, init_status=st1)
+                _save_upload_state(journal, state)
+                result_tuple = self._upload_chunks(video, loc, size, signature=signature)
+            st2, _, raw = result_tuple
+        try:
+            value = json.loads(raw)
+            vid = value["id"]
+            if not isinstance(vid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", vid): raise ValueError()
+            ps = (value.get("status") or {}).get("privacyStatus", status["privacyStatus"])
+            if ps not in {"private", "public", "unlisted"}: raise ValueError()
+        except (ValueError, KeyError, TypeError, AttributeError):
+            self._reconcile_upload(journal, state, "không có id hợp lệ hoặc completion response invalid", st2)
+        evidence = json.dumps({"init": state["init_status"], "put": st2, "id": vid, "bytes": size,
+                               "privacy": ps, "publishAt": publish_at}, ensure_ascii=False)
+        result = UploadResult(vid, f"https://youtu.be/{vid}", "scheduled" if publish_at else ps, evidence=evidence)
+        state.update(state="completed", result=asdict(result))
+        _save_upload_state(journal, state)
+        return result
 
     def set_thumbnail(self, platform_ref: str, path: Path) -> str:
         path = Path(path); data = path.read_bytes()

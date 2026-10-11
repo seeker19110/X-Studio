@@ -1,5 +1,42 @@
 # Xác minh bản nâng cấp factory
 
+## Upload YouTube bền vững và trạng thái xuất bản (2026-10-11)
+
+Base `07b242f50d4d95b4c03b9430ed577da54058fd21`, sau PR #5 và PR #6 được
+merge bên ngoài. Giữ nguyên dashboard/ý tưởng/Kanban và hardening của PR #6;
+không nhận các thay đổi đó là công việc của đợt này.
+
+Sửa lỗi upload private không có lịch nhưng event báo published: trạng thái không
+được xác nhận trở thành failed, giữ platform_ref và gate hiện có. Không thêm thao
+tác tự chuyển public. Receipt YouTube cũ phải đối soát qua journal cùng danh tính;
+thiếu journal hoặc lệch video ID không được đi tiếp tới schedule/thumbnail.
+
+Journal upload riêng ghi intent trước POST, Location trước PUT và kết quả trước
+return; khóa theo video dùng chung giữa các factory. Test transport giả bao phủ
+restart, offset server, completion mất phản hồi, hết hạn 404/410, response thiếu ID,
+danh tính file/request/account/channel đổi, journal hỏng, khóa đồng thời và URL
+nhạy cảm không xuất hiện trong exception chain/evidence. Chặn token/journal trong
+output_dir, chặn Location ngoài host upload Google.
+
+`make verify` đạt **819 Studio + 273 Gateway + 478 core = 1.570 test**, không
+skip; coverage **100%** từng package (Studio 5.017 dòng thực thi). Ruff/mypy cả
+ba package và **28/28 eval replay** đạt. Có 41 ca mới so với main PR #6, 62 file
+test Studio. Gateway giữ một RuntimeWarning runpy có sẵn.
+
+`tests/test_upload_process_restart.py` chạy tiến trình Python riêng, dùng
+`os._exit(23)` sau khi mock server nhận chunk đầu hoặc byte cuối. Cả hai ca đạt:
+restart probe đúng phiên, chỉ một POST khởi tạo; lần chạy thứ ba dùng kết quả đã
+lưu, không PUT lại. Chạy cùng test với platform.py từ main cũ trong bản sao tạm:
+cả hai fail đúng lỗi `duplicate session init after process restart`.
+
+Giới hạn: transport hoàn toàn giả, không có upload/login/API trả phí thật. Chưa
+chứng minh YouTube live hoặc Windows. Mất journal, phiên hết hạn hoặc intent mất
+Location cần đối soát thủ công; không có lệnh tự reset hay đoán video ID. Receipt
+published sai từ lịch sử cũ cũng cần đối soát, vì thiếu trạng thái để tự sửa chắc
+chắn. SHA-256 đọc file theo block 1 MiB, upload giữ chunk tối đa 8 MiB như PR #6;
+file đầu vào cần bất biến trong lúc gửi. Kiểm tra size/mtime hỗ trợ phát hiện thay
+đổi, không thay snapshot filesystem. Xem [ADR-0013](adr/0013-durable-youtube-upload-reconciliation.md).
+
 ## Xác minh bản tích hợp lên main cho PR #6 (2026-10-11)
 
 Đồng bộ nhánh audit với main `80a76e6` sau PR #5; giữ nhật ký đầu ra render,
