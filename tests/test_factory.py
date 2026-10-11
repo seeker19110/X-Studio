@@ -159,3 +159,146 @@ def test_creator_format_and_language_bind_actual_scene_manifest(tmp_path, monkey
         assert metadata and all(event.payload["language"] == language for event in metadata)
     finally:
         f.close()
+
+
+class _StorageBlocked(ValueError):
+    pass
+
+
+class _StorageStub:
+    def __init__(self):
+        self.blocked = False
+        self.checks = 0
+        self.forces = []
+
+    def snapshot(self, force=False):
+        return {"status": "blocked" if self.blocked else "normal", "total_bytes": 42}
+
+    def check_admission(self, *, force=True):
+        self.checks += 1
+        self.forces.append(force)
+        if self.blocked: raise _StorageBlocked("workspace hard limit")
+        return self.snapshot()
+
+
+def _factory_with_storage(tmp_path, monkeypatch):
+    monitor = _StorageStub()
+    monkeypatch.setattr("studio.factory.StorageMonitor", lambda cfg, db: monitor, raising=False)
+    monkeypatch.setattr("studio.factory.StorageAdmissionError", _StorageBlocked, raising=False)
+    return Factory(tmp_path / "studio.sqlite", MediaConfig(output_dir=tmp_path / "out"), demo=True), monitor
+
+
+def test_storage_blocks_new_admission_and_is_visible_in_snapshot(tmp_path, monkeypatch):
+    factory, monitor = _factory_with_storage(tmp_path, monkeypatch)
+    try:
+        monitor.blocked = True
+        with pytest.raises(_StorageBlocked, match="hard limit"):
+            factory.command("create", {"title": "new project"})
+        assert factory.commands.pending() == []
+        factory.refresh()
+        assert factory.snapshot()["storage"] == {"status": "blocked", "total_bytes": 42}
+    finally:
+        factory.close()
+
+
+def test_storage_waiting_creates_do_not_starve_controls_or_existing_work(tmp_path, monkeypatch):
+    from studio.gates import GateRequest
+
+    factory, monitor = _factory_with_storage(tmp_path, monkeypatch)
+    try:
+        for index in range(25): factory.command("create", {"title": f"project {index}"})
+        monitor.blocked = True  # space filled after acceptance, before dispatch
+        controls = [factory.command("pause", {}), factory.command("run", {}),
+                    factory.command("settings", {"threads": 3})]
+        factory.orch.gate.request(GateRequest(kind="publish", subject_id="PUB-wait", created_by="desk", checklist=[]))
+        controls.append(factory.command("gate", {"subject_id": "PUB-wait", "decision": "hold"}))
+        ticks = []
+        monkeypatch.setattr(factory.orch, "tick", lambda **kwargs: ticks.append(1))
+        monkeypatch.setattr(factory.autopilot, "advance", lambda: None)
+        factory.cycle()
+        with factory.commands.connect() as con:
+            rows = {row["id"]: row["status"] for row in con.execute("SELECT id,status FROM factory_commands")}
+        assert all(rows[id] == "done" for id in controls)
+        assert sum(status == "pending" for status in rows.values()) == 25
+        assert not list(factory.bus.replay("channel-briefs"))
+        assert ticks == [1] and factory.running
+        assert monitor.forces[:25] == [True] * 25
+        assert monitor.forces[-1] is False
+        monitor.blocked = False
+        factory.cycle(); factory.cycle()
+        assert not factory.commands.pending()
+        assert len(list(factory.bus.replay("channel-briefs"))) == 25
+    finally:
+        factory.close()
+
+
+def test_storage_does_not_readmit_already_published_create_after_restart(tmp_path, monkeypatch):
+    factory, monitor = _factory_with_storage(tmp_path, monkeypatch)
+    command = factory.command("create", {"title": "already admitted"})
+    factory.execute(factory.commands.pending()[0])  # crash window before command completion
+    factory.close()
+    monitor.blocked = True
+    checks = monitor.checks
+    reopened = Factory(tmp_path / "studio.sqlite", MediaConfig(output_dir=tmp_path / "out"), demo=True)
+    try:
+        reopened.running = False
+        reopened.cycle()
+        assert monitor.checks == checks
+        assert len(list(reopened.bus.replay("channel-briefs"))) == 1
+        assert next(row for row in reopened.commands.recent() if row["id"] == command)["status"] == "done"
+    finally:
+        reopened.close()
+
+
+def test_storage_constructor_failure_releases_factory_lease(tmp_path, monkeypatch):
+    def broken(cfg, db): raise RuntimeError("storage unavailable")
+    monkeypatch.setattr("studio.factory.StorageMonitor", broken, raising=False)
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        Factory(tmp_path / "studio.sqlite", MediaConfig(output_dir=tmp_path / "out"), demo=True)
+    assert not (tmp_path / "studio.sqlite.lock").exists()
+
+
+def test_storage_blocked_cycles_reuse_monitor_scan(tmp_path, monkeypatch):
+    import os
+
+    from studio.storage import StorageAdmissionError
+
+    scans = []
+    real_scandir = os.scandir
+
+    def counted(path):
+        scans.append(path)
+        return real_scandir(path)
+
+    monkeypatch.setattr("studio.storage.os.scandir", counted)
+    output = tmp_path / "out"
+    output.mkdir()
+    pressure = output / "test-pressure.bin"
+    pressure.write_bytes(b"x" * (2 * 1024 * 1024))
+    approved = output / "approved-video.mp4"
+    approved.write_bytes(b"approved asset must survive")
+    cfg = MediaConfig(output_dir=output, production={"storage": {
+        "hard_limit_bytes": 1024 * 1024, "scan_interval_s": 3600}})
+    factory = Factory(tmp_path / "studio.sqlite", cfg, demo=True)
+    try:
+        factory.running = False
+        assert factory.snapshot()["storage"]["status"] == "blocked"
+        factory.commands.add("accepted-before-limit", "create", {"title": "pending"})
+        control = factory.command("settings", {"threads": 4})
+        initial_scans = len(scans)
+        for _ in range(5): factory.cycle()
+        assert len(scans) == initial_scans
+        assert factory.commands.pending()[0]["status"] == "pending"
+        with pytest.raises(StorageAdmissionError): factory.command("create", {"title": "new"})
+        assert len(scans) > initial_scans  # an explicit new admission still measures afresh
+        assert next(row for row in factory.commands.recent() if row["id"] == control)["status"] == "done"
+        assert factory.snapshot()["threads"] == 4
+        pressure.unlink()  # test-owned pressure only; factory itself must never delete assets
+        factory.storage._scanned_at -= 3601  # expire the configured observation interval
+        factory.cycle()
+        assert not factory.commands.pending()
+        assert len(list(factory.bus.replay("channel-briefs"))) == 1
+        assert factory.snapshot()["storage"]["status"] == "normal"
+        assert approved.read_bytes() == b"approved asset must survive"
+    finally:
+        factory.close()

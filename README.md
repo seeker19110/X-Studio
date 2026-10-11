@@ -92,6 +92,10 @@ Console nhận mục tiêu **0–720 phút** (lớn hơn 0). [YouTube](https://s
 - Ngân sách token là token model text, không phải trần tiền cho TTS/ảnh. Dừng trước chương tiếp theo khi đã hết; một request đang chạy có thể vượt phần còn lại. Chất lượng sáng tạo, tính đúng đắn nội dung và thời lượng thực phụ thuộc model/provider; QC giữ lại sản phẩm lệch mục tiêu quá 20% mặc định.
 - Video diffusion chạy qua workflow ComfyUI cấu hình riêng; chưa cài/benchmark model GPU. Chưa tích hợp stock search tự tải, tracking người nói, editor timeline kéo thả hoặc render cluster. Xem [đối chiếu nguồn và quyết định tích hợp](docs/RESEARCH-VIDEO-FACTORIES.md).
 
+Console hiển thị tổng dung lượng factory và hỗ trợ cảnh báo/chặn **dự án mới** qua
+`production.storage`; mặc định các ngưỡng tắt, không tự xóa dữ liệu hay dừng job đã có.
+Xem [phạm vi thống kê và giới hạn admission](docs/STORAGE.md) — đây không phải filesystem quota.
+
 ## Phát triển và xác minh
 
 ```bash
@@ -105,8 +109,8 @@ CI Linux cài FFmpeg/font, khóa phiên bản GitHub Actions và chạy cùng l�
 - `src/studio/web/`: HTML/CSS/JavaScript native, đóng gói cùng Python.
 - `agents/`, `skills/`, `topics/`: 14 vai, 24 skill và schema sự kiện; giữ prompt hiện có.
 - `gateway/`, `xagents-core/`: thành viên uv workspace có test/coverage riêng.
-- `tests/`: pytest 906 ca / 63 file.
-- Test: 906 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
+- `tests/`: pytest 933 ca / 64 file.
+- Test: 933 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
 - `docs/adr/`: ADR 0001–0013; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình.
 
 Tham khảo thêm: [kiến trúc nền](docs/architecture.md), [CLI chi tiết](docs/CLI-REFERENCE.md), [CLAUDE.md](CLAUDE.md). Các hướng dẫn cũ về gate được bổ sung bởi policy ủy quyền ở ADR-0010.

@@ -1,5 +1,39 @@
 # Xác minh bản nâng cấp factory
 
+## Thống kê dung lượng và admission riêng cho Factory (2026-10-11)
+
+Base main `4350abfc1742d756494fe718a344101cc66ff2e1` sau PR #8. Nhánh này
+độc lập với PR #7 đang chờ duyệt; không đưa code upload recovery vào bản này.
+Giữ tính năng phim/hoạt hình của main, không nhận các tính năng đó là công việc mới.
+
+`make verify` đạt **933 Studio + 273 Gateway + 478 core = 1.684 test**, không skip;
+coverage **100%** từng package (Studio 5.387 dòng thực thi, 64 file test). Ruff/mypy
+cả ba package và **28/28 eval replay** đạt. Gateway giữ RuntimeWarning runpy cũ.
+Thêm 27 regression cases: 22 accounting/admission và 5 tích hợp Factory.
+
+Kiểm thử gồm hardlink/root lồng nhau, symlink, scan thiếu/quá giới hạn entry,
+phân nhóm cache/temp/media/DB-sidecar, config không hợp lệ, cache và admission
+fresh scan. Tích hợp thực dùng SQLite và file áp lực 2 MiB: dự án còn chờ, controls
+vẫn chạy, 5 vòng bị chặn không quét lại; bỏ riêng fixture áp lực và hết cache thì
+dự án tiếp tục, asset đã duyệt giữ nguyên. Crash sau brief trước command-complete
+không xét admission lại hoặc tạo brief trùng. Không có lệnh xóa dữ liệu trong tính năng.
+
+Chromium smoke qua server demo/SQLite/output riêng: 3 dự án, không lỗi JavaScript,
+không tràn ngang; kiểm tra UI storage absent/normal/warning/blocked/incomplete và
+mobile 390px. Media/provider đều fake. `node --check` và `git diff --check` đạt.
+
+Benchmark filesystem offline tạo 10.003 file tạm, tổng **11.294.720 byte** (cache
+10.240.000, output 1.048.576, DB+WAL 6.144), số liệu khớp chính xác. Lần scan đầu
+**0,410082 giây**; 1.000 snapshot có cache **0,005460 giây**; 1.000 lần kiểm tra
+queued admission đang blocked **0,005924 giây**. Không xóa file trong scan; fixture
+tạm được dọn sau benchmark. Đo trên filesystem local với metadata vừa tạo, không
+đại diện ổ mạng, hàng triệu file hoặc giới hạn thời gian I/O cứng.
+
+Mặc định soft/hard limit = 0, chỉ quan sát. Hard limit chỉ chặn tạo dự án mới của
+Factory; job đã có vẫn có thể tăng dung lượng. Không reservation hoặc quota OS,
+không scan nguyên tử, không tính file/provider ngoài roots và file unlink đang mở.
+Chi tiết phạm vi/giới hạn và cách cấu hình: [STORAGE.md](STORAGE.md).
+
 ## Phim và hoạt hình (2026-10-11)
 
 Thêm `CinemaSpec`, storyboard trong phòng dựng, `scene_video` provider độc lập và

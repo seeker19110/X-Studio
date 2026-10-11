@@ -943,8 +943,48 @@ function bindDynamic() {
     .forEach((b) => (b.onclick = () => openCreate()));
   bindProjects();
 }
+function storageSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return "Chưa xác định";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  const index = bytes ? Math.min(4, Math.floor(Math.log(bytes) / Math.log(1024))) : 0;
+  return `${(bytes / 1024 ** index).toLocaleString("vi-VN", { maximumFractionDigits: 1 })} ${units[index]}`;
+}
+function renderStorage() {
+  const storage = state.storage;
+  const region = $("storage-status");
+  region.classList.toggle("hidden", !storage);
+  if (!storage) return;
+  const blocked = storage.status === "blocked";
+  const warning = storage.status === "warning" || storage.complete === false;
+  region.className = `notice ${blocked ? "error" : warning ? "warning" : "neutral"}`;
+  $("storage-heading").textContent = blocked
+    ? "Dung lượng sản xuất · Tạm ngừng nhận dự án mới"
+    : warning
+      ? "Dung lượng sản xuất · Cần kiểm tra"
+      : "Dung lượng sản xuất";
+  const limits = storage.limits || {};
+  $("storage-summary").textContent = [
+    `Đã dùng ${storageSize(storage.total_bytes)}`,
+    limits.soft_limit_bytes > 0 ? `Cảnh báo từ ${storageSize(limits.soft_limit_bytes)}` : "",
+    limits.hard_limit_bytes > 0 ? `Giới hạn ${storageSize(limits.hard_limit_bytes)}` : "",
+  ].filter(Boolean).join(" · ");
+  $("storage-categories").textContent = Object.entries({
+    cache: "Bộ nhớ đệm", temp: "Tệp tạm", uploads: "Tư liệu nhập",
+    outputs: "Sản phẩm", database: "Dữ liệu xưởng",
+  }).map(([key, label]) => `${label}: ${storageSize(storage.categories?.[key])}`).join(" · ");
+  $("storage-guidance").textContent = storage.complete === false
+    ? "Chưa đo được đầy đủ dung lượng. Kiểm tra phạm vi lưu trữ của xưởng trước khi nhận thêm dự án."
+    : blocked
+      ? "Đã chạm giới hạn dung lượng. Kiểm tra dữ liệu hoặc điều chỉnh giới hạn trước khi tạo dự án mới; công việc đã có vẫn tiếp tục."
+      : warning
+        ? "Đã chạm ngưỡng cảnh báo dung lượng. Kiểm tra nhu cầu lưu trữ trước khi mở rộng sản xuất."
+        : limits.hard_limit_bytes > 0
+          ? "Dung lượng được cập nhật định kỳ; xưởng kiểm tra lại trước khi nhận dự án mới."
+          : "Dung lượng được cập nhật định kỳ; giới hạn nhận dự án hiện đang tắt.";
+}
 function render() {
   const projects = state.projects;
+  renderStorage();
   syncProductionOptions();
   $("stat-active").textContent = projects.filter(
     (p) =>
