@@ -16,6 +16,7 @@ Console dùng database demo riêng; không gọi model/media tính phí và khô
 - Desktop 1440px và sáu màn hình mobile ở 390px không tràn ngang trang; nhãn demo vẫn xuất hiện trên mobile.
 - Sau chỉnh căn lề: kiểm tra **49 tổ hợp** bảy trang ở 1920, 1440, 1280, 1024, 768, 390 và 360px; không tràn ngang, chỉ một mục điều hướng active/aria-current và không có lỗi JavaScript. Kiểm tra thêm lưới bốn cột ở 1920px và cập nhật ảnh desktop/mobile.
 - Không có lỗi JavaScript trong các lượt kiểm tra trình duyệt.
+- Bảng màu sáng dùng thanh bên trắng, điểm nhấn xanh dương và thẻ pastel. Chín cặp màu chính (nút tạo video, điều hướng được chọn, workspace, thống kê, chữ phụ và tiêu đề poster) có tương phản ít nhất 4,5:1; tám ảnh giao diện được cập nhật bằng dữ liệu demo.
 
 Script tái chạy: [dashboard-smoke.cjs](../scripts/dashboard-smoke.cjs). Playwright chỉ là công cụ phát triển, không phải dependency chạy xưởng.
 

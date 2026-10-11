@@ -668,23 +668,23 @@ main {
 }
 .journey-step:nth-child(1) .step-icon,
 .journey-step:nth-child(5) .step-icon {
-  color: #c48451;
-  background: #fcf1e5;
+  color: #ae5b14;
+  background: #fff2dc;
 }
 .journey-step:nth-child(2) .step-icon,
 .journey-step:nth-child(6) .step-icon {
-  color: #8477b4;
-  background: #f0edf8;
+  color: var(--lavender);
+  background: var(--lavender-soft);
 }
 .journey-step:nth-child(3) .step-icon,
 .journey-step:nth-child(7) .step-icon {
   color: var(--muted);
-  background: #eaf4f0;
+  background: #e4f7ef;
 }
 .journey-step:nth-child(4) .step-icon,
 .journey-step:nth-child(8) .step-icon {
-  color: #d48372;
-  background: #fceeea;
+  color: #b43e61;
+  background: #ffeaf1;
 }
 .journey-step.current .step-icon,
 .journey-step.selected .step-icon {
