@@ -32,7 +32,8 @@ class RenderCache:
         self.root = root
 
     def produce(self, key: Any, out: Path, generate: Callable[[Path], MediaResult], *,
-                force: bool = False) -> tuple[MediaResult, bool]:
+                force: bool = False, materialize: bool = True) -> tuple[MediaResult, bool]:
+        """Use materialize=False only for consumers that never modify the returned blob."""
         self.root.mkdir(parents=True, exist_ok=True)
         name = fingerprint({"format": 1, "input": key})
         blob = self.root / (name + out.suffix)
@@ -59,6 +60,9 @@ class RenderCache:
                 checkpoint.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                 result.path.replace(blob)
                 checkpoint.replace(meta)  # commit marker comes last
+        if not materialize:
+            result.path = blob
+            return result, hit
         out.parent.mkdir(parents=True, exist_ok=True)
         if out.is_file() and digest(out) == digest(blob):
             result.path = out

@@ -94,3 +94,61 @@ def test_console_bad_cookie_and_bind_failure(http_console,tmp_path,monkeypatch):
     monkeypatch.setenv('STUDIO_CONSOLE_TOKEN','test')
     with pytest.raises(OSError): console.main(['--db',str(tmp_path/'test.sqlite')])
     factory.close.assert_called_once()
+
+
+@pytest.mark.parametrize(('value', 'expected', 'content_range'), [
+    ('bytes=-3', b'789', 'bytes 7-9/10'),
+    ('bytes=-20', b'0123456789', 'bytes 0-9/10'),
+    ('bytes=8-100', b'89', 'bytes 8-9/10'),
+])
+def test_media_suffix_and_clamped_ranges(http_console, value, expected, content_range):
+    request, _, _, _ = http_console
+    status, headers, body = request('GET', '/media/known', headers={
+        'Authorization': 'Bearer test-token', 'Range': value,
+    })
+    assert status == 206
+    assert body == expected
+    assert headers['Content-Length'] == str(len(expected))
+    assert headers['Content-Range'] == content_range
+
+
+@pytest.mark.parametrize('value', ['bytes=-0', 'bytes=-', 'bytes=10-', 'bytes=5-2',
+                                  'bytes=0-1,3-4', 'bytes=' + '9' * 5000 + '-'])
+def test_media_unsatisfiable_ranges_include_current_size(http_console, value):
+    request, _, _, _ = http_console
+    status, headers, _ = request('GET', '/media/known', headers={
+        'Authorization': 'Bearer test-token', 'Range': value,
+    })
+    assert status == 416
+    assert headers['Content-Range'] == 'bytes */10'
+
+
+def test_media_empty_and_disappearing_files(http_console):
+    request, _, file, _ = http_console
+    auth = {'Authorization': 'Bearer test-token'}
+    file.write_bytes(b'')
+    status, headers, body = request('GET', '/media/known', headers=auth)
+    assert status == 200 and body == b'' and headers['Content-Length'] == '0'
+    status, headers, _ = request('GET', '/media/known', headers={**auth, 'Range': 'bytes=-1'})
+    assert status == 416 and headers['Content-Range'] == 'bytes */0'
+    file.unlink()
+    assert request('GET', '/media/known', headers=auth)[0] == 404
+
+
+def test_media_length_matches_file_opened_after_atomic_replacement(http_console, monkeypatch):
+    from pathlib import Path
+
+    request, _, file, _ = http_console
+    replacement = file.with_suffix('.new')
+    replacement.write_bytes(b'new')
+    original_open = Path.open
+
+    def replace_before_open(path, *args, **kwargs):
+        if path == file and replacement.exists():
+            replacement.replace(file)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'open', replace_before_open)
+    status, headers, body = request('GET', '/media/known', headers={'Authorization': 'Bearer test-token'})
+    assert status == 200 and body == b'new'
+    assert headers['Content-Length'] == '3'

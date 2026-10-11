@@ -20,8 +20,8 @@ def test_bounded_real_render_resume_duration_and_finishing(tmp_path):
     m = SceneManifest(video_id="LONG", scenes=[Scene(scene_id=f"S{i}", order=i, narration="Xin chào.", visual_prompt="p")
                                              for i in range(3)])
     r.render(m)
-    cache = list((tmp_path / "LONG" / ".segments").glob("scene-*.mkv"))
-    assert len(cache) == 3
+    cache = list((tmp_path / "LONG" / ".segments").glob("*.mkv"))
+    assert 1 <= len(cache) <= 3
     mtimes = [p.stat().st_mtime_ns for p in cache]
     final = r.finalize(m)
     assert [p.stat().st_mtime_ns for p in cache] == mtimes
@@ -58,3 +58,71 @@ def test_real_footage_and_looped_music_finish_without_extending_video(tmp_path):
     r=Renderer(InMemoryBus(),make_media(cfg));m=SceneManifest(video_id='V',scenes=[Scene(scene_id='S',order=0,narration='Hello world',visual_prompt='x')])
     r.render(m);final=r.finalize(m)
     assert abs(probe_duration(final.path)-final.duration_s)<.2
+
+
+@pytest.mark.skipif(shutil.which('ffmpeg') is None, reason='requires ffmpeg')
+def test_bounded_uses_one_lossless_checkpoint_and_limits_input_threads(tmp_path):
+    from unittest.mock import Mock
+
+    cfg = MediaConfig(output_dir=tmp_path, render={'mode': 'bounded', 'threads': 1},
+                      video={'provider': 'ffmpeg', 'resolution': '160x90', 'fps': 10, 'motion': 'none'})
+    r = Renderer(InMemoryBus(), make_media(cfg))
+    r.media.video._run = Mock(wraps=r.media.video._run)
+    m = SceneManifest(video_id='DISK', scenes=[Scene(scene_id='S', order=0, narration='Hello world.', visual_prompt='p')])
+    r.render(m)
+    files = list((tmp_path / 'DISK' / '.segments').glob('*.mkv'))
+    assert len(files) == 1
+    streams = json.loads(subprocess.check_output(['ffprobe', '-v', 'quiet', '-show_streams', '-of', 'json', files[0]]))['streams']
+    assert next(s for s in streams if s['codec_type'] == 'audio')['codec_name'] == 'flac'
+    for call in r.media.video._run.call_args_list:
+        args = call.args[0]
+        for index, arg in enumerate(args):
+            if arg == '-i':
+                assert '-threads' in args[:index]
+    # FLAC also compresses the fake silent narration; no duplicate PCM checkpoint.
+    assert files[0].stat().st_size < 48000 * 2 * 2 * 0.5
+
+
+@pytest.mark.parametrize('duration,pad,fps', [(float('nan'), 0, 10), (float('inf'), 0, 10),
+                                             (-1, 0, 10), (0, 0, 10), (1, -1, 10), (1, 0, 0)])
+def test_invalid_frame_spans_fail_with_actionable_media_error(duration, pad, fps):
+    from studio.long_render import frame_span
+    from studio.media import MediaError
+
+    with pytest.raises(MediaError, match=r'duration|fps'):
+        frame_span(duration, pad, fps)
+
+
+@pytest.mark.skipif(shutil.which('ffmpeg') is None, reason='requires ffmpeg')
+def test_interrupted_concat_preserves_final_and_resumes_valid_checkpoints(tmp_path):
+    from unittest.mock import Mock
+
+    from studio.long_render import BoundedAssembler
+    from studio.media import FakeImage, FakeTTS, MediaError
+
+    image = tmp_path / 'visual.png'
+    audio = tmp_path / 'voice.wav'
+    FakeImage().generate('test', '160x90', image)
+    FakeTTS().synthesize('Hello world', {}, audio)
+    assembler = BoundedAssembler(threads=1, motion='none')
+    out = tmp_path / 'final.mp4'
+    out.write_bytes(b'previous final')
+    real_run = assembler._run
+    def fail_concat(args, **kwargs):
+        if 'concat' in args:
+            raise MediaError('interrupted concat')
+        return real_run(args, **kwargs)
+    assembler._run = Mock(side_effect=fail_concat)
+    with pytest.raises(MediaError, match='interrupted concat'):
+        assembler.assemble([(image, audio, 1)], out, 10, '160x90')
+    assert out.read_bytes() == b'previous final'
+    assert not list(tmp_path.glob('.concat-*'))
+    blobs = list((tmp_path / '.segments').glob('*.mkv'))
+    assert len(blobs) == 1
+    assembler._run = Mock(wraps=real_run)
+    assembler.assemble([(image, audio, 1)], out, 10, '160x90')
+    assert assembler._run.call_count == 1  # only concat; scene survived the interruption
+    blobs[0].write_bytes(b'broken checkpoint')
+    assembler._run.reset_mock()
+    assembler.assemble([(image, audio, 1)], out, 10, '160x90')
+    assert assembler._run.call_count == 2  # corrupt scene is repaired, then concatenated
