@@ -186,3 +186,62 @@ def test_transient_trong_decide_khong_mat_lan_dang_da_duyet(tmp_path):
     ev = [e.payload for e in bus.replay("publish-events", vid)]
     assert ev and ev[-1]["status"] in {"scheduled", "published"}, "lần đăng đã duyệt phải được làm lại"
     assert not o.deferred
+
+
+def test_completed_sibling_route_survives_retry_and_restart(tmp_path, monkeypatch):
+    from studio.orchestrator import ROUTES, StepResult
+    from studio.sqlite_bus import SQLiteBus
+
+    path = tmp_path / "resume.sqlite"
+    bus = SQLiteBus(path)
+    o = _orch(bus, tmp_path, TransientError("unused"), n=0)
+    env = Envelope(topic="review-results", key="V1", actor="fact-checker", payload={
+        "video_id": "V1", "source": "fact", "verdict": "pass", "findings": []})
+    calls = []
+    from types import SimpleNamespace
+
+    def generate(runner, agent, *args, **kwargs):
+        calls.append(agent)
+        if agent == "seo-optimizer": raise TransientError("retry")
+        return SimpleNamespace(payloads=[], tokens=0, model="fake", context_writes=[], cache_hit_ratio=0)
+
+    monkeypatch.setattr("studio.longform.generate_partitioned", generate)
+    routes = [r for r in ROUTES if r.topic_in == "review-results"]
+    for route in routes: o._call(route, env, StepResult(env.event_id, env.topic, env.key))
+    bus.close()
+    bus = SQLiteBus(path)
+    resumed = _orch(bus, tmp_path, TransientError("unused"), n=0)
+    for route in routes: resumed._call(route, env, StepResult(env.event_id, env.topic, env.key))
+    assert calls.count("production-manager") == 1
+    assert calls.count("seo-optimizer") == 2
+    bus.close()
+
+
+def test_transient_seo_correction_keeps_retry_available(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from studio.events import Finding
+    from studio.orchestrator import StepResult
+    from studio.preflight import PreflightReport
+
+    bus = InMemoryBus()
+    o = _orch(bus, tmp_path, TransientError("unused"), n=0)
+    env = Envelope(topic="metadata-packages", key="V1", actor="seo-optimizer", payload={
+        "video_id": "V1", "title": "Test", "description": "test", "tags": []})
+    monkeypatch.setattr("studio.orchestrator.preflight", lambda *args: PreflightReport(findings=[
+        Finding(level="block", text="needs revision")]))
+    calls = []
+
+    def generate(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1: raise TransientError("retry")
+        return SimpleNamespace(payloads=[], tokens=0, model="fake", context_writes=[], cache_hit_ratio=0)
+
+    monkeypatch.setattr("studio.longform.generate_partitioned", generate)
+    first = StepResult(env.event_id, env.topic, env.key)
+    o._preflight(env, first)
+    assert first.transient
+    second = StepResult(env.event_id, env.topic, env.key)
+    o._preflight(env, second)
+    assert len(calls) == 2
+    assert not second.transient

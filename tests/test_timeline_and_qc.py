@@ -284,3 +284,41 @@ def test_scene_qc_measures_real_files(tmp_path):
     text = " | ".join(f["text"] for f in xấu["findings"])
     assert "ảnh gần như đen" in text and "giọng đọc gần như im lặng" in text
     assert xấu["metrics"]["image"]["yavg"] < 40 and xấu["metrics"]["audio"]["silence_s"] >= 2.9
+
+
+@pytest.mark.parametrize("code,log", [
+    (1, "  I: -14.0 LUFS\n  Peak: -1.0 dBFS\n"),
+    (0, ""),
+    (0, "  I: -14.0 LUFS\n"),
+    (0, "x" * 1_000_000 + "\n  I: -14.0 LUFS\n  Peak: -1.0 dBFS\n"),
+], ids=["failed-process", "empty", "missing-peak", "truncated"])
+def test_qc_blocks_incomplete_scan_even_with_readable_probe(tmp_path, monkeypatch, code, log):
+    video = tmp_path / "final.mp4"; video.write_bytes(b"video")
+    _fake_tools(monkeypatch, _OK_PROBE)
+    monkeypatch.setattr(qc, "_run", lambda args: (0, json.dumps(_OK_PROBE), "")
+                        if "ffprobe" in args[0] else (code, "", log))
+    report = qc_video(video)
+    assert report.blocked
+    assert report.metrics["scan_complete"] is False
+    assert any(f.level == "block" and f.location == "qc_scan" for f in report.findings)
+
+
+def test_qc_blocks_missing_ffmpeg(tmp_path, monkeypatch):
+    video = tmp_path / "final.mp4"; video.write_bytes(b"video")
+    _fake_tools(monkeypatch, _OK_PROBE)
+    monkeypatch.setattr(qc.shutil, "which", lambda name: "/usr/bin/ffprobe" if name == "ffprobe" else None)
+    assert qc_video(video).blocked
+
+
+def test_qc_scan_uses_bounded_threads_and_quiet_loudness_logging(monkeypatch):
+    commands = []
+    monkeypatch.setattr(qc.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+    def run(args):
+        commands.append(args)
+        return 0, "", "  I: -14.0 LUFS\n  Peak: -1.0 dBFS\n"
+    monkeypatch.setattr(qc, "_run", run)
+    assert qc.measure(Path("video.mp4"))["scan_complete"] is True
+    command = commands[0]
+    assert "framelog=verbose" in command[command.index("-af") + 1]
+    assert command[command.index("-filter_threads") + 1] == "1"
+    assert "-xerror" in command

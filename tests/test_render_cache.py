@@ -95,3 +95,23 @@ def test_healthy_locked_scene_skips_paid_generation(tmp_path):
     r=renderer(tmp_path);m=manifest();r.render(m);m.scenes[0].locked=True
     r.render(m)
     assert r.media.tts.synthesize.call_count==1 and r.media.image.generate.call_count==1
+
+
+def test_immutable_cache_result_avoids_duplicate_and_repairs_corruption(tmp_path):
+    from studio.media import MediaResult
+    from studio.render_cache import RenderCache
+
+    cache = RenderCache(tmp_path / 'cache')
+    def generate(path):
+        path.write_bytes(b'complete media')
+        return MediaResult(path, 'fake', 'test')
+    producer = Mock(side_effect=generate)
+    requested = tmp_path / 'scene.mkv'
+    first, hit = cache.produce('scene', requested, producer, materialize=False)
+    assert not hit and first.path.parent == cache.root and not requested.exists()
+    second, hit = cache.produce('scene', requested, producer, materialize=False)
+    assert hit and second.path == first.path and producer.call_count == 1
+    first.path.write_bytes(b'corrupt media')
+    repaired, hit = cache.produce('scene', requested, producer, materialize=False)
+    assert not hit and repaired.path.read_bytes() == b'complete media'
+    assert producer.call_count == 2

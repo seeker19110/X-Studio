@@ -80,26 +80,42 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         self.json(404, {"error": "Không tìm thấy"})
 
     def media(self, file: Path) -> None:
-        length = file.stat().st_size
-        start, end = 0, length - 1
-        partial = self.headers.get("Range")
-        if partial:
-            match = re.fullmatch(r"bytes=(\d+)-(\d*)", partial)
-            if not match: self.json(416, {"error": "Invalid range"}); return
-            start = int(match[1]); end = min(int(match[2]) if match[2] else end, end)
-            if start > end or start >= length: self.json(416, {"error": "Range outside file"}); return
-        self.send_response(206 if partial else 200)
-        safe_type = file.suffix.lower() in {".mp4", ".webm", ".mkv", ".mov", ".jpg", ".jpeg", ".png", ".webp", ".wav", ".mp3", ".srt"}
-        self.send_header("Content-Type", (mimetypes.guess_type(file)[0] or "application/octet-stream") if safe_type else "application/octet-stream")
-        if not safe_type: self.send_header("Content-Disposition", "attachment")
-        self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
-        self.send_header("Content-Length", str(end-start+1))
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        if partial: self.send_header("Content-Range", f"bytes {start}-{end}/{length}")
-        self.end_headers()
-        with file.open("rb") as stream:
+        try:
+            stream = file.open("rb")
+        except (FileNotFoundError, IsADirectoryError):
+            self.json(404, {"error": "Không tìm thấy"}); return
+        # Rendering publishes files by atomic replacement. Size and body must come
+        # from the same open descriptor, even if the path changes during playback.
+        with stream:
+            length = os.fstat(stream.fileno()).st_size
+            start, end = 0, length - 1
+            partial = self.headers.get("Range")
+            if partial:
+                try:
+                    match = re.fullmatch(r"bytes=([0-9]*)-([0-9]*)", partial)
+                    if not match or not any(match.groups()): raise ValueError("Invalid range")
+                    if match[1]:
+                        start = int(match[1])
+                        end = min(int(match[2]) if match[2] else end, end)
+                    else:
+                        suffix = int(match[2])
+                        if suffix == 0: raise ValueError("Invalid suffix")
+                        start = max(0, length - suffix)
+                    if start > end or start >= length: raise ValueError("Range outside file")
+                except ValueError:
+                    self.json(416, {"error": "Invalid or unsatisfiable range"},
+                              {"Content-Range": f"bytes */{length}"}); return
+            self.send_response(206 if partial else 200)
+            safe_type = file.suffix.lower() in {".mp4", ".webm", ".mkv", ".mov", ".jpg", ".jpeg", ".png", ".webp", ".wav", ".mp3", ".srt"}
+            self.send_header("Content-Type", (mimetypes.guess_type(file)[0] or "application/octet-stream") if safe_type else "application/octet-stream")
+            if not safe_type: self.send_header("Content-Disposition", "attachment")
+            self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+            self.send_header("Content-Length", str(end-start+1))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            if partial: self.send_header("Content-Range", f"bytes {start}-{end}/{length}")
+            self.end_headers()
             stream.seek(start); remaining = end-start+1
             while remaining:
                 chunk = stream.read(min(65536, remaining))

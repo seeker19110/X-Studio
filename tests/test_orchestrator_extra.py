@@ -468,3 +468,24 @@ def test_cli_run_with_watch_calls_orchestrator_watch(tmp_path, monkeypatch):
     monkeypatch.setattr(orch_mod.Orchestrator, "watch", lambda self, interval: called.__setitem__("interval", interval))
     rc = orch_mod.main(["--db", str(db), "run", "--watch", "3.5"])
     assert rc == 0 and called["interval"] == 3.5
+
+
+def test_exhausted_render_remains_resumable(tmp_path, monkeypatch):
+    bus, o = _to_scene_manifest(tmp_path)
+    o.renderer.media.cfg.render["max_retries"] = 0
+
+    def broken(manifest):
+        raise MediaError("disk temporarily unavailable")
+
+    monkeypatch.setattr(o.renderer, "render", broken)
+    o.run()
+    manifest = next(e for e in bus.replay("scene-manifests") if e.actor == "production-manager")
+    assert manifest.event_id not in o.processed
+    assert o.deferred[manifest.event_id][1] == "paused:CH1-V1"
+    calls = []
+    monkeypatch.setattr(o.renderer, "render", lambda m: calls.append(m.video_id) or [])
+    bus.publish(Envelope(topic="supervisor-actions", key="CH1-V1", actor="supervisor", payload={
+        "target": "CH1-V1", "action": "resume", "reason": "disk repaired"}))
+    o.run()
+    assert calls == ["CH1-V1"]
+    assert manifest.event_id in o.processed

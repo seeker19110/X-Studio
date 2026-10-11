@@ -450,7 +450,7 @@ class Orchestrator:
                     continue
                 self._remember(key); self._audit("review.reassign", {"video_id": vid, "source": src}, video_id=vid)
                 res = StepResult(fin.event_id, fin.topic, fin.key)
-                self._call(route, fin, res); results.append(res)
+                self._call(route, fin, res, replay_completed=True); results.append(res)
         active = {vid for vid, st in self.desk.state.items() if st in ACTIVE_STATES}
         self.supervisor.check_timeouts(now, active=active)
         results += self.run(max_steps)
@@ -534,6 +534,7 @@ class Orchestrator:
         elif env.topic == "publish-events" and env.payload.get("status") == "rolled_back":
             self._rework(env, res, hint=f"rolled back: {env.payload.get('evidence', '')}")
         if res.transient: return self._defer_transient(env, res)
+        if res.deferred: return res
         # --- kế hoạch biên tập ---
         when = PLAN_INPUTS.get(env.topic)
         if when and when(env, self):
@@ -578,23 +579,32 @@ class Orchestrator:
         self._audit("orchestrated", {"event_id": env.event_id, "topic": env.topic, "actions": res.actions},
                     video_id=env.payload.get("video_id") if isinstance(env.payload, dict) else None)
 
-    def _call(self, r: Route, env: Envelope, res: StepResult, extra: dict[str, Any] | None = None) -> list[Envelope]:
+    def _call(self, r: Route, env: Envelope, res: StepResult, extra: dict[str, Any] | None = None,
+              *, replay_completed: bool = False) -> list[Envelope]:
+        # A sibling route may be deferred after this one succeeded. Persist each success
+        # independently so retry/restart does not regenerate completed work or charge twice.
+        # Explicit overdue-review reassignment may intentionally replay a completed route.
+        key = f"route:{env.event_id}:{r.agent}:{r.topic_out}"
+        if key in self.once and not replay_completed: return []
         data = dict(r.enrich(env, self)) if r.enrich else {}
         if extra: data.update(extra)
         try:
             if r.topic_out == CONTEXT_ONLY:
-                self.runner.run_context(r.agent, env, extra=data or None); res.actions.append(f"{r.agent}→context"); return []
+                self.runner.run_context(r.agent, env, extra=data or None)
+                self._remember(key)
+                res.actions.append(f"{r.agent}→context"); return []
             from .longform import generate_partitioned
             g = generate_partitioned(self.runner, r.agent, env, r.topic_out, data,
                                      self.renderer.out_dir / ".cache" / "chapters", many=r.many,
                                      chapter_minutes=float(self.renderer.media.cfg.production.get("chapter_minutes", 8)))
             outs = []
             for i, p in enumerate(g.payloads):
-                key = key_for(r.topic_out, p, env.key)
+                output_key = key_for(r.topic_out, p, env.key)
                 # một lần gọi model → token chỉ tính ở payload đầu, kẻo supervisor cộng ngân sách gấp N lần
-                outs.append(self.runner.publish(r.agent, env, r.topic_out, p, key=key, tokens=g.tokens if i == 0 else 0, model=g.model,
+                outs.append(self.runner.publish(r.agent, env, r.topic_out, p, key=output_key, tokens=g.tokens if i == 0 else 0, model=g.model,
                                                 context_writes=g.context_writes, cache_hit_ratio=g.cache_hit_ratio))
                 g.context_writes = []
+            self._remember(key)
             res.actions.append(f"{r.agent}→{r.topic_out}×{len(outs)}")
             return outs
         except TransientError as e:   # trước `LLMError`: nó là con của lớp ấy
@@ -619,6 +629,7 @@ class Orchestrator:
         elif vid in self.desk.briefs:
             self.bus.publish(Envelope(topic="supervisor-actions", key=vid, actor="supervisor", payload={
                 "target": vid, "action": "pause", "reason": f"media failed after {attempts} attempts: {str(error)[:200]}"}))
+            self._defer(env, res, f"paused:{vid}")
 
     def _render(self, env: Envelope, res: StepResult) -> None:
         m = SceneManifest.model_validate(env.payload)
@@ -699,9 +710,9 @@ class Orchestrator:
         res.actions.append(f"preflight:{'block' if rep.blocked else 'ok'}:{len(rep.findings)}")
         key = f"seo-retry:{meta.video_id}:{self.desk.briefs[meta.video_id].retry if meta.video_id in self.desk.briefs else 0}"
         if rep.blocked and key not in self.once:
-            self._remember(key)
             self._call(SEO_RETRY_ROUTE, env, res, extra={"preflight_findings": [f.model_dump() for f in rep.findings],
                                                         "instruction": "sửa các finding mức block, giữ nguyên phần đã tốt"})
+            if not res.transient: self._remember(key)
 
     def _unhandled(self, vid: str, model: str, topic: str, e: ValidationError, res: StepResult) -> None:
         """Payload không hợp `model`: KHÔNG nuốt lỗi và KHÔNG đoán nhánh (rẽ nhánh mò trên dict hỏng là làm lại

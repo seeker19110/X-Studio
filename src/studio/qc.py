@@ -33,6 +33,7 @@ DURATION_TOLERANCE = 0.10   # lệch > 10% so với manifest = dựng hỏng, kh
 LUFS_TOLERANCE = 1.5
 BLACK_MIN_S = 0.5           # đoạn hình đen liên tục từng này giây trở lên là cảnh hỏng
 SILENCE_MIN_S = 1.5         # khoảng lặng dài hơn đệm chuyển cảnh: khán giả tưởng video đứng
+QC_MAX_OUTPUT = 1_000_000
 TIMEOUT_S = max(30, float(os.environ.get("STUDIO_QC_TIMEOUT_S", "300")))
 
 
@@ -76,7 +77,7 @@ def _run(args: list[str], sandbox: Sandbox | None = None) -> tuple[int, str, str
     sb = sandbox if sandbox is not None else qc_sandbox()
     try:
         r = sb.run(RunSpec(argv=args, cwd=Path.cwd(), env=clean_env(), timeout=TIMEOUT_S, read_only=True,
-                           max_output=1_000_000))
+                           max_output=QC_MAX_OUTPUT))
         if r.timed_out: return 1, "", f"quá {TIMEOUT_S}s"
         return int(r.exit_code or 0), r.stdout, r.stderr
     except (OSError, subprocess.SubprocessError) as e:
@@ -113,15 +114,24 @@ def probe(path: Path) -> dict[str, Any] | None:
 def measure(path: Path) -> dict[str, Any]:
     """Một lượt ffmpeg đo âm lượng (ebur128), hình đen (blackdetect) và khoảng lặng (silencedetect)."""
     ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg: return {}
-    _, _, err = _run([ffmpeg, "-hide_banner", "-nostats", "-i", str(path),
+    if not ffmpeg: return {"scan_complete": False, "scan_error": "thiếu ffmpeg"}
+    code, _, err = _run([ffmpeg, "-hide_banner", "-nostats", "-loglevel", "info", "-xerror",
+                        "-threads", "1", "-filter_threads", "1", "-i", str(path),
                       "-vf", f"blackdetect=d={BLACK_MIN_S}:pic_th=0.98",
-                      "-af", f"ebur128=peak=true,silencedetect=n=-50dB:d={SILENCE_MIN_S}", "-f", "null", "-"])
+                      "-af", f"ebur128=peak=true:framelog=verbose,silencedetect=n=-50dB:d={SILENCE_MIN_S}",
+                      "-threads", "1", "-f", "null", "-"])
+    if code != 0:
+        return {"scan_complete": False, "scan_error": f"ffmpeg thất bại (exit {code}): {err[-500:]}"}
+    if len(err) >= QC_MAX_OUTPUT:
+        return {"scan_complete": False, "scan_error": "log đo bị cắt; chưa xác minh toàn bộ video"}
     out: dict[str, Any] = {}
     lufs = re.findall(r"^\s*I:\s+(-?\d+(?:\.\d+)?) LUFS", err, re.MULTILINE)
     peak = re.findall(r"^\s*Peak:\s+(-?\d+(?:\.\d+)?) dBFS", err, re.MULTILINE)
     if lufs: out["lufs"] = float(lufs[-1])
     if peak: out["true_peak_db"] = float(peak[-1])
+    out["scan_complete"] = bool(lufs and peak)
+    if not out["scan_complete"]:
+        out["scan_error"] = "thiếu tổng kết âm lượng/đỉnh âm thanh"
     out["black_spans"] = [round(float(x), 2) for x in re.findall(r"black_duration:(\d+(?:\.\d+)?)", err)]
     out["silence_spans"] = [round(float(x), 2) for x in re.findall(r"silence_duration:\s*(\d+(?:\.\d+)?)", err)]
     return out
@@ -137,6 +147,9 @@ def qc_video(path: Path, expected_duration_s: float = 0.0, expected_resolution: 
     m["resolution"] = f"{info['width']}x{info['height']}"
     m.update(measure(Path(path)))
     f: list[Finding] = []
+    if not m.get("scan_complete"):
+        f.append(Finding(level="block", text=f"QC chưa đo đầy đủ: {m.get('scan_error', 'không có kết quả')}",
+                         location="qc_scan"))
     if not info["has_audio"]:
         f.append(Finding(level="block", text="video cuối KHÔNG có luồng âm thanh", location="final_video"))
     if expected_duration_s > 0:
