@@ -118,3 +118,12 @@ platform:
 # thư mục đặt asset sinh ra (bị gitignore)
 output_dir: output
 # api key dùng chung cho tts/image khi cùng nhà cung cấp: STUDIO_MEDIA_API_KEY; khác nhà cung cấp → `api_key_env` từng kênh ở trên
+
+# Sinh clip cho phim/hoạt hình, độc lập video.provider (bộ ghép FFmpeg).
+# Cấu hình ComfyUI workflow/bindings và command: media.film.example.yaml.
+scene_video:
+  provider: none
+  duration_s: 5
+  fps: 24
+  resolution: 832x480
+  license: unknown

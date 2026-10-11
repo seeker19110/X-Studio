@@ -47,13 +47,16 @@ import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
 import yaml
 
 from .sandbox import RunSpec, Sandbox, SubprocessSandbox, clean_env, sandbox_from_config
 from .tools import ToolError, check_url
+
+if TYPE_CHECKING:
+    from .video_gen import VideoGenerator
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT / "media.yaml"
@@ -137,6 +140,8 @@ class MediaConfig:
     output_dir: Path = field(default_factory=lambda: ROOT / "output")
     upload_dir: Path | None = None  # nơi người dùng đặt file thay thế cho `replace_asset`; None = <output_dir>/uploads
     api_key: str | None = None
+    # Scene synthesis is independent of the FFmpeg final-video assembler.
+    scene_video: dict[str, Any] = field(default_factory=lambda: {"provider": "none"})
 
 
 def load_media_config(path: Path | None = None) -> MediaConfig:
@@ -144,12 +149,12 @@ def load_media_config(path: Path | None = None) -> MediaConfig:
     p = path or CONFIG_FILE
     if p.exists():
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        for k in ("tts", "image", "video", "platform", "gate", "render", "production"):
+        for k in ("tts", "image", "video", "platform", "gate", "render", "production", "scene_video"):
             getattr(cfg, k).update(data.get(k) or {})
         if data.get("output_dir"): cfg.output_dir = ROOT / str(data["output_dir"])
         if data.get("upload_dir"): cfg.upload_dir = ROOT / str(data["upload_dir"])
     env = os.environ
-    for k in ("tts", "image", "video"):
+    for k in ("tts", "image", "video", "scene_video"):
         v = env.get(f"STUDIO_MEDIA_{k.upper()}_PROVIDER")
         if v: getattr(cfg, k)["provider"] = v
     if env.get("STUDIO_PLATFORM"): cfg.platform["provider"] = env["STUDIO_PLATFORM"]
@@ -171,6 +176,7 @@ class MediaSuite:
     # sandbox mà lệnh con của lượt render đi qua; renderer ghi tên nó vào audit `render.*` để người duyệt biết
     # video này dựng bằng tiến trình trần hay trong container.
     sandbox: Sandbox = field(default_factory=SubprocessSandbox)
+    scene_video: VideoGenerator | None = None
 
     @property
     def names(self) -> dict[str, str]:
@@ -199,7 +205,8 @@ def make_media(cfg: MediaConfig | None = None) -> MediaSuite:
                                            timeout=float(cfg.render.get("timeout_s") or RENDER_TIMEOUT_S), sandbox=sb,
                                            threads=int(cfg.render.get("threads", 2)), **disk_options)
                            if v.get("provider") == "ffmpeg" else _require_fake("video", v, FakeVideo()))
-    return MediaSuite(tts=tts, image=img, video=vid, cfg=cfg, sandbox=sb)
+    from .video_gen import make_video_generator
+    return MediaSuite(tts=tts, image=img, video=vid, cfg=cfg, sandbox=sb, scene_video=make_video_generator(cfg))
 
 
 def _pick(kind: str, section: dict[str, Any], table: dict[str, Callable[[MediaConfig], Any]], cfg: MediaConfig,

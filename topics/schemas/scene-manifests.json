@@ -104,6 +104,62 @@
             "9:16"
           ],
           "type": "string"
+        },
+        "cinema": {
+          "type": "object",
+          "properties": {
+            "production_type": {
+              "default": "explainer",
+              "enum": [
+                "explainer",
+                "film",
+                "animation"
+              ],
+              "title": "Production Type",
+              "type": "string"
+            },
+            "visual_mode": {
+              "default": "images",
+              "enum": [
+                "images",
+                "generated_video"
+              ],
+              "title": "Visual Mode",
+              "type": "string"
+            },
+            "visual_style": {
+              "default": "",
+              "maxLength": 1000,
+              "title": "Visual Style",
+              "type": "string"
+            },
+            "logline": {
+              "default": "",
+              "maxLength": 1500,
+              "title": "Logline",
+              "type": "string"
+            },
+            "character_bible": {
+              "default": "",
+              "maxLength": 3000,
+              "title": "Character Bible",
+              "type": "string"
+            },
+            "negative_prompt": {
+              "default": "",
+              "maxLength": 1000,
+              "title": "Negative Prompt",
+              "type": "string"
+            },
+            "seed": {
+              "default": 0,
+              "maximum": 2147483647,
+              "minimum": 0,
+              "title": "Seed",
+              "type": "integer"
+            }
+          },
+          "additionalProperties": true
         }
       },
       "required": [

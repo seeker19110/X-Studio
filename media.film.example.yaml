@@ -1,0 +1,45 @@
+# Merge scene_video into media.yaml. Keep your existing TTS/image/platform configuration.
+# This profile does not install models or start ComfyUI.
+scene_video:
+  provider: none                 # none | fake (JSON simulation) | comfyui | command
+  duration_s: 5                  # short shot cap; footage loops to fit narration
+  fps: 24                       # generation fps; independent of final output fps
+  resolution: 832x480            # automatically swapped for a 9:16 project
+  license: unknown              # set generated/owned/licensed only after checking model + nodes + inputs
+
+  # ComfyUI: export YOUR tested workflow in API format, with MP4 SaveVideo/VHS output.
+  # provider: comfyui
+  # base_url: http://127.0.0.1:8188
+  # workflow_path: workflows/my-video-api.json
+  # model: my-reviewed-video-workflow-v1
+  # output_node: "9"             # replace with your graph's actual output node ID
+  # bindings:                    # replace IDs/inputs with existing unlinked inputs in your graph
+  #   prompt: {node_id: "6", input: text}
+  #   negative_prompt: {node_id: "7", input: text}
+  #   seed: {node_id: "3", input: seed}
+  #   width: {node_id: "5", input: width}
+  #   height: {node_id: "5", input: height}
+  #   frames: {node_id: "5", input: length}
+  # num_frames: 81               # optional: satisfy your model's frame count constraint (e.g. 4n+1)
+  # timeout_s: 900
+  # request_timeout_s: 30
+  # poll_interval_s: 1
+  # max_download_bytes: 268435456
+  # api_key_env: COMFYUI_API_KEY  # only if your configured endpoint needs a Bearer credential
+  # probe_binary: ffprobe
+
+  # Local program: UTF-8 JSON on stdin; write playable MP4 to {output}. No shell.
+  # provider: command
+  # command: [python, tools/my-shot-generator.py, "{output}"]
+  # model: local-animation-engine-v1
+  # timeout_s: 900
+
+video:
+  provider: ffmpeg
+  fps: 24
+  resolution: 1280x720
+  tail_pad_s: 0.35
+render:
+  mode: bounded
+  threads: 2
+  timeout_s: 900

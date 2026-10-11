@@ -18,13 +18,14 @@ from xagents_core.sqlite_bus import Lease
 from .autopilot import Autopilot
 from .events import Envelope, MetadataPackage, PerformanceSnapshot, PublishEvent, Script
 from .fakes import make_scripted_client
+from .film import CinemaSpec
 from .llm import make_client
 from .media import MediaConfig, make_media
 from .orchestrator import Orchestrator
 from .sqlite_bus import SQLiteBus
 
 
-class ProjectRequest(BaseModel):
+class ProjectRequest(CinemaSpec):
     model_config = ConfigDict(extra="forbid")
     title: str = Field(min_length=1, max_length=200)
     audience: str = Field(default="Người muốn học hỏi", max_length=300)
@@ -114,7 +115,10 @@ class Factory:
     def command(self, kind: str, body: dict) -> str:
         if kind not in {"create", "run", "pause", "gate", "settings"}: raise ValueError("unknown command")
         if not isinstance(body, dict): raise ValueError("command data must be an object")
-        if kind == "create": ProjectRequest.model_validate(body)
+        if kind == "create":
+            request = ProjectRequest.model_validate(body)
+            if request.visual_mode == "generated_video" and self.orch.renderer.media.scene_video is None:
+                raise ValueError("Chế độ clip AI cần cấu hình scene_video.provider trong media.yaml")
         if kind == "settings": FactorySettings.model_validate(body)
         if kind == "gate": GateDecision.model_validate(body)
         id = uuid4().hex
@@ -143,7 +147,7 @@ class Factory:
             if self.bus.latest("channel-briefs", cid) is None:
                 payload = {"channel_id": cid, "goals": [request.title], "audience": request.audience,
                            "pillars": [request.title], "cadence": "Một video theo yêu cầu", "language": request.language,
-                           "boundaries": request.boundaries, "requested_video": request.model_dump()}
+                           "boundaries": [*request.boundaries, *request.direction()], "requested_video": request.model_dump()}
                 self.bus.publish(Envelope(topic="channel-briefs", key=cid, actor="human:owner", payload=payload))
         elif kind == "gate":
             sid = str(body["subject_id"])
@@ -183,7 +187,8 @@ class Factory:
                       "provenance": e.payload["provenance"], "duration_s": e.payload.get("duration_s")}
                      for e in assets if e.key == vid]
             manifest = o.manifest(vid)
-            scenes = [{"id": s.scene_id, "narration": s.narration, "duration_s": s.duration_s, "locked": s.locked}
+            scenes = [{"id": s.scene_id, "narration": s.narration, "duration_s": s.duration_s, "locked": s.locked,
+                       "visual_prompt": s.visual_prompt}
                       for s in manifest.scenes] if manifest else []
             reviews = {k: {"verdict": v.verdict, "findings": [f.model_dump() for f in v.findings]}
                        for k, v in o.desk.reviews[vid].items()}
@@ -208,6 +213,7 @@ class Factory:
                              "media": media, "reviews": reviews, "retry": brief.retry,
                              "qc": o.qcs[vid].as_dict() if vid in o.qcs else None,
                              "brief": brief.model_dump(exclude={"hint"}), "request": request, "research": research,
+                             "cinema": CinemaSpec.model_validate(brief.model_dump()).model_dump(),
                              "script": Script.model_validate(script_event.payload).model_dump() if script_event else None,
                              "metadata": MetadataPackage.model_validate(metadata_event.payload).model_dump() if metadata_event else None,
                              "publication": PublishEvent.model_validate(publication_event.payload).model_dump(exclude={"evidence"}) if publication_event else None,
@@ -242,7 +248,9 @@ class Factory:
                     "render_mode": o.renderer.media.cfg.render.get("mode", "graph"),
                     "threads": o.renderer.media.cfg.render.get("threads", 2)}
         snapshot.update(burn_captions=o.renderer.media.cfg.video.get("burn_captions", False),
-                        style=o.renderer.media.cfg.production.get("style", ""))
+                        style=o.renderer.media.cfg.production.get("style", ""),
+                        scene_video_provider=o.renderer.media.cfg.scene_video.get("provider", "none"),
+                        scene_video_ready=o.renderer.media.scene_video is not None)
         with self._mutex: self._snapshot = snapshot
 
     def snapshot(self) -> dict:

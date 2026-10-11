@@ -1,5 +1,23 @@
 # Xác minh bản nâng cấp factory
 
+## Tích hợp PR #7 với main sau PR #8 (2026-10-11)
+
+Đối chiếu main `4350abfc1742d756494fe718a344101cc66ff2e1`, giữ tính năng
+phim/hoạt hình được merge bên ngoài cùng bảo vệ upload của PR #7. Hòa giải README
+và lịch sử xác minh; giữ ADR phim/hoạt hình `0013`, đổi ADR upload thành `0014`.
+Không merge PR #7, không triển khai thêm phần admission dung lượng trong bản này.
+
+`make verify` trên bản kết hợp đạt **947 Studio + 273 Gateway + 478 core = 1.698 test**,
+không skip, coverage **100%** mỗi package (Studio 5.388 dòng thực thi, 64 file test).
+Ruff/mypy cả ba package và **28/28 eval replay** đạt. Gateway giữ RuntimeWarning
+runpy có sẵn. Review độc lập và 187 test kết hợp cinema/video_gen/orchestrator/retry
+xác nhận giữ CinemaSpec, storyboard/render và require_existing/private-status.
+`node --check src/studio/web/app.js` và `git diff --check` đạt.
+
+Không chạy lại browser smoke trong lượt hòa giải; báo cáo PR #8 bên dưới là bằng
+chứng của bên thực hiện PR #8. Không gọi YouTube/provider live, không chạy model GPU;
+chưa chứng minh chất lượng nhân vật, continuity, lip-sync hay Windows end-to-end.
+
 ## Upload YouTube bền vững và trạng thái xuất bản (2026-10-11)
 
 Base `07b242f50d4d95b4c03b9430ed577da54058fd21`, sau PR #5 và PR #6 được
@@ -35,7 +53,41 @@ Location cần đối soát thủ công; không có lệnh tự reset hay đoán
 published sai từ lịch sử cũ cũng cần đối soát, vì thiếu trạng thái để tự sửa chắc
 chắn. SHA-256 đọc file theo block 1 MiB, upload giữ chunk tối đa 8 MiB như PR #6;
 file đầu vào cần bất biến trong lúc gửi. Kiểm tra size/mtime hỗ trợ phát hiện thay
-đổi, không thay snapshot filesystem. Xem [ADR-0013](adr/0013-durable-youtube-upload-reconciliation.md).
+đổi, không thay snapshot filesystem. Xem [ADR-0014](adr/0014-durable-youtube-upload-reconciliation.md).
+
+## Phim và hoạt hình (2026-10-11)
+
+Thêm `CinemaSpec`, storyboard trong phòng dựng, `scene_video` provider độc lập và
+adapter ComfyUI/command; xem [ADR-0013](adr/0013-film-animation-scene-generation.md)
+và [nguồn nghiên cứu](RESEARCH-FILM-ANIMATION.md). Xác minh trên nhánh phim/hoạt hình
+riêng từ main `07b242f`; các thay đổi khác trong workspace không thuộc bản này.
+
+- Studio: **906 test đạt**, không skip, **100%** dòng (5.239 statements) qua
+  `COVERAGE_FILE=/tmp/xstudio-film-pr.coverage PATH=/tmp/xstudio-audit-tools/bin:$PATH make verify`.
+- Gateway: **273 test đạt**, coverage 100%; core: **478 test đạt**, coverage dòng/nhánh 100%.
+  Tổng **1.657 test Python**. Gateway có một RuntimeWarning `runpy` đã có trước.
+- `make verify` đạt: Ruff/mypy cả ba package, eval ghi sẵn **28/28**;
+  không chạy eval model live. `node --check` và `git diff --check` đạt.
+- Provider có 107 test offline: API-format, prompt/seed bindings, outputs video trong
+  `images`/`gifs`/`videos`, giới hạn tham số/bytes, không redirect, ffprobe, job lỗi,
+  timeout và tiếp tục job đã nhận; cache invalidation theo graph/`num_frames`.
+- FFmpeg thật: command nhận JSON stdin sinh clip chuyển động ngắn, renderer lặp clip
+  phủ narration, ghép MP4 H.264 có audio ở **320×180 và 180×320**; warm render không gọi
+  lại generator. Fixture là `testsrc2` tổng hợp, không đại diện chất lượng phim AI.
+- `scripts/film-smoke.cjs` đạt với Chromium: payload phim/hoạt hình, aspect độc lập,
+  mặc định giải trí, giữ input khi polling, provider chưa cấu hình/bị gỡ, escape dữ liệu,
+  xem/tải clip, nhãn fake, chuyển ý tưởng và mobile 390px không tràn ngang. Ảnh thay thế
+  mới nhất được hiển thị thay clip/đường tải/license cũ (regression đỏ trước khi sửa).
+- Browser + console HTTP/worker/SQLite riêng khởi động trên port 8766: tạo phim 16:9
+  (seed 101) và hoạt hình 9:16 (seed 202), mỗi dự án hai cảnh, qua brief/manifest,
+  `scene_video`, final và hai gate publish; hồ sơ nhân vật/logline/style/seed đúng,
+  không lỗi JS; bảy màn hình mobile 390px không tràn ngang.
+  Toàn bộ media của lượt này là **fake**, không đăng YouTube; server/DB thử được dọn sau chạy.
+
+Môi trường: Python 3.12.14 (cùng minor với CI), FFmpeg n8.1.3-17-gc389840894-20261010, Linux/WSL.
+Chưa cài/chạy ComfyUI hoặc model GPU thật; chưa đánh giá chất lượng continuity,
+reference conditioning, lip-sync, tốc độ/VRAM/chi phí diffusion hoặc Windows end-to-end.
+UI chỉ xác nhận đã cấu hình provider; không xác nhận endpoint/model sẵn sàng.
 
 ## Xác minh bản tích hợp lên main cho PR #6 (2026-10-11)
 

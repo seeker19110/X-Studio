@@ -613,6 +613,13 @@ class Orchestrator:
         if key in self.once and not replay_completed: return []
         data = dict(r.enrich(env, self)) if r.enrich else {}
         if extra: data.update(extra)
+        from .film import CinemaSpec
+        creative_brief = self.desk.briefs.get(str(env.payload.get("video_id") or env.key))
+        if creative_brief:
+            cinema = CinemaSpec.model_validate(creative_brief.model_dump())
+            if cinema.direction():
+                data["cinema"] = cinema.model_dump()
+                data["cinema_direction"] = cinema.direction()
         try:
             if r.topic_out == CONTEXT_ONLY:
                 self.runner.run_context(r.agent, env, extra=data or None)
@@ -627,7 +634,9 @@ class Orchestrator:
                 if r.topic_out in {"scene-manifests", "metadata-packages"}:
                     brief = self.desk.briefs.get(str(p.get("video_id") or env.key))
                     if brief:
-                        if r.topic_out == "scene-manifests": p["aspect"] = "9:16" if brief.format == "short" else "16:9"
+                        if r.topic_out == "scene-manifests":
+                            p["aspect"] = "9:16" if brief.format == "short" else "16:9"
+                            p["cinema"] = CinemaSpec.model_validate(brief.model_dump()).model_dump()
                         channel = self.latest("channel-briefs", brief.channel_id)
                         if channel and (language := channel.payload.get("language")):
                             if r.topic_out == "metadata-packages": p["language"] = language
@@ -820,7 +829,11 @@ class Orchestrator:
             g.payloads[0].update(working_title=requested["title"], target_minutes=requested["target_minutes"],
                                  format=requested["format"], budget_tokens=requested["budget_tokens"],
                                  video_id=f"{cid}-V1", channel_id=cid, audience=requested["audience"])
+            from .film import CinemaSpec
+            cinema = CinemaSpec.model_validate(requested)
+            g.payloads[0].update(cinema.model_dump())
             boundaries = [*requested.get("boundaries", []), *g.payloads[0].get("boundaries", [])]
+            boundaries.extend(cinema.direction())
             if requested.get("language"):
                 boundaries.append(f"Ngôn ngữ kịch bản và lời đọc: {requested['language']}.")
             g.payloads[0]["boundaries"] = list(dict.fromkeys(boundaries))

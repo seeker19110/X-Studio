@@ -26,6 +26,7 @@ from .motion import MotionSpec, render_motion
 from .production import copy_asset, finish, selections
 from .render_cache import RenderCache, digest, fingerprint
 from .timeline import caption_pages, srt, timeline
+from .video_gen import validate_video_inputs
 
 ACTOR = "renderer"
 # Chữ nằm trong ảnh sinh là lỗi (skill visual-direction): model ảnh viết sai dấu tiếng Việt, và chữ phải do code phủ lên.
@@ -139,6 +140,19 @@ class Renderer:
         local, _ = selections(self.media.cfg, self.upload_dir, m)
         graphic = self.media.cfg.production.get("graphics", {}).get(m.video_id, {}).get(s.scene_id)
         motion = MotionSpec.model_validate(graphic) if graphic else None
+        generated = image and not motion and s.scene_id not in local and m.cinema.visual_mode == "generated_video"
+        if generated:
+            if self.media.scene_video is None:
+                raise MediaError("generated_video requires a configured scene_video.provider")
+            config = self.media.cfg.scene_video
+            prompt = m.cinema.prompt(s.visual_prompt, str(self.media.cfg.production.get("style", ""))) + " " + NO_TEXT
+            seed = m.cinema.seed_for(s.scene_id, revision)
+            negative = m.cinema.negative_prompt
+            values = validate_video_inputs(prompt, negative, config.get("duration_s", 5), config.get("fps", 24),
+                                           config.get("resolution", "832x480"), seed, config)
+            clip_duration = values["duration_s"]
+            fps = values["fps"]
+            resolution = frame_size({"resolution": values["resolution"]}, m.aspect)
         if audio:
             key: dict[str, Any] = {"kind": "tts", "config": self.media.cfg.tts, "voice": m.voice, "text": s.narration,
                    "adapter": type(self.media.tts).__qualname__, "revision": revision}
@@ -168,9 +182,24 @@ class Renderer:
                 s.asset_refs.pop("scene_image", None); s.asset_refs.pop("scene_video", None)
                 s.asset_refs[kind] = str(path)
                 out.append(asset)
+            elif generated:
+                generator = self.media.scene_video
+                assert generator is not None
+                # Generate a short shot. The assembler loops footage to fit the narrator.
+                duration = min(clip_duration, s.duration_s + getattr(self.media.video, "tail_pad_s", 0.0))
+                identity = getattr(generator, "cache_identity", config)
+                key = {"kind": "scene_video", "config": identity, "prompt": prompt, "negative_prompt": negative,
+                       "duration": duration, "fps": fps, "resolution": resolution, "seed": seed,
+                       "adapter": type(generator).__qualname__, "revision": revision}
+                r, hits["video"] = self.cache.produce(key, d / f"{s.scene_id}.mp4",
+                    lambda p: generator.generate(prompt, negative_prompt=negative, duration_s=duration,
+                                                  fps=fps, resolution=resolution, seed=seed, out=p), force=force)
+                s.asset_refs.pop("scene_image", None); s.asset_refs["scene_video"] = str(r.path)
+                out.append(self._asset(m.video_id, "scene_video", r, m.version, s.scene_id,
+                            prompt_ref=f"{s.scene_id}:visual_prompt:seed={seed}", license=str(config.get("license", "unknown"))))
             else:
                 style = str(self.media.cfg.production.get("style", "")).strip()
-                prompt, size = f"{style} {s.visual_prompt} {NO_TEXT}".strip(), image_size(self.media.cfg, m.aspect)
+                prompt, size = f"{m.cinema.prompt(s.visual_prompt, style)} {NO_TEXT}".strip(), image_size(self.media.cfg, m.aspect)
                 key = {"kind": "image", "config": self.media.cfg.image, "prompt": prompt, "size": size,
                        "adapter": type(self.media.image).__qualname__, "revision": revision}
                 r, hits["image"] = self.cache.produce(key, d / f"{s.scene_id}.png",
@@ -274,7 +303,7 @@ class Renderer:
                 if sid in by_id: by_id[sid].order = i
             m.scenes.sort(key=lambda x: x.order)
         new = SceneManifest(video_id=m.video_id, version=m.version + 1, script_version=m.script_version,
-                            scenes=[Scene(**s.model_dump()) for s in m.scenes], voice=m.voice, aspect=m.aspect)
+                            scenes=[Scene(**s.model_dump()) for s in m.scenes], voice=m.voice, aspect=m.aspect, cinema=m.cinema)
         assets: list[MediaAsset] = replacements
         for s in new.scenes:
             if s.scene_id in regen:

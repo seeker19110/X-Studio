@@ -68,6 +68,31 @@ const modes = {
   production: "Tự động sản xuất",
   publish: "Tự động xuất bản",
 };
+const productionLabels = {
+  explainer: "Video thuyết minh",
+  film: "Phim ngắn",
+  animation: "Hoạt hình",
+};
+const stylePresets = {
+  cinematic: "Điện ảnh, ánh sáng tự nhiên, chuyển động máy quay có chủ đích, bảng màu nhất quán.",
+  "2d": "Hoạt hình 2D, nét vẽ rõ ràng, bảng màu hài hòa, thiết kế nhân vật nhất quán.",
+  "3d": "Hoạt hình 3D, ánh sáng mềm, vật liệu chi tiết, chuyển động giàu biểu cảm.",
+  anime: "Anime, nét vẽ sắc, màu cel shading, biểu cảm rõ, bố cục giàu cảm xúc.",
+};
+const cinemaOf = (p) => p.cinema || p.request || {};
+const productionBadges = (p) => {
+  const c = cinemaOf(p);
+  return `<div class="production-badges"><span class="badge">${esc(productionLabels[c.production_type] || productionLabels.explainer)}</span>${c.visual_mode === "generated_video" ? '<span class="badge">Clip AI</span>' : ""}</div>`;
+};
+function cinemaBrief(p) {
+  const c = cinemaOf(p);
+  return `<div class="cinema-brief"><div class="brief-grid"><div><small>LOẠI NỘI DUNG</small><p>${esc(productionLabels[c.production_type] || productionLabels.explainer)}</p></div><div><small>CÁCH TẠO HÌNH ẢNH</small><p>${c.visual_mode === "generated_video" ? "Clip AI từng cảnh" : "Ảnh có chuyển động"}</p></div></div>${[
+    ["Phong cách hình ảnh", c.visual_style],
+    ["Tóm tắt câu chuyện", c.logline],
+    ["Hồ sơ nhân vật", c.character_bible],
+    ["Chi tiết hình ảnh cần tránh", c.negative_prompt],
+  ].filter(([, value]) => value).map(([label, value]) => `<h4>${label}</h4><p class="script-text">${esc(value)}</p>`).join("")}${c.production_type && c.production_type !== "explainer" && c.seed != null ? `<p class="muted">Seed tạo hình: ${esc(c.seed)}</p>` : ""}</div>`;
+}
 const views = {
   dashboard: [
     "Tổng quan",
@@ -82,7 +107,7 @@ const views = {
   projects: [
     "Dự án video",
     "Những câu chuyện đang thành hình.",
-    "Video dài hay video ngắn, mỗi dự án đều có tiến độ và một bước tiếp theo rõ ràng.",
+    "Video thuyết minh, phim ngắn hay hoạt hình: mỗi dự án đều có tiến độ và một bước tiếp theo rõ ràng.",
   ],
   workflow: [
     "Quy trình chuẩn",
@@ -270,6 +295,10 @@ const stages = [
 ];
 const sources = [
   ["FFmpeg", "Dựng phim & kiểm tra file", "https://github.com/FFmpeg/FFmpeg"],
+  ["ComfyUI", "Workflow sinh clip; bộ kết nối HTTP của X-Studio", "https://github.com/Comfy-Org/ComfyUI"],
+  ["Wan2.2", "Mô hình video dùng qua workflow phù hợp với GPU", "https://github.com/Wan-Video/Wan2.2"],
+  ["AnimateDiff", "Chuyển động hoạt hình trong workflow tùy chọn", "https://github.com/guoyww/AnimateDiff"],
+  ["Blender", "Render hoạt hình 3D; nhập clip đã dựng từ thư viện", "https://github.com/blender/blender"],
   [
     "Remotion",
     "Template, preview & đồ họa theo dữ liệu",
@@ -357,7 +386,7 @@ function card(p, compact = false) {
     phase = stageOf(p),
     bad = ["blocked", "escalated"].includes(p.state),
     published = ["published", "analyzed"].includes(p.state);
-  return `<button class="project-card ${compact ? "compact" : ""}" data-project="${esc(p.id)}"><div class="poster poster-${p.format}">${thumb && thumb.provider !== "fake" ? `<img src="${esc(thumb.url)}" alt="Thumbnail ${esc(p.title)}" loading="lazy">` : `<div class="poster-art" aria-hidden="true">${icon(p.format === "short" ? "publish" : "edit")}</div><span class="poster-title">${esc(p.title)}</span>`}<span class="poster-label">${p.format === "short" ? "SHORT VIDEO" : "LONG VIDEO"}</span><span class="duration">${esc(p.minutes)} phút · ${p.format === "short" ? "9:16" : "16:9"}</span></div><div class="card-body"><div class="card-top"><span class="badge ${bad ? "red" : published ? "success" : p.state === "in_review" ? "amber" : ""}">${esc(states[p.state] || p.state)}</span><span class="muted">${esc(date(p.updated_at))}</span></div><h3>${esc(p.title)}</h3><div class="card-meta"><span>${p.scenes.length} cảnh</span><span>·</span><span>${Object.values(p.reviews).filter((r) => r.verdict === "pass").length}/3 review đạt</span></div><div class="steps" aria-label="Bước ${phase + 1}/8: ${esc(stages[phase].title)}">${stages.map((_, i) => `<span class="${i < phase ? "done" : i === phase ? "current" : ""}"></span>`).join("")}</div><div class="card-footer"><span>${bad ? "Mở để xem vấn đề" : stages[phase].label}</span><span>Mở dự án ↗</span></div></div></button>`;
+  return `<button class="project-card ${compact ? "compact" : ""}" data-project="${esc(p.id)}"><div class="poster poster-${p.format}">${thumb && thumb.provider !== "fake" ? `<img src="${esc(thumb.url)}" alt="Thumbnail ${esc(p.title)}" loading="lazy">` : `<div class="poster-art" aria-hidden="true">${icon(p.format === "short" ? "publish" : "edit")}</div><span class="poster-title">${esc(p.title)}</span>`}<span class="poster-label">${p.format === "short" ? "SHORT VIDEO" : "LONG VIDEO"}</span><span class="duration">${esc(p.minutes)} phút · ${p.format === "short" ? "9:16" : "16:9"}</span></div><div class="card-body"><div class="card-top"><span class="badge ${bad ? "red" : published ? "success" : p.state === "in_review" ? "amber" : ""}">${esc(states[p.state] || p.state)}</span><span class="muted">${esc(date(p.updated_at))}</span></div><h3>${esc(p.title)}</h3>${productionBadges(p)}<div class="card-meta"><span>${p.scenes.length} cảnh</span><span>·</span><span>${Object.values(p.reviews).filter((r) => r.verdict === "pass").length}/3 review đạt</span></div><div class="steps" aria-label="Bước ${phase + 1}/8: ${esc(stages[phase].title)}">${stages.map((_, i) => `<span class="${i < phase ? "done" : i === phase ? "current" : ""}"></span>`).join("")}</div><div class="card-footer"><span>${bad ? "Mở để xem vấn đề" : stages[phase].label}</span><span>Mở dự án ↗</span></div></div></button>`;
 }
 function bindProjects() {
   document
@@ -426,7 +455,7 @@ function renderProjects() {
     groups
       .map(([name, symbol, test]) => {
         const items = projects.filter(test);
-        return `<section class="stage-column"><h3>${icon(symbol)} ${name}<span>${items.length}</span></h3>${items.map((p) => `<button class="board-card" data-project="${esc(p.id)}"><span class="badge">${p.format === "short" ? "9:16 · Video ngắn" : "16:9 · Video dài"}</span><h4>${esc(p.title)}</h4><p>${esc(states[p.state])}</p><small>${p.scenes.length} cảnh · ${esc(p.minutes)} phút</small>${icon("arrow")}</button>`).join("") || '<p class="column-empty">Chưa có dự án</p>'}</section>`;
+        return `<section class="stage-column"><h3>${icon(symbol)} ${name}<span>${items.length}</span></h3>${items.map((p) => `<button class="board-card" data-project="${esc(p.id)}"><span class="badge">${p.format === "short" ? "9:16 · Video ngắn" : "16:9 · Video dài"}</span>${productionBadges(p)}<h4>${esc(p.title)}</h4><p>${esc(states[p.state])}</p><small>${p.scenes.length} cảnh · ${esc(p.minutes)} phút</small>${icon("arrow")}</button>`).join("") || '<p class="column-empty">Chưa có dự án</p>'}</section>`;
       })
       .join(""),
   );
@@ -473,7 +502,7 @@ function renderGuide() {
   const s = stages[guideStep];
   html(
     "workflow-guide",
-    `<div class="guide-toolbar"><span class="badge">PLAYBOOK · 8 BƯỚC</span><div class="tabs"><button class="tab ${guideFormat === "long" ? "selected" : ""}" data-guide-format="long">Video dài · 16:9</button><button class="tab ${guideFormat === "short" ? "selected" : ""}" data-guide-format="short">Video ngắn · 9:16</button></div></div><div class="guide-layout"><nav class="guide-nav" aria-label="Các bước quy trình">${stages.map((step, i) => `<button class="workflow-step ${i === guideStep ? "selected" : ""}" data-guide-step="${i}" ${i === guideStep ? 'aria-current="step"' : ""}><span class="step-number">0${i + 1}</span>${icon(step.icon)}<span>${step.title}</span></button>`).join("")}</nav><article class="guide-content"><span class="eyebrow">BƯỚC 0${guideStep + 1} · ${esc(s.owner)}</span><h2>${s.title}</h2><div class="deliverable"><span>${icon(s.icon)}</span><div><small>ĐẦU RA CẦN CÓ</small><p>${s.output}</p></div></div><h3>Tiêu chí hoàn thành</h3><ul class="guide-checklist">${s.checks.map((c) => `<li><span>✓</span>${c}</li>`).join("")}</ul><div class="format-note"><span class="badge">${guideFormat === "short" ? "VIDEO NGẮN" : "VIDEO DÀI"}</span><p>${s[guideFormat]}</p></div><div class="notice"><strong>Điểm kiểm soát</strong><p>${s.gate}</p></div><p>${s.action}</p><div class="guide-actions"><button class="button quiet" data-guide-step="${Math.max(0, guideStep - 1)}" ${guideStep === 0 ? "disabled" : ""}>← Bước trước</button><button class="button primary" data-guide-step="${Math.min(7, guideStep + 1)}" ${guideStep === 7 ? "disabled" : ""}>Bước tiếp theo →</button></div></article></div><div class="section-heading"><h2>Nền tảng nghiên cứu</h2><span class="muted">Repo chính chủ · tham khảo cho thiết kế</span></div><div class="sources-grid">${sources.map(([name, desc, url]) => `<a class="source-card" href="${url}" target="_blank" rel="noopener noreferrer"><strong>${name} ↗</strong><p>${desc}</p></a>`).join("")}</div><p class="muted">X-Studio dùng Python + FFmpeg + SQLite. Các repo khác là nguồn tham khảo; chưa được cài hoặc kết nối vào xưởng.</p>`,
+    `<div class="guide-toolbar"><span class="badge">PLAYBOOK · 8 BƯỚC</span><div class="tabs"><button class="tab ${guideFormat === "long" ? "selected" : ""}" data-guide-format="long">Video dài · 16:9</button><button class="tab ${guideFormat === "short" ? "selected" : ""}" data-guide-format="short">Video ngắn · 9:16</button></div></div><div class="guide-layout"><nav class="guide-nav" aria-label="Các bước quy trình">${stages.map((step, i) => `<button class="workflow-step ${i === guideStep ? "selected" : ""}" data-guide-step="${i}" ${i === guideStep ? 'aria-current="step"' : ""}><span class="step-number">0${i + 1}</span>${icon(step.icon)}<span>${step.title}</span></button>`).join("")}</nav><article class="guide-content"><span class="eyebrow">BƯỚC 0${guideStep + 1} · ${esc(s.owner)}</span><h2>${s.title}</h2><div class="deliverable"><span>${icon(s.icon)}</span><div><small>ĐẦU RA CẦN CÓ</small><p>${s.output}</p></div></div><h3>Tiêu chí hoàn thành</h3><ul class="guide-checklist">${s.checks.map((c) => `<li><span>✓</span>${c}</li>`).join("")}</ul><div class="format-note"><span class="badge">${guideFormat === "short" ? "VIDEO NGẮN" : "VIDEO DÀI"}</span><p>${s[guideFormat]}</p></div><div class="notice"><strong>Điểm kiểm soát</strong><p>${s.gate}</p></div><p>${s.action}</p><div class="guide-actions"><button class="button quiet" data-guide-step="${Math.max(0, guideStep - 1)}" ${guideStep === 0 ? "disabled" : ""}>← Bước trước</button><button class="button primary" data-guide-step="${Math.min(7, guideStep + 1)}" ${guideStep === 7 ? "disabled" : ""}>Bước tiếp theo →</button></div></article></div><div class="section-heading"><h2>Nền tảng nghiên cứu</h2><span class="muted">Repo chính chủ · tham khảo cho thiết kế</span></div><div class="sources-grid">${sources.map(([name, desc, url]) => `<a class="source-card" href="${url}" target="_blank" rel="noopener noreferrer"><strong>${name} ↗</strong><p>${desc}</p></a>`).join("")}</div><p class="muted">X-Studio dùng Python + FFmpeg + SQLite, có bộ kết nối ComfyUI qua HTTP. Bạn cần tự cài máy chủ và workflow phù hợp; Wan2.2, AnimateDiff và Blender chưa được cài tự động. Các repo khác là nguồn tham khảo cho thiết kế.</p>`,
   );
   document.querySelectorAll("[data-guide-step]").forEach(
     (b) =>
@@ -593,7 +622,7 @@ function detailContent(p) {
       })
       .join(
         "",
-      )}</div><div class="content-card"><h3>Brief sáng tạo</h3>${brief ? `<div class="brief-grid"><div><small>ĐỐI TƯỢNG</small><p>${esc(brief.audience)}</p></div><div><small>ĐỊNH DẠNG</small><p>${p.format === "short" ? "Video ngắn · 9:16" : "Video dài · 16:9"}</p></div><div><small>THỜI LƯỢNG MỤC TIÊU</small><p>${esc(p.minutes)} phút</p></div><div><small>NGÂN SÁCH TEXT MODEL</small><p>${number(brief.budget_tokens)} token tối đa</p></div></div>${(brief.boundaries || []).length ? `<h4>Yêu cầu nội dung</h4><ul>${brief.boundaries.map((b) => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}${p.brief?.angle ? `<p><strong>Góc tiếp cận:</strong> ${esc(p.brief.angle)}</p>` : ""}` : "<p>Chưa có brief trong dữ liệu đã lưu.</p>"}</div>`;
+      )}</div><div class="content-card"><h3>Brief sáng tạo</h3>${cinemaBrief(p)}${brief ? `<div class="brief-grid"><div><small>ĐỐI TƯỢNG</small><p>${esc(brief.audience)}</p></div><div><small>ĐỊNH DẠNG</small><p>${p.format === "short" ? "Video ngắn · 9:16" : "Video dài · 16:9"}</p></div><div><small>THỜI LƯỢNG MỤC TIÊU</small><p>${esc(p.minutes)} phút</p></div><div><small>NGÂN SÁCH TEXT MODEL</small><p>${number(brief.budget_tokens)} token tối đa</p></div></div>${(brief.boundaries || []).length ? `<h4>Yêu cầu nội dung</h4><ul>${brief.boundaries.map((b) => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}${p.brief?.angle ? `<p><strong>Góc tiếp cận:</strong> ${esc(p.brief.angle)}</p>` : ""}` : "<p>Chưa có brief trong dữ liệu đã lưu.</p>"}</div>`;
   if (detailTab === "script")
     return `${p.script ? `<div class="content-card"><div class="card-top"><span class="badge">KỊCH BẢN · V${esc(p.script.version)}</span><span class="muted">${number(p.script.word_count)} từ · ${esc(p.script.estimated_minutes)} phút ước lượng</span></div><h3>Hook mở đầu</h3><p class="script-text hook-text">${esc(p.script.hook)}</p>${(p.script.sections || []).map((s, i) => `<section class="script-section"><span class="eyebrow">PHẦN ${i + 1}</span><h3>${esc(s.heading)}</h3><p class="script-text">${esc(s.narration)}</p>${s.visual_notes ? `<div class="notice"><small>GỢI Ý HÌNH ẢNH</small><p>${esc(s.visual_notes)}</p></div>` : ""}</section>`).join("")}<h3>Lời kêu gọi hành động</h3><p class="script-text">${esc(p.script.cta || "Chưa có CTA")}</p></div>` : emptyPanel("Kịch bản đang được chuẩn bị", "Kịch bản sẽ hiển thị khi biên kịch hoàn thành bước này.")}<div class="content-card"><h3>Nguồn nghiên cứu & kiểm chứng</h3>${(p.research?.sources || []).length ? p.research.sources.map((s) => `<div class="timeline-row">${external(s.url, s.title || s.url)}<small>${esc(s.type || "Nguồn tham khảo")} ${s.accessed ? "· " + esc(s.accessed) : ""}</small></div>`).join("") : "<p>Chưa có danh sách nguồn trong hồ sơ nghiên cứu.</p>"}${(p.script?.claims || []).map((c) => `<div class="timeline-row"><p>${esc(c.text)}</p><small>${c.source ? external(c.source, c.source) : "Chưa có nguồn"} · ${c.needs_verification ? "Cần kiểm chứng" : "Đã khai báo"}</small></div>`).join("")}</div>`;
   if (detailTab === "scenes")
@@ -602,15 +631,13 @@ function detailContent(p) {
           .map((s, i) => {
             const visual = [...p.media]
               .reverse()
-              .find(
-                (a) =>
-                  a.scene_id === s.id &&
-                  ["scene_image", "scene_video"].includes(a.kind),
-              );
+              .find((a) => a.scene_id === s.id && ["scene_image", "scene_video"].includes(a.kind));
+            const clip = visual?.kind === "scene_video" ? visual : null;
             const audio = [...p.media]
               .reverse()
               .find((a) => a.scene_id === s.id && a.kind === "scene_audio");
-            return `<article class="scene">${visual && visual.provider !== "fake" ? (visual.kind === "scene_video" ? `<video src="${esc(visual.url)}" controls preload="metadata"></video>` : `<img src="${esc(visual.url)}" alt="Cảnh ${i + 1}" loading="lazy">`) : `<div class="scene-placeholder">${icon("media")}<span>${state.demo ? "Tư liệu mô phỏng" : "Đang chuẩn bị hình ảnh"}</span></div>`}<div class="scene-body"><div class="card-top"><span class="badge">CẢNH ${String(i + 1).padStart(2, "0")}</span><small>${Number(s.duration_s).toFixed(1)} giây ${s.locked ? "· Đã khóa" : ""}</small></div><p class="script-text">${esc(s.narration)}</p>${audio && audio.provider !== "fake" ? `<audio controls preload="none" src="${esc(audio.url)}"></audio>` : ""}${visual ? `<div class="asset-provenance"><small>NGUỒN & QUYỀN SỬ DỤNG</small><p>${esc(visual.provenance.generated_by)} · ${esc(visual.provenance.license)}</p>${visual.provenance.source_url ? external(visual.provenance.source_url, "Xem nguồn") : ""}<p>${esc(visual.provenance.attribution)}</p></div>` : ""}</div></article>`;
+            const provenance = visual?.provenance || {};
+            return `<article class="scene">${visual && visual.provider !== "fake" ? (visual.kind === "scene_video" ? `<video src="${esc(visual.url)}" controls preload="metadata"></video>` : `<img src="${esc(visual.url)}" alt="Cảnh ${i + 1}" loading="lazy">`) : `<div class="scene-placeholder">${icon("media")}<span>${state.demo || visual?.provider === "fake" ? "Tư liệu mô phỏng" : "Đang chuẩn bị hình ảnh"}</span></div>`}<div class="scene-body"><div class="card-top"><span class="badge">CẢNH ${String(i + 1).padStart(2, "0")}</span><small>${Number(s.duration_s).toFixed(1)} giây ${s.locked ? "· Đã khóa" : ""}</small></div><p class="script-text">${esc(s.narration)}</p>${s.visual_prompt ? `<div class="storyboard-prompt"><small>STORYBOARD · CHỈ DẪN HÌNH ẢNH</small><p>${esc(s.visual_prompt)}</p></div>` : ""}${clip && clip.provider !== "fake" ? `<a class="scene-clip-link" href="${esc(clip.url)}" download="${esc(s.id)}.mp4">↓ Tải clip cảnh ${i + 1}</a>` : ""}${audio && audio.provider !== "fake" ? `<audio controls preload="none" src="${esc(audio.url)}"></audio>` : ""}${visual ? `<div class="asset-provenance"><small>NGUỒN & QUYỀN SỬ DỤNG</small><p>${esc(provenance.generated_by)} · ${esc(provenance.license)}</p>${provenance.source_url ? external(provenance.source_url, "Xem nguồn") : ""}<p>${esc(provenance.attribution)}</p></div>` : ""}</div></article>`;
           })
           .join("")}</div>`
       : emptyPanel(
@@ -676,7 +703,7 @@ function renderDetail(force = false) {
   detailSignature = signature;
   html(
     "detail-body",
-    `<div class="detail-heading"><span class="badge">${p.format === "short" ? "VIDEO NGẮN · 9:16" : "VIDEO DÀI · 16:9"}</span><h2>${esc(p.title)}</h2><p>${esc(states[p.state] || p.state)} · ${p.scenes.length} cảnh · ${esc(p.minutes)} phút mục tiêu</p></div><div class="detail-tabs" role="tablist" aria-label="Thông tin dự án">${[
+    `<div class="detail-heading"><span class="badge">${p.format === "short" ? "VIDEO NGẮN · 9:16" : "VIDEO DÀI · 16:9"}</span>${productionBadges(p)}<h2>${esc(p.title)}</h2><p>${esc(states[p.state] || p.state)} · ${p.scenes.length} cảnh · ${esc(p.minutes)} phút mục tiêu</p></div><div class="detail-tabs" role="tablist" aria-label="Thông tin dự án">${[
       ["overview", "Tổng quan"],
       ["script", "Kịch bản"],
       ["scenes", "Cảnh & tư liệu"],
@@ -834,7 +861,36 @@ function openCreate(idea = null) {
     for (const key of ["title", "audience", "hook"])
       $("create-form").elements[key].value = idea[key] || "";
   if (idea?.notes) $("create-form").elements.boundaries.value = idea.notes;
+  syncProductionOptions();
   $("create-dialog").showModal();
+}
+function syncProductionOptions() {
+  const f = $("create-form").elements;
+  const cinematic = f.production_type.value !== "explainer";
+  $("cinema-fields").hidden = !cinematic;
+  $("cinema-fields").disabled = !cinematic;
+  const provider = state?.scene_video_provider || "none";
+  const ready = Boolean(state?.scene_video_ready) && provider !== "none";
+  const option = f.visual_mode.querySelector('[value="generated_video"]');
+  option.disabled = !ready;
+  option.textContent = provider === "fake"
+    ? "Clip AI · mô phỏng"
+    : "Clip AI (ComfyUI / lệnh cục bộ)";
+  $("scene-video-note").classList.toggle("simulated", provider === "fake");
+  $("scene-video-note").textContent = !state
+    ? "Đang đọc cấu hình tạo clip của xưởng."
+    : !ready
+      ? "Chưa cấu hình bộ tạo clip. Ảnh có chuyển động vẫn có thể dùng cho phim và hoạt hình."
+      : provider === "fake"
+        ? "Mô phỏng tạo clip: chỉ thử quy trình, không tạo phim thật."
+        : `Đã cấu hình ${provider === "comfyui" ? "ComfyUI" : provider === "command" ? "lệnh tạo clip cục bộ" : provider}. Khả năng kết nối và tài nguyên sẽ được kiểm tra khi tạo clip.`;
+  syncStylePresets();
+}
+function syncStylePresets() {
+  const value = $("create-form").elements.visual_style.value;
+  document.querySelectorAll("[data-style-preset]").forEach((button) =>
+    button.setAttribute("aria-pressed", String(value === stylePresets[button.dataset.stylePreset])),
+  );
 }
 function setPreset(format) {
   const f = $("create-form").elements;
@@ -889,6 +945,7 @@ function bindDynamic() {
 }
 function render() {
   const projects = state.projects;
+  syncProductionOptions();
   $("stat-active").textContent = projects.filter(
     (p) =>
       !latest(p, "final_video") &&
@@ -932,6 +989,11 @@ function render() {
     Object.entries({
       "Lời đọc": state.providers.tts,
       "Hình ảnh": state.providers.image,
+      "Clip từng cảnh": state.scene_video_provider === "fake"
+        ? "Mô phỏng"
+        : state.scene_video_ready
+          ? `${state.scene_video_provider} · đã cấu hình`
+          : "Chưa cấu hình",
       "Dựng video": state.providers.video,
       "Nền tảng": state.platform,
       "Vận hành": modes[state.automation],
@@ -1025,6 +1087,22 @@ for (const b of document.querySelectorAll("[data-layout]"))
 for (const b of document.querySelectorAll("[data-preset]"))
   b.onclick = () => setPreset(b.dataset.preset);
 $("create-form").elements.format.onchange = (e) => setPreset(e.target.value);
+$("create-form").elements.production_type.onchange = () => {
+  const f = $("create-form").elements;
+  if (f.production_type.value !== "explainer") {
+    if (f.goal.value === "education") f.goal.value = "entertainment";
+    if (f.audience.value === "Người muốn học hỏi")
+      f.audience.value = "Khán giả yêu thích câu chuyện";
+  }
+  syncProductionOptions();
+};
+$("create-form").elements.visual_mode.onchange = syncProductionOptions;
+$("create-form").elements.visual_style.oninput = syncStylePresets;
+for (const button of document.querySelectorAll("[data-style-preset]"))
+  button.onclick = () => {
+    $("create-form").elements.visual_style.value = stylePresets[button.dataset.stylePreset];
+    syncStylePresets();
+  };
 $("search").oninput = renderProjects;
 $("run-toggle").onclick = () => {
   if (state)
@@ -1122,7 +1200,19 @@ $("create-form").onsubmit = async (e) => {
     language: raw.language,
     budget_tokens: Number(raw.budget_tokens),
     boundaries,
+    production_type: raw.production_type || "explainer",
+    visual_mode: e.target.elements.visual_mode.value || "images",
+    visual_style: (raw.visual_style || "").trim(),
+    logline: (raw.logline || "").trim(),
+    character_bible: (raw.character_bible || "").trim(),
+    negative_prompt: (raw.negative_prompt || "").trim(),
+    seed: Number(raw.seed || 0),
   };
+  if (values.visual_mode === "generated_video" &&
+      (!state?.scene_video_ready || !state.scene_video_provider || state.scene_video_provider === "none")) {
+    $("create-error").textContent = "Chưa cấu hình bộ tạo clip. Chọn Ảnh có chuyển động hoặc cấu hình ComfyUI / lệnh tạo clip cục bộ.";
+    return;
+  }
   const button = e.target.querySelector("[type=submit]");
   button.disabled = true;
   try {
