@@ -38,6 +38,7 @@ let state = null,
   current = null,
   view = "dashboard",
   layout = "grid",
+  publishingFilter = "all",
   detailTab = "overview",
   guideStep = 0,
   guideFormat = "long",
@@ -115,9 +116,14 @@ const views = {
     "Tám bước từ brief đến đo lường, với đầu ra và tiêu chí kiểm tra cho từng bước.",
   ],
   review: [
-    "Duyệt & xuất bản",
+    "Phòng duyệt",
     "Chất lượng trước mỗi lần xuất bản.",
     "Xem nội dung, nguồn tư liệu và bản dựng trước khi quyết định.",
+  ],
+  publishing: [
+    "Xuất bản",
+    "Từ bản dựng đến người xem.",
+    "Theo dõi video chờ duyệt, lịch đăng và kết quả xuất bản tại một nơi.",
   ],
   activity: [
     "Hoạt động",
@@ -270,7 +276,7 @@ const stages = [
     short:
       "Video ngắn: kiểm tra tên video, format và nội dung hiển thị. Đăng TikTok/Reels cần adapter riêng.",
     action:
-      "Duyệt trong Duyệt & xuất bản. Adapter hiện có là YouTube; các kênh khác chưa được kết nối.",
+      "Theo dõi tại Xuất bản và quyết định trong Phòng duyệt. Adapter hiện có là YouTube; các kênh khác chưa được kết nối.",
     gate: "Hệ thống chỉ xuất bản qua cửa publish hoặc policy đã được cấu hình cho chế độ tự xuất bản.",
   },
   {
@@ -367,6 +373,7 @@ async function command(kind, data = {}) {
 function switchView(next) {
   if (!views[next]) return;
   view = next;
+  if (location.hash !== "#" + next) history.replaceState(null, "", "#" + next);
   document
     .querySelectorAll(".view")
     .forEach((e) => e.classList.toggle("hidden", e.id !== next + "-view"));
@@ -378,6 +385,9 @@ function switchView(next) {
   $("breadcrumb").textContent = views[next][0];
   $("page-title").textContent = views[next][1];
   $("page-description").textContent = views[next][2];
+  document
+    .querySelector(".overview")
+    .classList.toggle("hidden", next === "publishing");
   if (next === "ideas") renderIdeas();
   if (next === "workflow") renderGuide();
 }
@@ -474,7 +484,7 @@ function renderDashboard() {
             stageOf(p) === i &&
             !["blocked", "escalated", "closed"].includes(p.state),
         ).length;
-        return `<button class="journey-step ${count ? "current" : ""}" data-guide="${i}" aria-label="${esc(s.title)}: ${count} dự án"><span class="step-icon">${icon(s.icon)}</span><span class="step-number">0${i + 1}</span><strong>${s.label}</strong><span class="step-count">${i === 0 ? `${ideas.length} ý tưởng` : `${count} dự án`}</span></button>`;
+        return `<button class="journey-step ${count ? "current" : ""}" ${i === 6 ? 'data-view="publishing"' : `data-guide="${i}"`} aria-label="${esc(s.title)}: ${count} dự án"><span class="step-icon">${icon(s.icon)}</span><span class="step-number">0${i + 1}</span><strong>${s.label}</strong><span class="step-count">${i === 0 ? `${ideas.length} ý tưởng` : `${count} dự án`}</span></button>`;
       })
       .join(""),
   );
@@ -557,7 +567,7 @@ function renderGates() {
           .join("")
       : '<div class="empty"><div class="empty-icon">' +
           icon("check") +
-          "</div><h2>Chưa có việc cần duyệt</h2><p>Xưởng sẽ đưa các quyết định cần bạn đến đây.</p></div>",
+          '</div><h2>Chưa có việc cần duyệt</h2><p>Xem video đã lên lịch hoặc đã đăng trong mục Xuất bản.</p><a class="button primary" href="#publishing">Xem lịch đăng & video →</a></div>',
   );
   document.querySelectorAll("[data-gate]").forEach(
     (b) =>
@@ -603,6 +613,118 @@ function renderGates() {
 }
 function emptyPanel(title, note) {
   return `<div class="empty"><h3>${esc(title)}</h3><p>${esc(note)}</p></div>`;
+}
+function demoPublication(p) {
+  const url = safeURL(p.publication?.url);
+  return (
+    state.demo ||
+    (state.platform === "fake" && Boolean(p.publication)) ||
+    latest(p, "final_video")?.provider === "fake" ||
+    (url && new URL(url).hostname === "fake.video")
+  );
+}
+function publishingStatus(p) {
+  if (p.publication) return p.publication.status;
+  if (state.gates.some((g) => g.kind === "publish" && g.id.endsWith(p.id)))
+    return "ready";
+  return ["blocked", "escalated", "changes_requested"].includes(p.state)
+    ? "attention"
+    : "checking";
+}
+function renderPublishing() {
+  const simulated = state.demo;
+  const localOnly = state.platform === "fake" ||
+    (state.platform === "youtube" && state.youtube_oauth_configured === false);
+  html(
+    "publishing-platform",
+    `<div><span class="badge ${simulated ? "amber" : "success"}">${simulated ? "MÔ PHỎNG OFFLINE" : localOnly ? "BẢN DỰNG CỤC BỘ" : esc(state.platform === "youtube" ? "YOUTUBE" : state.platform)}</span><h2>${simulated ? "Bạn đang xem xuất bản mô phỏng" : localOnly ? "Video thật, sẵn sàng xem trước" : "Nền tảng xuất bản: " + esc(state.platform === "youtube" ? "YouTube" : state.platform)}</h2><p>${simulated ? "Lịch đăng và trạng thái bên dưới là dữ liệu demo. Chưa có video nào được đăng lên YouTube thật. Đăng thật cần kết nối YouTube, tư liệu thật và duyệt bản cuối." : localOnly ? "Bản dựng MP4 có thể xem và tải tại đây. Chưa kết nối YouTube. Video cần hoàn tất kiểm tra nội dung, tư liệu, QC và được duyệt trước khi đăng thật." : "Trạng thái và liên kết được lấy từ adapter nền tảng. Xưởng chỉ đăng sau cửa duyệt xuất bản hoặc policy đã được cấu hình."}</p></div><button type="button" class="button quiet" data-view="settings">Xem cấu hình</button>`,
+  );
+  const projects = [...state.projects]
+    .reverse()
+    .filter(
+      (p) =>
+        p.publication ||
+        latest(p, "final_video") ||
+        state.gates.some((g) => g.kind === "publish" && g.id.endsWith(p.id)),
+    );
+  const groups = {
+    ready: (p) => ["ready", "checking"].includes(publishingStatus(p)),
+    scheduled: (p) => publishingStatus(p) === "scheduled",
+    published: (p) => publishingStatus(p) === "published",
+    attention: (p) =>
+      ["failed", "rolled_back", "attention"].includes(publishingStatus(p)),
+  };
+  $("publishing-count").textContent = projects.length;
+  $("publishing-ready").textContent = projects.filter(groups.ready).length;
+  $("publishing-scheduled").textContent = projects.filter(
+    groups.scheduled,
+  ).length;
+  $("publishing-live").textContent = projects.filter(groups.published).length;
+  const visible =
+    publishingFilter === "all"
+      ? projects
+      : projects.filter(groups[publishingFilter]);
+  const labels = {
+    ready: "Chờ duyệt xuất bản",
+    checking: "Chờ kiểm tra",
+    scheduled: "Đã lên lịch",
+    published: "Đã xuất bản",
+    failed: "Đăng thất bại",
+    rolled_back: "Đã hoàn tác",
+    attention: "Cần xử lý",
+  };
+  html(
+    "publishing-list",
+    visible
+      .map((p) => {
+        const status = publishingStatus(p),
+          mock = demoPublication(p),
+          gate = state.gates.find(
+            (g) => g.kind === "publish" && g.id.endsWith(p.id),
+          );
+        const scheduled = p.publication?.scheduled_at
+          ? new Date(p.publication.scheduled_at)
+          : null;
+        const time =
+          scheduled && Number.isFinite(scheduled.getTime())
+            ? scheduled.toLocaleString("vi-VN", {
+                timeZone: "Asia/Ho_Chi_Minh",
+                hour: "2-digit",
+                minute: "2-digit",
+                day: "2-digit",
+                month: "2-digit",
+                year: "numeric",
+              })
+            : "Chưa có lịch đăng";
+        const thumb = latest(p, "thumbnail");
+        return `<article class="project-card publishing-card" data-publication="${esc(p.id)}"><div class="poster poster-${p.format}">${thumb && thumb.provider !== "fake" ? `<img src="${esc(thumb.url)}" alt="Thumbnail ${esc(p.title)}" loading="lazy">` : `<span class="poster-title">${esc(p.title)}</span>`}<span class="poster-label">${p.format === "short" ? "VIDEO NGẮN · 9:16" : "VIDEO DÀI · 16:9"}</span></div><div class="card-body"><div class="card-top"><span class="badge ${groups.attention(p) ? "red" : status === "published" ? "success" : "amber"}">${esc(labels[status] || status)}</span>${mock ? '<span class="badge neutral">Mô phỏng</span>' : ""}</div><h3>${esc(p.metadata?.title || p.title)}</h3><dl class="publishing-meta"><div><dt>${mock ? "Lịch mô phỏng" : "Lịch đăng · giờ Việt Nam"}</dt><dd>${esc(time)}</dd></div><div><dt>Đích đăng</dt><dd>${mock ? "Demo · chưa đăng YouTube" : localOnly ? "Chưa kết nối YouTube" : esc(state.platform === "youtube" ? "YouTube" : state.platform)}</dd></div><div><dt>Review nội dung / tư liệu / video</dt><dd>${Object.values(p.reviews).filter((r) => r.verdict === "pass").length}/3 đạt${mock ? " · dữ liệu demo" : ""}</dd></div></dl><div class="publishing-actions">${latest(p, "final_video") && latest(p, "final_video").provider !== "fake" ? `<button type="button" class="button primary small" data-video-preview="${esc(p.id)}">Xem video ▶</button>` : ""}<button type="button" class="button quiet small" data-publishing-project="${esc(p.id)}">Metadata & QC</button>${gate ? `<button type="button" class="button primary small" data-publishing-gate="${esc(gate.id)}">Kiểm tra & duyệt →</button>` : !p.publication ? '<span class="muted">Xưởng sẽ mở yêu cầu duyệt khi đủ điều kiện.</span>' : !mock && safeURL(p.publication.url) ? external(p.publication.url, "Mở video trên nền tảng") : '<span class="muted">Chưa có liên kết video thật.</span>'}</div></div></article>`;
+      })
+      .join("") ||
+      emptyPanel(
+        projects.length
+          ? "Không có video ở trạng thái này"
+          : "Chưa có video để xuất bản",
+        projects.length
+          ? "Chọn trạng thái khác để xem lịch đăng và video."
+          : "Hoàn thiện bản dựng và các review. Video sẽ xuất hiện ở đây khi có bản cuối hoặc yêu cầu duyệt xuất bản.",
+      ),
+  );
+  document
+    .querySelectorAll("[data-publishing-project]")
+    .forEach(
+      (b) => (b.onclick = () => detail(b.dataset.publishingProject, "review")),
+    );
+  document
+    .querySelectorAll("[data-video-preview]")
+    .forEach((b) => (b.onclick = () => detail(b.dataset.videoPreview)));
+  document.querySelectorAll("[data-publishing-gate]").forEach(
+    (b) =>
+      (b.onclick = () => {
+        switchView("review");
+        $("reason-" + b.dataset.publishingGate)?.focus();
+      }),
+  );
+  bindDynamic();
 }
 function detailContent(p) {
   const phase = stageOf(p),
@@ -652,7 +774,7 @@ function detailContent(p) {
       })
       .join(
         "",
-      )}</div><div class="content-card"><h3>Kiểm tra file thực tế</h3>${p.qc ? `<details><summary>Xem kết quả đo QC</summary><pre>${esc(JSON.stringify(p.qc, null, 2))}</pre></details>` : "<p>Chưa có kết quả QC. Dữ liệu demo không thay thế kiểm tra file thật.</p>"}</div><div class="content-card"><h3>Đóng gói xuất bản</h3>${p.metadata ? `<h4>${esc(p.metadata.title)}</h4><p class="script-text">${esc(p.metadata.description)}</p><div class="tag-list">${(p.metadata.tags || []).map((t) => `<span class="badge">${esc(t)}</span>`).join("")}</div>${(p.metadata.chapters || []).map((c) => `<div class="timeline-row"><strong>${esc(c.time)}</strong> ${esc(c.label)}</div>`).join("")}` : "<p>Tiêu đề, mô tả và chapters đang được chuẩn bị.</p>"}${p.publication ? `<div class="notice"><strong>${esc({ published: "Đã xuất bản", scheduled: "Đã lên lịch", failed: "Đăng thất bại", rolled_back: "Đã hoàn tác" }[p.publication.status] || p.publication.status)}</strong><p>${p.publication.url ? external(p.publication.url, "Mở video trên nền tảng") : "Chưa có liên kết video từ nền tảng."}</p>${p.publication.scheduled_at ? `<p>${esc(new Date(p.publication.scheduled_at).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }))}</p>` : ""}</div>` : ""}<button class="button primary" data-open-review>Đến cửa duyệt xuất bản →</button></div>`;
+      )}</div><div class="content-card"><h3>Kiểm tra file thực tế</h3>${p.qc ? `<details><summary>Xem kết quả đo QC</summary><pre>${esc(JSON.stringify(p.qc, null, 2))}</pre></details>` : "<p>Chưa có kết quả QC. Dữ liệu demo không thay thế kiểm tra file thật.</p>"}</div><div class="content-card"><h3>Đóng gói xuất bản</h3>${p.metadata ? `<h4>${esc(p.metadata.title)}</h4><p class="script-text">${esc(p.metadata.description)}</p><div class="tag-list">${(p.metadata.tags || []).map((t) => `<span class="badge">${esc(t)}</span>`).join("")}</div>${(p.metadata.chapters || []).map((c) => `<div class="timeline-row"><strong>${esc(c.time)}</strong> ${esc(c.label)}</div>`).join("")}` : "<p>Tiêu đề, mô tả và chapters đang được chuẩn bị.</p>"}${p.publication ? `<div class="notice"><strong>${esc({ published: "Đã xuất bản", scheduled: "Đã lên lịch", failed: "Đăng thất bại", rolled_back: "Đã hoàn tác" }[p.publication.status] || p.publication.status)}</strong><p>${demoPublication(p) ? "Kết quả mô phỏng · chưa có video thật trên nền tảng." : p.publication.url ? external(p.publication.url, "Mở video trên nền tảng") : "Chưa có liên kết video từ nền tảng."}</p>${p.publication.scheduled_at ? `<p>${esc(new Date(p.publication.scheduled_at).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }))}</p>` : ""}</div>` : ""}<button class="button primary" data-open-publishing>Theo dõi xuất bản →</button></div>`;
   const perf = p.performance;
   return perf
     ? `<div class="notice">${state.demo ? "Số liệu trong môi trường demo là dữ liệu mô phỏng." : "Số liệu từ performance snapshot đã lưu."} Khoảng đo: ${esc(perf.window_days)} ngày. Một số chỉ số có thể bằng 0 khi nền tảng chưa cung cấp dữ liệu; đối chiếu YouTube Studio khi cần.</div><div class="analytics-grid">${[
@@ -744,10 +866,10 @@ function renderDetail(force = false) {
       }
     };
   });
-  if (document.querySelector("[data-open-review]"))
-    document.querySelector("[data-open-review]").onclick = () => {
+  if (document.querySelector("[data-open-publishing]"))
+    document.querySelector("[data-open-publishing]").onclick = () => {
       $("detail-dialog").close();
-      switchView("review");
+      switchView("publishing");
     };
 }
 const ideaKey = "xstudio.ideas.v1";
@@ -1044,6 +1166,7 @@ function render() {
   renderProjects();
   renderDashboard();
   renderGates();
+  renderPublishing();
   if ($("detail-dialog").open) renderDetail();
 }
 async function refresh() {
@@ -1074,6 +1197,15 @@ for (const b of document.querySelectorAll("[data-filter]"))
       .querySelectorAll("[data-filter]")
       .forEach((t) => t.classList.toggle("selected", t === b));
     renderProjects();
+  };
+for (const b of document.querySelectorAll("[data-publishing-filter]"))
+  b.onclick = () => {
+    publishingFilter = b.dataset.publishingFilter;
+    document.querySelectorAll("[data-publishing-filter]").forEach((t) => {
+      t.classList.toggle("selected", t === b);
+      t.setAttribute("aria-pressed", String(t === b));
+    });
+    if (state) renderPublishing();
   };
 for (const b of document.querySelectorAll("[data-layout]"))
   b.onclick = () => {
@@ -1266,7 +1398,14 @@ $("date-label").textContent = new Date().toLocaleDateString("vi-VN", {
 });
 renderIdeas();
 renderGuide();
-switchView("dashboard");
+switchView(
+  views[location.hash.slice(1)] ? location.hash.slice(1) : "dashboard",
+);
+window.addEventListener("hashchange", () =>
+  switchView(
+    views[location.hash.slice(1)] ? location.hash.slice(1) : "dashboard",
+  ),
+);
 refresh();
 setInterval(() => {
   if (!$("login-dialog").open && !document.hidden) refresh();
