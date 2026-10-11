@@ -387,3 +387,57 @@ def test_restart_restores_latest_trusted_qc_for_reviewers(tmp_path):
     trigger = Envelope(topic='media-assets', key='V1', actor='renderer', payload={'video_id': 'V1'})
     assert _with_package(trigger, resumed)['package']['qc'] == expected.as_dict()
     bus.close()
+
+
+@pytest.mark.parametrize('decision', ['repair', 'approve'])
+@pytest.mark.parametrize('restart', [False, True])
+def test_fresh_stale_cut_cannot_overwrite_newer_repair(tmp_path, decision, restart, monkeypatch):
+    from pathlib import Path
+    from unittest.mock import Mock
+
+    from studio.events import CutList, Repair, Scene, SceneManifest
+    from studio.renderer import checksum
+    from studio.sqlite_bus import SQLiteBus
+
+    database = tmp_path / 'stale.sqlite'
+    bus = SQLiteBus(database)
+    orch = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    source = SceneManifest(video_id='V1', scenes=[
+        Scene(scene_id='S1', order=0, narration='original first', visual_prompt='desk'),
+        Scene(scene_id='S2', order=1, narration='original second', visual_prompt='room')])
+    orch.renderer.render(source)
+    first_cut = CutList(video_id='V1', manifest_version=1, decision='repair', repairs=[
+        Repair(scene_id='S1', action='regenerate_audio', reason='first edit', new_narration='first accepted edit')])
+    first = Envelope(topic='cut-lists', key='V1', actor='editor', payload=first_cut.model_dump())
+    bus.publish(first)
+    orch.process(first)
+    accepted = orch.manifest('V1').model_dump()
+    outputs = list(bus.replay('media-assets'))
+    files = {e.payload['path']: checksum(Path(e.payload['path'])) for e in outputs}
+    if restart:
+        bus.close()
+        bus = SQLiteBus(database)
+        orch = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    repair = Mock(wraps=orch.renderer.apply_cutlist)
+    finalize = Mock(wraps=orch.renderer.finalize)
+    monkeypatch.setattr(orch.renderer, 'apply_cutlist', repair)
+    monkeypatch.setattr(orch.renderer, 'finalize', finalize)
+    stale = Envelope(topic='cut-lists', key='V1', actor='editor', payload=CutList(
+        video_id='V1', manifest_version=1, decision=decision, repairs=[
+            Repair(scene_id='S2', action='regenerate_audio', reason='late edit', new_narration='late conflicting edit')]
+        if decision == 'repair' else []).model_dump())
+    bus.publish(stale)
+    result = orch.process(stale)
+    assert 'cut!stale' in result.actions
+    repair.assert_not_called()
+    finalize.assert_not_called()
+    assert orch.manifest('V1').model_dump() == accepted
+    assert len(list(bus.replay('media-assets'))) == len(outputs)
+    assert {path: checksum(Path(path)) for path in files} == files
+    rejected = [e for e in bus.replay('audit-log') if e.payload['action'] == 'cut.stale']
+    assert _evidence(rejected[-1].payload)['event_id'] == stale.event_id
+    # Rejecting the distinct stale event must leave the first operation's durable
+    # output intact and replayable, including its original media checksums.
+    orch.renderer.operation_id = first.event_id
+    assert orch.renderer.apply_cutlist(source, first_cut).model_dump() == accepted
+    bus.close()

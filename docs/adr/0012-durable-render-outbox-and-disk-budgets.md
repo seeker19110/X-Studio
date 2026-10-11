@@ -18,6 +18,12 @@ gọi editor lần nữa. Checkpoint bước code giải quyết retry thông th
   nhật ký gửi đầu ra nội bộ, không phải transaction với API bên ngoài.
 - Cut-list áp dụng vào manifest_version đã khai báo; không lấy version mới nhất có thể
   vừa được phát một phần trước khi bị gián đoạn. Một worker/lease vẫn là điều kiện vận hành.
+- Journal đã chuẩn bị được khôi phục trước bước kiểm tra phiên bản. Với thao tác mới,
+  nếu đã có manifest mới hơn, từ chối cut-list bằng audit `cut.stale`, không gọi
+  renderer hoặc ghi đè file. Quy tắc áp dụng cả repair và approve lỗi thời; editor
+  cần dựa vào bản nháp hiện tại để đưa quyết định mới.
+- Manifest từ production-manager được đánh số tăng đơn điệu trước publish, kể cả
+  khi làm lại từ kịch bản; không tái sử dụng thư mục của phiên bản đã render.
 - Khôi phục QC từ audit đúng actor và cấu trúc hợp lệ để reviewer vẫn nhận kết quả đo
   khi restart bỏ qua bước render đã checkpoint. Đây là phục hồi ngữ cảnh; auto-publish
   vẫn kiểm tra file hiện tại theo chính sách hiện có.

@@ -12,13 +12,16 @@ lỗi transient. Bản sửa kiểm tra cả restart SQLite và số lần edito
 trước/sau publish của draft, repair, final, thumbnail xác minh dùng lại event ID, không
 gọi lại provider sau khi batch đã chuẩn bị bền vững. Có test từ chối output đã mất/hỏng,
 repair không nhảy version ở giới hạn vòng sửa, lỗi xóa cache không mất checkpoint active.
+Bốn ca repair/approve lỗi thời, có/không restart, xác minh không gọi renderer,
+không ghi đè v2 và journal trước đó vẫn khôi phục được. Luồng request_changes từ
+kịch bản tăng phiên bản manifest, kể cả model bỏ trường version hợp lệ theo schema.
 QC được khôi phục cho reviewer sau restart; audit sai actor/malformed không ghi đè
 báo cáo hợp lệ. Kiểm chứng này dùng file/SQLite/provider giả và FFmpeg offline.
 
-`make verify` trên bản cuối đạt **707 Studio + 251 Gateway + 477 core = 1.435 test**,
-coverage 100% từng package (Studio 4.697 dòng thực thi); Ruff/mypy đạt và **28/28**
+`make verify` trên bản cuối đạt **711 Studio + 251 Gateway + 477 core = 1.439 test**,
+coverage 100% từng package (Studio 4.706 dòng thực thi); Ruff/mypy đạt và **28/28**
 eval replay đạt. Không skip; Gateway còn RuntimeWarning `runpy` đã có trước. Thêm
-22 regression cases so với PR #4, không thêm file test. Script benchmark cũng qua Ruff.
+26 regression cases so với PR #4, không thêm file test. Script benchmark cũng qua Ruff.
 
 Stress thật, Linux/Python 3.12.14/FFmpeg 7.1.5, lệnh:
 

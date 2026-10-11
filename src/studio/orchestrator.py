@@ -624,6 +624,9 @@ class Orchestrator:
                                      chapter_minutes=float(self.renderer.media.cfg.production.get("chapter_minutes", 8)))
             outs = []
             for i, p in enumerate(g.payloads):
+                if r.topic_out == "scene-manifests":
+                    previous = max((e.payload.get("version", 1) for e in self.bus.replay("scene-manifests", p["video_id"])), default=0)
+                    p = {**p, "version": max(p.get("version", 1), previous + 1)}
                 output_key = key_for(r.topic_out, p, env.key)
                 # một lần gọi model → token chỉ tính ở payload đầu, kẻo supervisor cộng ngân sách gấp N lần
                 outs.append(self.runner.publish(r.agent, env, r.topic_out, p, key=output_key, tokens=g.tokens if i == 0 else 0, model=g.model,
@@ -666,9 +669,11 @@ class Orchestrator:
     def _apply_cut(self, env: Envelope, res: StepResult) -> None:
         cut = CutList.model_validate(env.payload)
         # A repair may already have published the next manifest before interruption.
-        # Always replay the cut against its declared source version, never latest.
-        source = next((e for e in reversed(list(self.bus.replay("scene-manifests", cut.video_id)))
-                       if e.payload["version"] == cut.manifest_version), None)
+        # Recover a prepared operation against its declared version. A fresh cut
+        # must still target the current version, or it could overwrite that repair.
+        history = list(self.bus.replay("scene-manifests", cut.video_id))
+        source = next((e for e in reversed(history)
+                       if e.payload.get("version", 1) == cut.manifest_version), None)
         m = SceneManifest.model_validate(source.payload) if source else None
         if m is None: return
         try:
@@ -678,6 +683,13 @@ class Orchestrator:
                 if final_env is not None:
                     self._after_final(m, cut.order or None, MediaAsset.model_validate(final_env.payload), res)
                 res.actions.append("repair→recovered" if final_env is None else "finalize")
+                return
+            current_version = max(e.payload.get("version", 1) for e in history)
+            if current_version != cut.manifest_version:
+                self._audit("cut.stale", {"event_id": env.event_id, "source_version": cut.manifest_version,
+                                         "current_version": current_version, "decision": cut.decision},
+                            video_id=cut.video_id)
+                res.actions.append("cut!stale")
                 return
             if cut.decision == "repair" and self.desk.repair_allowed(cut.video_id):
                 self.renderer.apply_cutlist(m, cut); res.actions.append(f"repair→v{m.version + 1}")
