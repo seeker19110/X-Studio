@@ -9,6 +9,7 @@ Không có ffprobe trên máy (chế độ `fake`, CI tối giản) thì báo c�
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -32,7 +33,7 @@ DURATION_TOLERANCE = 0.10   # lệch > 10% so với manifest = dựng hỏng, kh
 LUFS_TOLERANCE = 1.5
 BLACK_MIN_S = 0.5           # đoạn hình đen liên tục từng này giây trở lên là cảnh hỏng
 SILENCE_MIN_S = 1.5         # khoảng lặng dài hơn đệm chuyển cảnh: khán giả tưởng video đứng
-TIMEOUT_S = 300
+TIMEOUT_S = max(30, float(os.environ.get("STUDIO_QC_TIMEOUT_S", "300")))
 
 
 @dataclass
@@ -252,6 +253,6 @@ def qc_scenes(manifest: Any) -> dict[str, dict[str, Any]]:
     if not shutil.which("ffmpeg"): return {}
     out: dict[str, dict[str, Any]] = {}
     for s in manifest.scenes:
-        img = s.asset_refs.get("scene_image"); aud = s.asset_refs.get("scene_audio")
+        img = s.asset_refs.get("scene_video") or s.asset_refs.get("scene_image"); aud = s.asset_refs.get("scene_audio")
         out[s.scene_id] = qc_scene(Path(img) if img else None, Path(aud) if aud else None, s.narration, s.duration_s)
     return out

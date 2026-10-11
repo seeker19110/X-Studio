@@ -129,6 +129,7 @@ class MediaConfig:
     platform: dict[str, Any] = field(default_factory=lambda: {"provider": "fake"})  # adapter nền tảng (ADR-0008): fake | youtube
     # gate.approvers: [human:owner, ...] — ai được duyệt (env STUDIO_GATE_APPROVERS thắng)
     gate: dict[str, Any] = field(default_factory=dict)
+    production: dict[str, Any] = field(default_factory=dict)
     # render.timeout_s: trần thời gian một lệnh ffmpeg (ffmpeg treo là treo im lặng — không có timeout thì cả
     # phòng đứng); render.sandbox: {mode, runtime, image} — xem `sandbox.py`.
     render: dict[str, Any] = field(default_factory=lambda: {"timeout_s": RENDER_TIMEOUT_S})
@@ -142,7 +143,7 @@ def load_media_config(path: Path | None = None) -> MediaConfig:
     p = path or CONFIG_FILE
     if p.exists():
         data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        for k in ("tts", "image", "video", "platform", "gate", "render"):
+        for k in ("tts", "image", "video", "platform", "gate", "render", "production"):
             getattr(cfg, k).update(data.get(k) or {})
         if data.get("output_dir"): cfg.output_dir = ROOT / str(data["output_dir"])
         if data.get("upload_dir"): cfg.upload_dir = ROOT / str(data["upload_dir"])
@@ -181,11 +182,18 @@ def make_media(cfg: MediaConfig | None = None) -> MediaSuite:
     tts: TTS = _pick("tts", cfg.tts, TTS_PROVIDERS, cfg, lambda: FakeTTS(cfg))
     img: ImageGen = _pick("image", cfg.image, IMAGE_PROVIDERS, cfg, lambda: FakeImage(cfg))
     v = cfg.video
-    vid: VideoAssembler = (FFmpegAssembler(binary=str(v.get("binary") or "ffmpeg"), fit=str(v.get("fit") or "cover"),
+    assembler: type[FFmpegAssembler] = FFmpegAssembler
+    if cfg.render.get("mode") == "bounded":
+        from .long_render import BoundedAssembler
+        assembler = BoundedAssembler
+    elif cfg.render.get("mode", "graph") != "graph":
+        raise MediaError("render.mode must be graph or bounded")
+    vid: VideoAssembler = (assembler(binary=str(v.get("binary") or "ffmpeg"), fit=str(v.get("fit") or "cover"),
                                            tail_pad_s=float(v.get("tail_pad_s", 0.35)), font=v.get("font"),
                                            motion=str(v.get("motion") or "auto"), transition_s=float(v.get("transition_s", 0.3)),
                                            loudness_lufs=v.get("loudness_lufs", TARGET_LUFS),
-                                           timeout=float(cfg.render.get("timeout_s") or RENDER_TIMEOUT_S), sandbox=sb)
+                                           timeout=float(cfg.render.get("timeout_s") or RENDER_TIMEOUT_S), sandbox=sb,
+                                           threads=int(cfg.render.get("threads", 2)))
                            if v.get("provider") == "ffmpeg" else _require_fake("video", v, FakeVideo()))
     return MediaSuite(tts=tts, image=img, video=vid, cfg=cfg, sandbox=sb)
 
@@ -781,7 +789,7 @@ class FFmpegAssembler:
 
     def __init__(self, binary: str = "ffmpeg", fit: str = "cover", tail_pad_s: float = 0.35, font: Any = None,
                  motion: str = "auto", transition_s: float = 0.3, loudness_lufs: float | None = TARGET_LUFS,
-                 timeout: float = RENDER_TIMEOUT_S, sandbox: Sandbox | None = None):
+                 timeout: float = RENDER_TIMEOUT_S, sandbox: Sandbox | None = None, threads: int = 2):
         found = shutil.which(binary)
         if not found:
             raise MediaError("không tìm thấy ffmpeg trên PATH (đổi video.provider=fake để chạy offline)")
@@ -795,6 +803,7 @@ class FFmpegAssembler:
         self.loudness_lufs = float(loudness_lufs) if loudness_lufs else None
         self.timeout = float(timeout)
         self.sandbox = sandbox if sandbox is not None else SubprocessSandbox()
+        self.threads = max(1, min(threads, 32))
 
     def _run(self, args: list[str], cwd: Path | None = None) -> None:
         # Qua sandbox (`RunSpec.cwd` là thư mục được mount khi backend là container). Encoding và cắt output
@@ -840,11 +849,13 @@ class FFmpegAssembler:
         args: list[str] = []
         for (img, audio, _), d in zip(segments, durs, strict=True):
             # đường dẫn tuyệt đối: cwd của lệnh là thư mục output (thư mục được mount khi chạy trong container)
-            args += ["-loop", "1", "-framerate", str(fps), "-t", f"{d:.3f}", "-i", str(Path(img).resolve()),
+            moving = img.suffix.lower() in {".mp4", ".mov", ".webm", ".mkv"}
+            opts = ["-stream_loop", "-1"] if moving else ["-loop", "1", "-framerate", str(fps)]
+            args += [*opts, "-t", f"{d:.3f}", "-i", str(Path(img).resolve()),
                      "-i", str(Path(audio).resolve())]
         chains: list[str] = []
         for i, d in enumerate(durs):
-            mo = motion_for(i, self.motion)
+            mo = "static" if segments[i][0].suffix.lower() in {".mp4", ".mov", ".webm", ".mkv"} else motion_for(i, self.motion)
             chains.append(f"[{2 * i}:v]{self._motion_filter(mo, w, h, d, fps)},fps={fps},format=yuv420p,setsar=1[v{i}]")
             chains.append(f"[{2 * i + 1}:a]aresample=48000,apad=pad_dur={self.tail_pad_s},atrim=0:{d:.3f},asetpts=N/SR/TB[a{i}]")
         vlast, alast = "v0", "a0"
@@ -864,9 +875,9 @@ class FFmpegAssembler:
         aout = alast
         if self.loudness_lufs is not None:
             chains.append(f"[{alast}]loudnorm=I={self.loudness_lufs}:TP={TRUE_PEAK_DB}:LRA=11[aout]"); aout = "aout"
-        self._run([*args, "-filter_complex", ";".join(chains), "-map", f"[{vlast}]", "-map", f"[{aout}]",
+        self._run([*args, "-filter_complex_threads", str(self.threads), "-filter_complex", ";".join(chains), "-map", f"[{vlast}]", "-map", f"[{aout}]",
                    "-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p",
-                   "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart",
+                   "-threads", str(self.threads), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart",
                    str(out.resolve())], cwd=out.parent)
         total = round(sum(durs) - t * (len(durs) - 1), 2)
         loud = f" {self.loudness_lufs} LUFS" if self.loudness_lufs is not None else ""

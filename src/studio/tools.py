@@ -14,6 +14,7 @@ kiểm tham số, lỗi trả về cho model dưới dạng chuỗi (`ToolError`
 from __future__ import annotations
 
 import functools
+import hashlib
 import html
 import http.client
 import ipaddress
@@ -22,10 +23,13 @@ import os
 import re
 import socket
 import ssl
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 # Re-export khung từ core (K3.2): `llm.py`, `evals.py`, `media.py`, `runner.py` nhập TỪ ĐÂY.
@@ -131,10 +135,18 @@ def _open_pinned(ip: str, req: urllib.request.Request) -> Any:
     return op.open(req, timeout=TIMEOUT)
 
 
+def domain_allowed(url: str, domains: list[str]) -> bool:
+    host = (urllib.parse.urlsplit(url).hostname or "").lower().rstrip(".")
+    return not domains or any(host == d or host.endswith("." + d) for d in domains)
+
+
 def default_fetcher(url: str,
-                    opener: Callable[[str, urllib.request.Request], Any] = _open_pinned) -> tuple[int, str, str, bytes]:
+                    opener: Callable[[str, urllib.request.Request], Any] = _open_pinned,
+                    allowed_domains: list[str] | None = None) -> tuple[int, str, str, bytes]:
     cur = str(url)
     for _hop in range(MAX_HOPS + 1):
+        if not domain_allowed(cur, allowed_domains or []):
+            raise ToolError("domain outside research allowlist")
         cur, ip = pin_url(cur)  # host công khai trả 302 về 169.254.169.254 hay 127.0.0.1 thì dừng ở đây
         req = urllib.request.Request(cur, headers={"User-Agent": UA, "Accept": "text/html,application/json,text/plain;q=0.9,*/*;q=0.5"})
         try:
@@ -178,13 +190,31 @@ def html_to_text(raw: str) -> str:
 # ---------- tool web ----------
 
 class WebTools:
-    def __init__(self, fetcher: Fetcher | None = None, search_url: str | None = None):
+    def __init__(self, fetcher: Fetcher | None = None, search_url: str | None = None,
+                 allowed_domains: list[str] | None = None, cache_dir: Path | None = None):
         self.fetcher = fetcher or default_fetcher
+        raw = allowed_domains if allowed_domains is not None else os.environ.get("STUDIO_WEB_ALLOWED_DOMAINS", "").split(",")
+        self.domains = [d.strip().lower().rstrip(".") for d in raw if d.strip()]
+        self.page_fetcher = fetcher or functools.partial(default_fetcher, allowed_domains=self.domains)
+        self.cache_dir = cache_dir
+        if fetcher is None and cache_dir is None:
+            self.cache_dir = Path(os.environ.get("STUDIO_WEB_CACHE_DIR", str(Path(__file__).resolve().parents[2] / "output/.cache/web")))
+        self.ttl = max(0, float(os.environ.get("STUDIO_WEB_CACHE_TTL", "3600")))
         self.search_url = search_url if search_url is not None else os.environ.get(SEARCH_URL_ENV, "")
 
     def web_fetch(self, url: str) -> str:
+        if not domain_allowed(url, self.domains): raise ToolError("domain outside research allowlist")
         check_url(url)
-        status, ctype, final_url, data = self.fetcher(url)
+        cache = None
+        if self.cache_dir and self.ttl and not re.search(r"(?:token|key|auth|signature)=", url, re.I):
+            name = hashlib.sha256(json.dumps([url, self.domains]).encode()).hexdigest()
+            cache = self.cache_dir / f"{name}.json"
+            try:
+                saved = json.loads(cache.read_text(encoding="utf-8"))
+                if time.time() < saved["expires"] and isinstance(saved["text"], str): return saved["text"]
+            except (OSError, ValueError, KeyError, TypeError): pass
+        status, ctype, final_url, data = self.page_fetcher(url)
+        if not domain_allowed(final_url or url, self.domains): raise ToolError("redirect domain outside research allowlist")
         if status >= 400: return f"lỗi: HTTP {status} cho {url}"
         if len(data) > MAX_BYTES: return f"lỗi: trang > {MAX_BYTES} byte"
         raw = data.decode("utf-8", errors="replace")
@@ -199,7 +229,18 @@ class WebTools:
         if len(text) > MAX_CHARS:
             text = text[:MAX_CHARS] + f"\n… (cắt, còn {len(text) - MAX_CHARS} ký tự)"
         head = f"# {UNTRUSTED}\n# url: {final_url or url}" + (f"\n# title: {title}" if title else "")
-        return f"{head}\n\n{text}"
+        result = f"{head}\n\n{text}"
+        if cache and 200 <= status < 300:
+            try:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(dir=cache.parent) as tmp:
+                    stage = Path(tmp) / "entry.json"
+                    stage.write_text(json.dumps({"expires": time.time() + self.ttl, "text": result}), encoding="utf-8")
+                    stage.replace(cache)
+                for old in sorted(cache.parent.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[256:]:
+                    old.unlink(missing_ok=True)
+            except OSError: pass  # cache is optional; research still succeeds on read-only storage
+        return result
 
     def web_search(self, query: str, max_results: int = MAX_RESULTS) -> str:
         q = str(query).strip()
@@ -216,9 +257,12 @@ class WebTools:
         check_url(url)
         status, _, _, data = self.fetcher(url)
         if status >= 400: return f"lỗi: HTTP {status} từ máy tìm kiếm"
+        if len(data) > MAX_BYTES: return f"lỗi: trang > {MAX_BYTES} byte"
         try: results = json.loads(data.decode("utf-8", errors="replace")).get("results", [])
         except (json.JSONDecodeError, AttributeError): return "lỗi: máy tìm kiếm không trả JSON {results: [...]}"
-        rows = [(str(r.get("title", "")), str(r.get("url", "")), str(r.get("content", ""))) for r in results[:n]]
+        if not isinstance(results, list): return "lỗi: results phải là danh sách"
+        rows = [(str(r.get("title", "")), str(r.get("url", "")), str(r.get("content", ""))) for r in results
+                if isinstance(r, dict) and domain_allowed(str(r.get("url", "")), self.domains)][:n]
         if not rows: return "(không có kết quả)"
         out = [f"# {UNTRUSTED}\n# tìm: {q}"]
         for i, (title, link, snippet) in enumerate(rows, 1):

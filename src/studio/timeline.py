@@ -11,7 +11,9 @@ assembler ghép: mỗi cảnh dài bằng giọng đọc cộng `pad` giây im l
 """
 from __future__ import annotations
 
+import math
 import re
+import textwrap
 from dataclasses import dataclass
 
 from .events import Chapter, SceneManifest
@@ -36,9 +38,9 @@ def parse_time(t: str) -> float | None:
 
 
 def stamp(seconds: float, sep: str = ",") -> str:
-    s = max(0.0, seconds)
-    h, rem = divmod(int(s), 3600); m, sec = divmod(rem, 60)
-    return f"{h:02d}:{m:02d}:{sec:02d}{sep}{round((s - int(s)) * 1000):03d}"
+    total, ms = divmod(round(max(0.0, seconds) * 1000), 1000)
+    h, rem = divmod(total, 3600); m, sec = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{sec:02d}{sep}{ms:03d}"
 
 
 def chapter_time(seconds: float) -> str:
@@ -46,7 +48,8 @@ def chapter_time(seconds: float) -> str:
     return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
-def timeline(m: SceneManifest, order: list[str] | None = None, pad: float = 0.0, transition: float = 0.0) -> list[Cue]:
+def timeline(m: SceneManifest, order: list[str] | None = None, pad: float = 0.0, transition: float = 0.0,
+             frame_rate: int | None = None) -> list[Cue]:
     """Mốc từng cảnh trong bản dựng cuối. Công thức khớp assembler: cảnh i bắt đầu ở tổng (thời lượng + pad) của các
     cảnh trước, trừ đi `transition` cho mỗi mối nối đã đi qua."""
     by_id = {s.scene_id: s for s in m.scenes}
@@ -57,15 +60,47 @@ def timeline(m: SceneManifest, order: list[str] | None = None, pad: float = 0.0,
         if s is None: continue
         start = max(0.0, t - i * transition)
         cues.append(Cue(sid, round(start, 3), round(start + s.duration_s, 3), s.narration))
-        t = start + s.duration_s + pad + i * transition
+        span = s.duration_s + pad
+        if frame_rate:
+            span = math.ceil(span * frame_rate - 1e-8) / frame_rate
+        t = start + span + i * transition
     return cues
+
+
+def caption_pages(cues: list[Cue], max_chars: int = 42, max_lines: int = 2) -> list[Cue]:
+    """Readable caption pages; timings are proportional estimates, NOT word alignment.
+
+    Keep every word inside its measured narration interval. No ASR/model/API call.
+    Use provider word timestamps for karaoke or phoneme-accurate highlighting.
+    """
+    if max_chars < 1 or max_lines < 1:
+        raise ValueError("caption limits must be positive")
+    out: list[Cue] = []
+    for cue in cues:
+        text = " ".join(cue.text.split())
+        duration = cue.end - cue.start
+        if not text or duration <= 0:
+            continue
+        lines = textwrap.wrap(text, width=max_chars, break_on_hyphens=False)
+        chunks = ["\n".join(lines[i:i + max_lines]) for i in range(0, len(lines), max_lines)]
+        if len(chunks) > max(1, int(duration * 1000)):
+            chunks = [text]  # degenerate interval: never emit zero-length SRT entries
+        weights = [len(chunk.replace("\n", " ")) for chunk in chunks]
+        total = sum(weights)
+        elapsed = 0
+        for chunk, weight in zip(chunks, weights, strict=True):
+            start = cue.start + duration * elapsed / total
+            elapsed += weight
+            end = cue.end if elapsed == total else cue.start + duration * elapsed / total
+            out.append(Cue(cue.scene_id, start, end, chunk))
+    return out
 
 
 def srt(cues: list[Cue]) -> str:
     out: list[str] = []
-    for i, c in enumerate(cues, 1):
+    for c in cues:
         if not c.text.strip(): continue
-        out.append(f"{i}\n{stamp(c.start)} --> {stamp(max(c.end, c.start + 0.5))}\n{c.text.strip()}\n")
+        out.append(f"{len(out) + 1}\n{stamp(c.start)} --> {stamp(max(c.end, c.start + 0.001))}\n{c.text.strip()}\n")
     return "\n".join(out)
 
 

@@ -1,0 +1,13 @@
+# Đặt catalog này tại output/uploads/library.yaml và tự thêm file có quyền sử dụng.
+assets:
+  coast:
+    kind: video
+    path: coast.mp4
+    license: owned
+    attribution: "Footage do tôi tự quay"
+  soundtrack:
+    kind: music
+    path: soundtrack.wav
+    license: cc-by
+    attribution: "Tên tác giả — Tên tác phẩm — CC BY 4.0"
+    source_url: https://example.org/replace-with-real-source
