@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import stat
+import tempfile
 import threading
 import time
 import urllib.error
@@ -221,9 +222,11 @@ class AntigravityAuthManager:
         """Ghi JSON nguyên tử: tạo file tạm với mode 0600 ngay từ lúc mở (không có khoảng hở
         world-readable), thư mục cha 0700, rồi replace vào chỗ."""
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        tmp_path = path.with_suffix(".tmp")
+        # Một tên `.tmp` cố định có thể là symlink hoặc bị hai writer cùng mở/truncate. mkstemp dùng
+        # O_EXCL và mode 0600 ngay khi tạo, trong cùng thư mục để os.replace vẫn nguyên tử.
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        tmp_path = Path(tmp_name)
         try:
-            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             if os.name != "nt":
@@ -338,10 +341,14 @@ class AntigravityAuthManager:
                     try:
                         creds = self.refresh_access_token(creds)
                     except urllib.error.HTTPError as exc:
-                        logger.warning(
-                            "Google từ chối refresh token của %s (HTTP %s)", creds.email or "unknown", exc.code
-                        )
-                        self.mark_account_unavailable(creds, 401)
+                        if 400 <= exc.code < 500:
+                            logger.warning(
+                                "Google từ chối refresh token của %s (HTTP %s)", creds.email or "unknown", exc.code
+                            )
+                            self.mark_account_unavailable(creds, 401)
+                        else:
+                            logger.warning("Lỗi upstream khi refresh %s (HTTP %s; bỏ qua lượt này, không cooldown)",
+                                           creds.email or "unknown", exc.code)
                         continue
                     except Exception as exc:
                         logger.warning(

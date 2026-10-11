@@ -106,4 +106,8 @@ class HumanGate:
         return remind, overdue
 
     def is_approved(self, subject_id: str) -> bool:
-        return any(r.subject_id == subject_id and r.decision == "approve" for r in self.history)
+        if subject_id in self.pending: return False
+        for request in reversed(self.history):
+            if request.subject_id == subject_id:
+                return request.decision == "approve"
+        return False

@@ -249,6 +249,44 @@ def test_transient_seo_correction_keeps_retry_available(tmp_path, monkeypatch):
     assert not second.transient
 
 
+def test_reply_batch_retry_and_restart_do_not_repost_completed_replies(tmp_path, monkeypatch):
+    from studio.runner import Generated
+    from studio.sqlite_bus import SQLiteBus
+
+    path = tmp_path / "replies.sqlite"
+    bus = SQLiteBus(path)
+    o = _orch(bus, tmp_path, TransientError("unused"), n=0)
+    bus.publish(Envelope(topic="audience-comments", key="CH1-V1", actor="human", payload={
+        "video_id": "CH1-V1", "comments": [
+            {"comment_id": "c1", "author": "a", "text": "one"},
+            {"comment_id": "c2", "author": "b", "text": "two"},
+            {"comment_id": "c3", "author": "c", "text": "three"}]}))
+    o.run()
+    sid = next(iter(o.reply_batches))
+    calls = []
+
+    def generate(_agent, inp, _topic, **_kwargs):
+        cid = inp.payload["comment_id"]
+        calls.append(cid)
+        if cid == "c2" and calls.count(cid) == 1: raise TransientError("temporary transport failure")
+        return Generated(payloads=[{"video_id": "CH1-V1", "kind": "reply", "status": "published"}],
+                         tokens=0, model="fake")
+
+    monkeypatch.setattr(o.runner, "generate", generate)
+    o.gate.decide(sid, "approve", by="human:editor")
+    o.run()
+    assert calls == ["c1", "c2"]
+    bus.close()
+    bus = SQLiteBus(path)
+    resumed = _orch(bus, tmp_path, TransientError("unused"), n=0)
+    monkeypatch.setattr(resumed.runner, "generate", generate)
+    resumed.run()
+    replies = [e.payload["comment_id"] for e in bus.replay("publish-events")]
+    assert replies == ["c1", "c2", "c3"]
+    assert calls == ["c1", "c2", "c2", "c3"]
+    bus.close()
+
+
 def test_render_checkpoint_survives_thumbnail_failure_and_restart(tmp_path, monkeypatch):
     from types import SimpleNamespace
 

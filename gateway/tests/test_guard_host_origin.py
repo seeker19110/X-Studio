@@ -11,7 +11,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway import auth as gw_auth
-from gateway.server import GatewayServer, host_header_is_loopback, origin_is_local
+from gateway.server import GatewayServer, host_header_is_loopback, is_loopback_host, origin_is_local
 from test_server import StubClient
 
 
@@ -29,6 +29,19 @@ async def _client(auth, host="127.0.0.1") -> TestClient:
 
 # ---------- hàm thuần: bảng biên ----------
 
+@pytest.mark.parametrize("host,ok", [
+    ("[::1]", True),
+    ("::1", True),
+    ("localhost", True),
+    ("127.1.2.3", True),
+    ("127.attacker.example", False),
+    ("127.0.0.1.attacker.example", False),
+    ("[::1]attacker.example", False),
+])
+def test_loopback_hosts_are_addresses_or_localhost(host, ok):
+    assert is_loopback_host(host) is ok
+
+
 @pytest.mark.parametrize("header,ok", [
     (None, True),                    # HTTP/1.0 không có Host
     ("", True),
@@ -42,6 +55,12 @@ async def _client(auth, host="127.0.0.1") -> TestClient:
     ("evil.example:1123", False),    # DNS rebinding: A record trỏ 127.0.0.1 nhưng Host là tên kẻ tấn công
     ("192.168.1.5:1123", False),
     ("1270.0.0.1", False),           # tiền tố "127." không được nới thành "1270."
+    ("127.attacker.example:1123", False),
+    ("127.0.0.1.attacker.example", False),
+    ("[::1]attacker.example", False),
+    ("[::1", False),
+    ("localhost:bad-port", False),
+    ("localhost:65536", False),
 ])
 def test_host_header_is_loopback(header, ok):
     assert host_header_is_loopback(header) is ok
@@ -58,6 +77,9 @@ def test_host_header_is_loopback(header, ok):
     ("http://", False),
     ("ftp://127.0.0.1", False),
     ("127.0.0.1:1123", False),           # thiếu scheme
+    ("https://127.attacker.example", False),
+    ("http://127.0.0.1@attacker.example", False),
+    ("https://[::1]attacker.example", False),
 ])
 def test_origin_is_local(origin, ok):
     assert origin_is_local(origin) is ok
@@ -87,6 +109,18 @@ async def test_origin_la_bi_tu_choi_truoc_khi_cham_pool(manager):
             r = await tc.post(path, headers={"Origin": "https://evil.example"}, **kw)
             assert r.status == 403, path
             assert (await r.json())["error"]["type"] == "permission_error"
+    finally:
+        await tc.close()
+
+
+@pytest.mark.asyncio
+async def test_127_prefixed_domains_cannot_reach_gateway(manager):
+    tc = await _client(manager)
+    try:
+        response = await tc.get("/health", headers={"Host": "127.attacker.example"})
+        assert response.status == 404
+        response = await tc.post("/auth/login", headers={"Origin": "https://127.attacker.example"})
+        assert response.status == 403
     finally:
         await tc.close()
 

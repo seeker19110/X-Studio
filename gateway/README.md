@@ -15,7 +15,7 @@ bỏ phần gắn với Hermes Agent (ProviderProfile, đồng bộ `auth.json`,
 | 429 / 402 / 403, hoặc body có `RESOURCE_EXHAUSTED`, `quota`, `rate limit` | Thử **model anh em cùng tài khoản** (Gemini hết quota → Claude Sonnet, quota riêng). Vẫn lỗi → ghi cooldown tài khoản (tôn trọng `Retry-After`, mặc định 1 giờ) → tài khoản kế |
 | 401 / `invalid_grant` | Cooldown 5 phút → tài khoản kế |
 | Google từ chối refresh token (HTTP 4xx) | Cooldown 401 |
-| Lỗi mạng khi refresh (timeout, DNS) | Bỏ qua tài khoản **lượt này**, không cooldown (một nhịp mạng chập chờn không được làm nguội cả pool) |
+| Lỗi mạng hoặc HTTP 5xx khi refresh (timeout, DNS, upstream hỏng) | Bỏ qua tài khoản **lượt này**, không cooldown (một nhịp mạng chập chờn không được làm nguội cả pool) |
 | 5xx endpoint chính | Thử endpoint dự phòng cùng tài khoản; stream thì sang tài khoản kế, không cooldown |
 | 4xx khác (payload hỏng) | Trả lỗi ngay, không xoay |
 | Mọi tài khoản đều cooldown (hoặc pool trống) | Trả **429** kèm "thử lại sau khoảng Ns" để lớp trên fallback tiếp (router của công ty khớp chuỗi này để nghỉ đúng số giây) |

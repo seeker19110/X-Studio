@@ -82,6 +82,20 @@ def test_console_main_closes_worker_and_lease(tmp_path, monkeypatch, capsys):
     assert "Access code:" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize('headers', [
+    {'Authorization': 'Bearer mã-sai'},
+    {'Cookie': 'studio_session="mã-sai"'},
+])
+def test_non_ascii_credentials_are_rejected_without_dropping_connection(http_console, headers):
+    request, _, _, _ = http_console
+    assert request('GET', '/api/state', headers=headers)[0] == 401
+
+
+def test_non_ascii_login_token_returns_authentication_error(http_console):
+    request, _, _, _ = http_console
+    assert request('POST', '/api/login', {'token': 'mã-sai'})[0] == 401
+
+
 def test_console_bad_cookie_and_bind_failure(http_console,tmp_path,monkeypatch):
     from studio import console
     request,_,_,_=http_console

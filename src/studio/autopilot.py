@@ -7,6 +7,7 @@ Replies and escalations remain human decisions. No generated content grants auth
 from __future__ import annotations
 
 import json
+import math
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -78,8 +79,9 @@ class Autopilot:
                           thumbnail=Path(thumbnail) if thumbnail else None,
                           captions=Path(captions) if captions else None)
         o.qcs[vid] = report
-        if not report.metrics.get("duration_s"): return "QC chưa đo được file thật"
-        duration = float(report.metrics["duration_s"])
+        duration = report.metrics.get("duration_s")
+        if not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+            return "QC chưa đo được file thật"
         target = o.desk.briefs[vid].target_minutes * 60
         if duration > float(cfg.production.get("max_minutes", 720)) * 60: return "Video vượt giới hạn thời lượng"
         if abs(duration-target) > target * float(cfg.production.get("duration_tolerance", .2)):

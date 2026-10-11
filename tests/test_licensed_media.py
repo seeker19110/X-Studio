@@ -67,6 +67,24 @@ def test_postprocessing_settings_cannot_silently_disable_captions(tmp_path):
     assert "captions" in Path(final.path).read_text()
 
 
+def test_finishing_failure_preserves_the_entire_published_final_package(tmp_path, monkeypatch):
+    r, m, _ = setup(tmp_path); r.media.cfg.video["burn_captions"] = True
+    r.render(m); previous = r.finalize(m)
+    records = list(r.bus.replay("media-assets"))
+    old_files = {e.payload["path"]: Path(e.payload["path"]).read_bytes() for e in records
+                 if e.payload["kind"] in {"final_video", "captions", "music"}}
+    m.scenes[0].narration = "A changed caption that must not replace the published subtitle."
+    m.scenes[0].duration_s = 9
+    (tmp_path / "uploads" / "music.wav").write_bytes(b"new soundtrack")
+    monkeypatch.setattr("studio.renderer.finish", Mock(side_effect=MediaError("finishing interrupted")))
+    with pytest.raises(MediaError, match="interrupted"):
+        r.finalize(m)
+    assert all(Path(path).read_bytes() == content for path, content in old_files.items())
+    assert len(list(r.bus.replay("media-assets"))) == len(records)
+    assert previous.checksum
+    assert not list((tmp_path / m.video_id).glob(".finalize-*"))
+
+
 def test_invalid_finishing_and_unknown_scene_fail_loudly(tmp_path):
     from studio.production import finish
     r,m,_=setup(tmp_path)

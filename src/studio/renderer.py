@@ -15,12 +15,13 @@ Kết quả publish lên `media-assets` dưới actor `renderer`, kèm audit.
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from .bus import InMemoryBus
 from .events import AssetKind, AuditLog, CutList, Envelope, MediaAsset, Provenance, Scene, SceneManifest, ThumbnailSpec
-from .media import FFmpegAssembler, MediaError, MediaResult, MediaSuite, frame_size, image_size, make_media
+from .media import FakeVideo, FFmpegAssembler, MediaError, MediaResult, MediaSuite, frame_size, image_size, make_media
 from .motion import MotionSpec, render_motion
 from .production import copy_asset, finish, selections
 from .render_cache import RenderCache, digest, fingerprint
@@ -122,8 +123,17 @@ class Renderer:
 
     # ---------- render ----------
 
+    def _scene_order(self, m: SceneManifest, order: list[str] | None = None) -> list[str]:
+        ids = [s.scene_id for s in m.scenes]
+        if not ids or len(ids) != len(set(ids)):
+            raise MediaError("manifest requires nonempty scenes with unique scene IDs")
+        if order and (len(order) != len(ids) or set(order) != set(ids)):
+            raise MediaError("scene order must contain every scene exactly once")
+        return order or [s.scene_id for s in sorted(m.scenes, key=lambda s: s.order)]
+
     def render_scene(self, m: SceneManifest, s: Scene, audio: bool = True, image: bool = True,
                      force: bool = False, revision: str = "") -> list[MediaAsset]:
+        self._scene_order(m)
         d = self._dir(m.video_id) / f"v{m.version}"; out: list[MediaAsset] = []
         hits: dict[str, bool] = {}
         local, _ = selections(self.media.cfg, self.upload_dir, m)
@@ -171,26 +181,31 @@ class Renderer:
         self._audit("render.cache", m.video_id, {"scene_id": s.scene_id, "hits": hits})
         return out
 
-    def _check_locked(self, s: Scene) -> None:
+    def _check_locked(self, m: SceneManifest, s: Scene, pending: list[MediaAsset] | None = None) -> None:
         for kind in ("scene_audio", "scene_video" if "scene_video" in s.asset_refs else "scene_image"):
             path = Path(s.asset_refs.get(kind, ""))
             if not path.is_file() or not path.stat().st_size:
                 raise MediaError(f"locked scene {s.scene_id}: missing {kind}; restore the approved file or unlock explicitly")
-            previous = next((e.payload for e in reversed(list(self.bus.replay("media-assets")))
-                             if e.payload["path"] == str(path) and e.payload.get("checksum")), None)
-            if previous and previous["checksum"] != checksum(path):
+            records = [e.payload for e in self.bus.replay("media-assets", m.video_id)]
+            records += [a.model_dump() for a in pending or []]
+            previous = next((a for a in reversed(records) if a["path"] == str(path) and a.get("checksum")
+                             and a.get("scene_id") == s.scene_id and a["kind"] == kind), None)
+            if previous is None:
+                raise MediaError(f"locked scene {s.scene_id}: missing registered provenance for {kind}")
+            if previous["checksum"] != checksum(path):
                 raise MediaError(f"locked scene {s.scene_id}: checksum mismatch for {kind}")
 
-    def _segments(self, m: SceneManifest, order: list[str] | None = None) -> list[tuple[Path, Path, float]]:
+    def _segments(self, m: SceneManifest, order: list[str] | None = None,
+                  pending: list[MediaAsset] | None = None) -> list[tuple[Path, Path, float]]:
         by_id = {s.scene_id: s for s in m.scenes}
-        ids = order or [s.scene_id for s in sorted(m.scenes, key=lambda x: x.order)]
+        ids = self._scene_order(m, order)
         segs = []
         for sid in ids:
             s = by_id[sid]
             visual = s.asset_refs.get("scene_video") or s.asset_refs.get("scene_image")
             if not visual or "scene_audio" not in s.asset_refs:
                 raise ValueError(f"cảnh {sid} chưa có đủ asset để ghép")
-            if s.locked: self._check_locked(s)
+            if s.locked: self._check_locked(m, s, pending)
             segs.append((Path(visual), Path(s.asset_refs["scene_audio"]), s.duration_s))
         return segs
 
@@ -200,10 +215,11 @@ class Renderer:
         if prior is not None:
             return [MediaAsset.model_validate(e.payload) for e in prior if e.topic == "media-assets"]
         assets: list[MediaAsset] = []
+        self._scene_order(m)
         selections(self.media.cfg, self.upload_dir, m)
         for s in m.scenes:
             if s.locked:
-                self._check_locked(s)
+                self._check_locked(m, s)
                 continue
             need = (only is not None and s.scene_id in only) or (only is None and not (s.locked and len(s.asset_refs) >= 2))
             if need:
@@ -222,6 +238,9 @@ class Renderer:
         if prior is not None:
             return SceneManifest.model_validate(next(e.payload for e in prior if e.topic == "scene-manifests"))
         m = m.model_copy(deep=True)
+        self._scene_order(m, cut.order)
+        if cut.video_id != m.video_id or cut.manifest_version != m.version:
+            raise MediaError("cut-list must reference the current video and manifest version")
         by_id = {s.scene_id: s for s in m.scenes}
         replacements: list[MediaAsset] = []
         touched: set[str] = set(); regen: dict[str, tuple[bool, bool]] = {}
@@ -230,6 +249,10 @@ class Renderer:
             if s is None: continue
             if r.action == "lock": s.locked = True; continue
             if s.locked: continue  # cảnh đã khoá không sinh lại
+            if ((r.new_narration is not None and r.action not in {"regenerate_audio", "regenerate_both"})
+                    or (r.new_visual_prompt is not None and r.action not in {"regenerate_image", "regenerate_both"})
+                    or (r.action == "replace_asset" and not r.replacement_path)):
+                raise MediaError(f"repair {r.scene_id}: fields must match the requested regeneration or replacement")
             if r.new_visual_prompt: s.visual_prompt = r.new_visual_prompt
             if r.new_narration: s.narration = r.new_narration
             if r.action == "replace_asset" and r.replacement_path:
@@ -258,7 +281,7 @@ class Renderer:
                 a, i = regen[s.scene_id]
                 assets += self.render_scene(new, s, audio=a, image=i, revision=fingerprint(cut.model_dump()))
         fps, res = self._video_opts(new.aspect)
-        vr = self.media.video.assemble(self._segments(new), self._dir(new.video_id) / f"draft_v{new.version}.mp4", fps, res)
+        vr = self.media.video.assemble(self._segments(new, pending=assets), self._dir(new.video_id) / f"draft_v{new.version}.mp4", fps, res)
         assets.append(self._asset(new.video_id, "draft_video", vr, new.version, prompt_ref=f"manifest:v{new.version}"))
         self._publish(assets, f"render.repair:{','.join(sorted(touched)) or 'none'}", new)
         return new
@@ -278,28 +301,44 @@ class Renderer:
                                                   if e.topic == "media-assets" and e.payload["kind"] == "final_video"))
         _, music = selections(self.media.cfg, self.upload_dir, m)
         fps, res = self._video_opts(m.aspect)
-        r = self.media.video.assemble(self._segments(m, order), self._dir(m.video_id) / f"final_v{m.version}.mp4", fps, res)
-        assets: list[MediaAsset] = []
-        captions = None
-        text = srt(caption_pages(self.cues(m, order),
-                                max_chars=int(self.media.cfg.video.get("caption_max_chars", 42))))
-        if text:
-            p = self._dir(m.video_id) / f"captions_v{m.version}.srt"
-            p.write_text(text, encoding="utf-8")
-            captions = p
-            cap = MediaResult(p, "studio", "srt-from-manifest")
-            assets.append(self._asset(m.video_id, "captions", cap, m.version, prompt_ref=f"manifest:v{m.version}"))
-        music_path = None
-        if music:
-            music_path = copy_asset(music, self._dir(m.video_id) / f"music_v{m.version}")
-            ma = self._asset(m.video_id, "music", MediaResult(music_path, "local", "licensed-library"), m.version)
-            ma.provenance = music.provenance(); assets.append(ma)
-        finish(self.media.video, r.path, captions if self.media.cfg.video.get("burn_captions") else None,
-               music_path, music.attribution if music else "", float(self.media.cfg.production.get("music_volume", 0.12)))
-        a = self._asset(m.video_id, "final_video", r, m.version, prompt_ref=f"manifest:v{m.version}")
-        assets.insert(0, a)
-        self._publish(assets, "render.final")
-        return a
+        directory = self._dir(m.video_id)
+        target = directory / f"final_v{m.version}.mp4"
+        with tempfile.TemporaryDirectory(prefix=".finalize-", dir=directory) as temp:
+            stage = Path(temp)
+            # Keep the video's parent stable so bounded scene checkpoints remain reusable.
+            pending_video = directory / f"{stage.name}.mp4"
+            try:
+                r = self.media.video.assemble(self._segments(m, order), pending_video, fps, res)
+                assets: list[MediaAsset] = []; moves: list[tuple[MediaAsset, Path]] = []
+                captions = None; music_path = None
+                text = srt(caption_pages(self.cues(m, order),
+                                        max_chars=int(self.media.cfg.video.get("caption_max_chars", 42))))
+                if text:
+                    captions = stage / f"captions_v{m.version}.srt"
+                    captions.write_text(text, encoding="utf-8")
+                    cap = self._asset(m.video_id, "captions", MediaResult(captions, "studio", "srt-from-manifest"),
+                                      m.version, prompt_ref=f"manifest:v{m.version}")
+                    assets.append(cap); moves.append((cap, directory / captions.name))
+                if music:
+                    music_path = copy_asset(music, stage / f"music_v{m.version}")
+                    ma = self._asset(m.video_id, "music", MediaResult(music_path, "local", "licensed-library"), m.version)
+                    ma.provenance = music.provenance()
+                    assets.append(ma); moves.append((ma, directory / music_path.name))
+                burn = captions if self.media.cfg.video.get("burn_captions") else None
+                # FakeVideo records references only; its JSON must point to durable filenames.
+                fake = isinstance(self.media.video, FakeVideo)
+                finish(self.media.video, r.path, directory / burn.name if burn and fake else burn,
+                       directory / music_path.name if music_path and fake else music_path,
+                       music.attribution if music else "", float(self.media.cfg.production.get("music_volume", 0.12)))
+                for asset, destination in moves:
+                    Path(asset.path).replace(destination); asset.path = str(destination)
+                r.path.replace(target); r.path = target
+                a = self._asset(m.video_id, "final_video", r, m.version, prompt_ref=f"manifest:v{m.version}")
+                assets.insert(0, a)
+                self._publish(assets, "render.final")
+                return a
+            finally:
+                pending_video.unlink(missing_ok=True)
 
     def thumbnails(self, spec: ThumbnailSpec) -> list[MediaAsset]:
         """Ảnh nền không chữ (model ảnh) → CODE phủ `overlay_text`, thu về 1280x720, nén ≤ 2 MB. Asset publish là bản

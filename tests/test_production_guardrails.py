@@ -46,7 +46,7 @@ def test_publish_policy_accepts_measured_licensed_complete_package(tmp_path, mon
 @pytest.mark.parametrize('fault,phrase', [
     ('not_ready','ba review'), ('manifest','manifest'), ('license','bản quyền'), ('changed','thay đổi'),
     ('preflight','preflight'), ('credit','CC-BY'), ('unmeasured','chưa đo'), ('too_long','giới hạn thời lượng'),
-    ('target','lệch'), ('size','256 GB')])
+    ('target','lệch'), ('size','256 GB'), ('nan','chưa đo'), ('infinite','chưa đo')])
 def test_publish_policy_holds_bad_packages(tmp_path,monkeypatch,fault,phrase):
     auto,o,file,assets,report=publish_fixture(tmp_path,monkeypatch)
     if fault=='not_ready': o.desk.ready_for_publish.return_value=False
@@ -58,6 +58,8 @@ def test_publish_policy_holds_bad_packages(tmp_path,monkeypatch,fault,phrase):
     if fault=='unmeasured': report.metrics={}
     if fault=='too_long': report.metrics={'duration_s':43201}
     if fault=='target': report.metrics={'duration_s':40}
+    if fault=='nan': report.metrics={'duration_s':float('nan')}
+    if fault=='infinite': report.metrics={'duration_s':float('inf')}
     if fault=='size': monkeypatch.setattr(Path,'stat',lambda *_args,**_kw: SimpleNamespace(st_size=257*1024**3,st_mode=0o100644))
     assert phrase in auto.assess('PUB-V')
 

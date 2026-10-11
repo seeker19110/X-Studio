@@ -171,6 +171,26 @@ def test_qc_survives_unreadable_output(tmp_path, monkeypatch):
     assert qc_video(f).available is False
 
 
+@pytest.mark.parametrize("payload", [[], "not an object", {"streams": [None]},
+                                    {"streams": [{"codec_type": "video", "r_frame_rate": "bad/1"}]},
+                                    {"format": {"duration": "nan"}}, {"format": {"duration": "Infinity"}},
+                                    {"format": {"size": "bad"}}])
+def test_qc_treats_malformed_probe_metrics_as_unavailable(tmp_path, monkeypatch, payload):
+    path = tmp_path / "final.mp4"; path.write_bytes(b"media")
+    _fake_tools(monkeypatch, payload)
+    assert qc.probe(path) is None
+    assert qc_video(path).available is False
+
+
+def test_qc_blocks_audio_only_or_zero_duration_final(tmp_path, monkeypatch):
+    path = tmp_path / "final.mp4"; path.write_bytes(b"media")
+    _fake_tools(monkeypatch, {"streams": [{"codec_type": "audio"}], "format": {"duration": "0"}},
+                "  I: -14.0 LUFS\n  Peak: -1.0 dBFS\n")
+    report = qc_video(path)
+    assert report.blocked
+    assert any(f.level == "block" and f.location == "final_video" for f in report.findings)
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="cần ffmpeg + ffprobe")
 def test_qc_measures_a_real_render_end_to_end(tmp_path):
     """Dựng thật rồi đo lại: khung, thời lượng, âm lượng chuẩn hoá, phụ đề — đúng những gì reviewer không tự thấy được."""

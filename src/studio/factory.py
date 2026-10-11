@@ -6,6 +6,8 @@ import json
 import re
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -14,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from xagents_core.sqlite_bus import Lease
 
 from .autopilot import Autopilot
-from .events import Envelope
+from .events import Envelope, MetadataPackage, PerformanceSnapshot, PublishEvent, Script
 from .fakes import make_scripted_client
 from .llm import make_client
 from .media import MediaConfig, make_media
@@ -41,6 +43,14 @@ class FactorySettings(BaseModel):
     style: str = Field(default="", max_length=1000)
 
 
+class GateDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    subject_id: str = Field(min_length=1, max_length=200)
+    decision: Literal["approve", "request_changes", "reject", "hold"]
+    request_at: str | None = None
+    reason: str = Field(default="Studio console", max_length=1000)
+
+
 class CommandStore:
     def __init__(self, path: Path):
         self.path = path
@@ -48,9 +58,13 @@ class CommandStore:
             con.execute("CREATE TABLE IF NOT EXISTS factory_commands (id TEXT PRIMARY KEY, kind TEXT NOT NULL, body TEXT NOT NULL, "
                         "status TEXT NOT NULL DEFAULT 'pending', error TEXT NOT NULL DEFAULT '', created REAL DEFAULT (unixepoch()))")
 
-    def connect(self):
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
         con = sqlite3.connect(self.path, timeout=30); con.row_factory = sqlite3.Row
-        return con
+        try:
+            with con: yield con
+        finally:
+            con.close()
 
     def add(self, id: str, kind: str, body: dict) -> None:
         with self.connect() as con:
@@ -99,10 +113,10 @@ class Factory:
 
     def command(self, kind: str, body: dict) -> str:
         if kind not in {"create", "run", "pause", "gate", "settings"}: raise ValueError("unknown command")
+        if not isinstance(body, dict): raise ValueError("command data must be an object")
         if kind == "create": ProjectRequest.model_validate(body)
         if kind == "settings": FactorySettings.model_validate(body)
-        if kind == "gate" and body.get("decision") not in {"approve", "request_changes", "reject", "hold"}:
-            raise ValueError("invalid gate decision")
+        if kind == "gate": GateDecision.model_validate(body)
         id = uuid4().hex
         self.commands.add(id, kind, body)
         return id
@@ -133,10 +147,10 @@ class Factory:
                 self.bus.publish(Envelope(topic="channel-briefs", key=cid, actor="human:owner", payload=payload))
         elif kind == "gate":
             sid = str(body["subject_id"])
-            if sid in self.orch.gate.pending:
-                if body.get("request_at") and body["request_at"] != self.orch.gate.pending[sid].created_at.isoformat():
-                    raise ValueError("Quyết định đã thay đổi; tải lại để xem yêu cầu mới")
-                self.orch.gate.decide(sid, body["decision"], by="human:editor", reason=str(body.get("reason", "Studio console")))
+            if sid not in self.orch.gate.pending: raise ValueError("gate không còn chờ duyệt; tải lại để xem yêu cầu mới")
+            if body.get("request_at") and body["request_at"] != self.orch.gate.pending[sid].created_at.isoformat():
+                raise ValueError("Quyết định đã thay đổi; tải lại để xem yêu cầu mới")
+            self.orch.gate.decide(sid, body["decision"], by="human:editor", reason=str(body.get("reason", "Studio console")))
 
     def cycle(self) -> None:
         self.bus.poll()
@@ -161,6 +175,7 @@ class Factory:
     def refresh(self) -> None:
         o = self.orch
         assets = list(self.bus.replay("media-assets"))
+        publications = {e.key: e for e in self.bus.replay("publish-events") if e.payload.get("kind", "video") == "video"}
         projects = []
         for vid, brief in o.desk.briefs.items():
             media = [{"id": e.event_id, "kind": e.payload["kind"], "scene_id": e.payload.get("scene_id"),
@@ -172,15 +187,54 @@ class Factory:
                       for s in manifest.scenes] if manifest else []
             reviews = {k: {"verdict": v.verdict, "findings": [f.model_dump() for f in v.findings]}
                        for k, v in o.desk.reviews[vid].items()}
+            channel = self.bus.latest("channel-briefs", brief.channel_id)
+            request = channel.payload.get("requested_video") if channel else None
+            request = {k: request[k] for k in ProjectRequest.model_fields if k in request} if isinstance(request, dict) else None
+            research_event = self.bus.latest("research-dossiers", vid)
+            research: dict[str, Any] | None = None
+            if research_event:
+                payload = research_event.payload
+                research = {k: payload[k] for k in ("video_id", "topic", "evidence", "gaps", "assumptions") if k in payload}
+                for key, fields in (("sources", ("title", "url", "type", "accessed")),
+                                    ("competitor_videos", ("title", "url", "views"))):
+                    if key in payload:
+                        research[key] = [{k: row[k] for k in fields if k in row} for row in payload[key]]
+            script_event = self.bus.latest("scripts", vid)
+            metadata_event = self.bus.latest("metadata-packages", vid)
+            performance_event = self.bus.latest("performance-snapshots", vid)
+            publication_event = publications.get(vid)
             projects.append({"id": vid, "title": brief.working_title, "state": o.desk.state[vid],
                              "minutes": brief.target_minutes, "format": brief.format, "scenes": scenes,
                              "media": media, "reviews": reviews, "retry": brief.retry,
-                             "qc": o.qcs[vid].as_dict() if vid in o.qcs else None})
-        events = [e for e in self.bus.replay("audit-log") if e.payload.get("action") not in {"orchestrated", "once"}][-30:]
+                             "qc": o.qcs[vid].as_dict() if vid in o.qcs else None,
+                             "brief": brief.model_dump(exclude={"hint"}), "request": request, "research": research,
+                             "script": Script.model_validate(script_event.payload).model_dump() if script_event else None,
+                             "metadata": MetadataPackage.model_validate(metadata_event.payload).model_dump() if metadata_event else None,
+                             "publication": PublishEvent.model_validate(publication_event.payload).model_dump(exclude={"evidence"}) if publication_event else None,
+                             "performance": PerformanceSnapshot.model_validate(performance_event.payload).model_dump() if performance_event else None})
+        audit_events = list(self.bus.replay("audit-log"))
+        planning_errors: dict[str, str] = {}
+        for event in audit_events:
+            action = event.payload.get("action"); cid = event.payload.get("channel_id")
+            if event.actor != "orchestrator" or not cid or action not in {"plan.rejected", "plan.proposed", "agent_failed"}: continue
+            try: data = json.loads(event.payload.get("evidence") or "{}")
+            except (ValueError, TypeError): continue
+            if not isinstance(data, dict): continue
+            if action == "plan.proposed": planning_errors.pop(cid, None)
+            elif action == "plan.rejected" and isinstance(data.get("errors"), list):
+                planning_errors[cid] = "; ".join(str(error) for error in data["errors"])
+            elif data.get("agent") == "channel-strategist": planning_errors[cid] = str(data.get("error") or "")
+        commands = self.commands.recent()
+        project_channels = {brief.channel_id for brief in o.desk.briefs.values()}
+        for command in commands:
+            if command["kind"] != "create" or command["status"] != "done": continue
+            cid = "P" + re.sub(r"[^a-zA-Z0-9]", "", command["id"])[:24]
+            if cid not in project_channels and planning_errors.get(cid): command["planning_error"] = planning_errors[cid]
+        events = [e for e in audit_events if e.payload.get("action") not in {"orchestrated", "once"}][-30:]
         snapshot = {"running": self.running, "demo": self.demo, "projects": projects,
                     "gates": [{"id": sid, "kind": g.kind, "checklist": g.checklist, "request_at": g.created_at.isoformat(),
                                "hold": self.autopilot.holds.get(sid, "")} for sid, g in o.gate.pending.items()],
-                    "queue": len(o.queue), "deferred": len(o.deferred), "commands": self.commands.recent(),
+                    "queue": len(o.queue), "deferred": len(o.deferred), "commands": commands,
                     "events": [{"action": e.payload["action"], "actor": e.actor, "video_id": e.payload.get("video_id"),
                                 "time": e.ts.isoformat()} for e in reversed(events)],
                     "automation": o.renderer.media.cfg.production.get("automation", "manual"),

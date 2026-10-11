@@ -43,7 +43,8 @@ def trusted_decision(env: Envelope) -> dict | None:
         import json
         try: signed = json.loads(env.payload.get("evidence", ""))
         except (ValueError, TypeError): return None
-        if isinstance(signed, dict) and signed.get("by") == POLICY_ACTOR and signed.get("decision") == "approve" \
+        if isinstance(signed, dict) and isinstance(signed.get("subject_id"), str) and signed["subject_id"] \
+                and signed.get("by") == POLICY_ACTOR and signed.get("decision") == "approve" \
                 and signed.get("policy") in {"production", "publish"} and verify(signed):
             return signed
         return None
@@ -72,6 +73,7 @@ class PersistentGate(CorePersistentGate[Envelope, AuditLog], HumanGate):
         if data and env.actor == POLICY_ACTOR:
             gate = self.pending.get(data["subject_id"])
             if not gate or data.get("request_at") != gate.created_at.isoformat(): return None
+            if gate.kind != "plan" and not (gate.kind == "publish" and data["policy"] == "publish"): return None
         return data
 
     def _request_kwargs(self, d: dict) -> dict:

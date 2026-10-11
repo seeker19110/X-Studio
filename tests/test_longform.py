@@ -39,6 +39,22 @@ def test_chapter_generation_stops_at_video_budget(tmp_path):
     assert runner.generate.call_count == 2
 
 
+def test_partitioned_fact_review_uses_durable_video_budget(tmp_path):
+    import pytest
+
+    from studio.runner import RunnerError
+    runner = Mock(); runner.client = object()
+    runner.agents = {"fact-checker": Mock(version=1, system_prompt=lambda: "Review")}
+    brief = Envelope(topic="video-briefs", key="V", actor="desk", payload={"video_id": "V", "budget_tokens": 100})
+    runner.bus.replay.side_effect = lambda topic, *args: [brief] if topic == "video-briefs" else []
+    runner.generate.return_value = Generated(payloads=[{"verdict": "pass", "findings": []}], tokens=80, model="test")
+    script = {"video_id": "V", "sections": [{"heading": str(i), "narration": "words"} for i in range(9)], "claims": []}
+    inp = Envelope(topic="scripts", key="V", actor="script-writer", payload=script)
+    with pytest.raises(RunnerError, match="budget"):
+        generate_partitioned(runner, "fact-checker", inp, "review-results", {}, tmp_path)
+    assert runner.generate.call_count == 2
+
+
 def test_short_request_uses_existing_runner_directly(tmp_path):
     runner=Mock(); env=Envelope(topic="video-briefs",key="V",actor="desk",payload={"target_minutes":3})
     generate_partitioned(runner,"script-writer",env,"scripts",{},tmp_path)

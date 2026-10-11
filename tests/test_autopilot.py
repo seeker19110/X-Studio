@@ -80,3 +80,33 @@ def test_orchestrator_ignores_policy_receipt_without_accepted_gate(tmp_path,monk
     result=StepResult(event.event_id,event.topic,event.key)
     o._on_gate_decision(event,result)
     assert 'untrusted:policy:studio' in result.actions
+
+
+def test_policy_signature_non_ascii_or_missing_subject_is_untrusted(tmp_path, monkeypatch):
+    from studio.policy_receipts import sign, verify
+    monkeypatch.setenv("STUDIO_POLICY_KEY_FILE", str(tmp_path / "policy.key"))
+    data = sign({"subject_id": "PLAN-CH1-1", "by": "policy:studio", "decision": "approve", "policy": "production"})
+    for invalid in ("é", "\ud800"):
+        assert not verify({**data, "signature": invalid})
+    assert not verify({**data, "reason": "\ud800"})
+    data.pop("subject_id")
+    signed = sign(data)
+    env = Envelope(topic="audit-log", key="policy:studio", actor="policy:studio", payload={
+        "actor": "policy:studio", "action": "gate.decide", "evidence": json.dumps(signed)})
+    assert trusted_decision(env) is None
+
+
+def test_policy_approvals_are_limited_to_delegated_gate_kinds(tmp_path, monkeypatch):
+    from studio.gates import GateRequest
+    from studio.policy_receipts import sign
+    o = workshop(tmp_path, monkeypatch)
+    for kind, sid, mode in (("replies", "REP-CH1-V1-1", "publish"),
+                            ("escalation", "ESC-CH1-V1", "publish"),
+                            ("publish", "PUB-CH1-V1", "production")):
+        gate = o.gate.request(GateRequest(kind=kind, subject_id=sid, created_by="desk", checklist=[]))
+        data = sign({"subject_id": sid, "by": "policy:studio", "decision": "approve", "policy": mode,
+                     "request_at": gate.created_at.isoformat()})
+        o.bus.publish(Envelope(topic="audit-log", key="policy:studio", actor="policy:studio", payload={
+            "actor": "policy:studio", "action": "gate.decide", "evidence": json.dumps(data)}))
+        assert sid in o.gate.pending
+    assert set(PersistentGate(o.bus).pending) == set(o.gate.pending)

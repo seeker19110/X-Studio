@@ -9,6 +9,7 @@ Không có ffprobe trên máy (chế độ `fake`, CI tối giản) thì báo c�
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -94,21 +95,25 @@ def probe(path: Path) -> dict[str, Any] | None:
     if code != 0 or not out.strip(): return None
     try:
         data = json.loads(out)
-    except json.JSONDecodeError:
+        streams = data.get("streams") or []
+        v: dict[str, Any] = next((s for s in streams if s.get("codec_type") == "video"), {})
+        a = next((s for s in streams if s.get("codec_type") == "audio"), None)
+        fps = 0.0
+        if v.get("r_frame_rate"):
+            num, den = str(v["r_frame_rate"]).split("/")
+            fps = round(float(num) / float(den), 2) if float(den) else 0.0
+        fmt = data.get("format") or {}
+        result: dict[str, Any] = {"duration_s": round(float(fmt.get("duration") or 0), 2), "bytes": int(fmt.get("size") or 0),
+                  "width": int(v.get("width") or 0), "height": int(v.get("height") or 0), "fps": fps,
+                  "video_codec": v.get("codec_name"), "has_audio": a is not None,
+                  "audio_codec": (a or {}).get("codec_name"), "sample_rate": int((a or {}).get("sample_rate") or 0),
+                  "channels": int((a or {}).get("channels") or 0)}
+        if any(not math.isfinite(result[k]) or result[k] < 0
+               for k in ("duration_s", "bytes", "width", "height", "fps", "sample_rate", "channels")):
+            return None
+        return result
+    except (ValueError, TypeError, AttributeError, OverflowError):
         return None
-    streams = data.get("streams") or []
-    v: dict[str, Any] = next((s for s in streams if s.get("codec_type") == "video"), {})
-    a = next((s for s in streams if s.get("codec_type") == "audio"), None)
-    fps = 0.0
-    if v.get("r_frame_rate") and "/" in str(v["r_frame_rate"]):
-        num, den = str(v["r_frame_rate"]).split("/")
-        fps = round(float(num) / float(den), 2) if float(den) else 0.0
-    fmt = data.get("format") or {}
-    return {"duration_s": round(float(fmt.get("duration") or 0), 2), "bytes": int(fmt.get("size") or 0),
-            "width": int(v.get("width") or 0), "height": int(v.get("height") or 0), "fps": fps,
-            "video_codec": v.get("codec_name"), "has_audio": a is not None,
-            "audio_codec": (a or {}).get("codec_name"), "sample_rate": int((a or {}).get("sample_rate") or 0),
-            "channels": int((a or {}).get("channels") or 0)}
 
 
 def measure(path: Path) -> dict[str, Any]:
@@ -147,6 +152,8 @@ def qc_video(path: Path, expected_duration_s: float = 0.0, expected_resolution: 
     m["resolution"] = f"{info['width']}x{info['height']}"
     m.update(measure(Path(path)))
     f: list[Finding] = []
+    if info["width"] <= 0 or info["height"] <= 0 or info["duration_s"] <= 0:
+        f.append(Finding(level="block", text="video cuối thiếu hình hoặc thời lượng dương", location="final_video"))
     if not m.get("scan_complete"):
         f.append(Finding(level="block", text=f"QC chưa đo đầy đủ: {m.get('scan_error', 'không có kết quả')}",
                          location="qc_scan"))

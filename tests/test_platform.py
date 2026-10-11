@@ -3,6 +3,7 @@ analytics thiếu quyền → 0 + evidence); CLI youtube (URL OAuth, đổi mã,
 from __future__ import annotations
 
 import json
+import os
 import urllib.parse
 from datetime import UTC, datetime
 from pathlib import Path
@@ -117,6 +118,79 @@ def test_youtube_upload_missing_location_or_id_is_clear_error(tmp_path):
     with pytest.raises(PlatformError, match="Location"): YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(f, META)
     http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://u/1"}, b"")).on("PUT", "https://u/1", (200, {}, {"kind": "x"}))
     with pytest.raises(PlatformError, match="không có id"): YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(f, META)
+
+
+def test_youtube_large_upload_reads_bounded_chunks_and_honors_308_range(tmp_path, monkeypatch):
+    chunk_size = 8 * 1024 * 1024
+    video = tmp_path / "large.mp4"
+    video.write_bytes(b"a" * chunk_size + b"tail")
+    store = _store(tmp_path)
+    monkeypatch.setattr(Path, "read_bytes", lambda _path: pytest.fail("video upload must not read the entire file"))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+
+    def receive(_method, _url, headers, body):
+        assert len(body) <= chunk_size
+        assert headers["Content-Length"] == str(len(body))
+        if body == b"a" * chunk_size:
+            assert headers["Content-Range"] == f"bytes 0-{chunk_size - 1}/{chunk_size + 4}"
+            return 308, {"range": f"bytes=0-{chunk_size - 1}"}, b""
+        assert body == b"tail"
+        assert headers["Content-Range"] == f"bytes {chunk_size}-{chunk_size + 3}/{chunk_size + 4}"
+        return 201, {}, {"id": "chunked-video"}
+
+    http.on("PUT", "https://upload.example/session", receive)
+    result = YouTubePlatform(store, http, lambda: NOW).upload_video(video, META)
+    assert result.platform_ref == "chunked-video"
+    assert len(http.calls) == 3
+
+
+def test_youtube_upload_probes_accepted_bytes_before_resuming_after_timeout(tmp_path):
+    video = tmp_path / "partial.mp4"
+    video.write_bytes(bytes(range(100)))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+    sequence = []
+
+    def receive(_method, _url, headers, body):
+        sequence.append((headers["Content-Range"], body))
+        if len(sequence) == 1:
+            raise PlatformError("lỗi mạng sau khi máy chủ đã nhận 40 byte")
+        if len(sequence) == 2:
+            assert body == b"" and headers["Content-Length"] == "0"
+            assert headers["Content-Range"] == "bytes */100"
+            return 308, {"range": "bytes=0-39"}, b""
+        assert body == bytes(range(40, 100))
+        assert headers["Content-Range"] == "bytes 40-99/100"
+        return 201, {}, {"id": "resumed-video"}
+
+    http.on("PUT", "https://upload.example/session", receive)
+    result = YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=lambda _seconds: None).upload_video(video, META)
+    assert result.platform_ref == "resumed-video" and len(sequence) == 3
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink requires privileges on Windows")
+def test_youtube_token_save_replaces_symlink_without_overwriting_its_target(tmp_path):
+    victim = tmp_path / "other.json"
+    victim.write_text("keep this file", encoding="utf-8")
+    store = TokenStore(tmp_path / "tokens.json")
+    store.path.symlink_to(victim)
+    store.save(Tokens(access_token="synthetic-token"))
+    assert victim.read_text(encoding="utf-8") == "keep this file"
+    assert not store.path.is_symlink()
+    assert store.load().access_token == "synthetic-token"
+
+
+def test_youtube_token_save_failure_keeps_previous_tokens_and_cleans_temporary_file(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    before = store.path.read_bytes()
+
+    def fail_dump(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("studio.platform.json.dumps", fail_dump)
+    with pytest.raises(OSError, match="disk full"):
+        store.save(Tokens(access_token="new-token"))
+    assert store.path.read_bytes() == before
+    assert list(store.path.parent.iterdir()) == [store.path]
 
 
 # ---------- YouTube: token ----------
@@ -271,10 +345,162 @@ def test_token_file_created_with_0600_from_the_start(tmp_path, monkeypatch):
         seen.append((str(path), mode)); return real_open(path, flags, mode, *a, **k)
     monkeypatch.setattr(os, "open", spy)
     st = _store(tmp_path)
-    assert any(p == str(st.path) and m == 0o600 for p, m in seen)  # mode 0600 ngay lúc tạo, không có khoảnh khắc 0644
+    assert any(Path(p).parent == st.path.parent and m == 0o600 for p, m in seen)  # file tạm cũng kín ngay lúc tạo
     assert st.load().access_token == "tok-1"
     if os.name == "posix":  # Windows không có bit quyền POSIX, stat() luôn báo 0666 dù os.open đã nhận 0600
         assert st_.S_IMODE(st.path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("received,message", [
+    ("invalid", "Range không hợp lệ"),
+    ("bytes=2-5", "Range không hợp lệ"),
+    ("bytes=0-100", "Range đi lùi"),
+    ("bytes=0-99", "thiếu xác nhận"),
+])
+def test_youtube_upload_rejects_invalid_or_impossible_acknowledgements(tmp_path, received, message):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"v" * 100)
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+    http.on("PUT", "https://upload.example/session", (308, {"range": received}, b""))
+    with pytest.raises(PlatformError, match=message):
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META)
+
+
+def test_youtube_upload_does_not_loop_forever_when_server_accepts_no_bytes(tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"v" * 100)
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+    http.on("PUT", "https://upload.example/session", (308, {}, b""))
+    with pytest.raises(PlatformError, match="không nhận thêm byte"):
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META)
+    assert len(http.calls) == 4  # init + tối đa 3 chunk không tiến triển
+
+
+def test_youtube_upload_status_probe_recovers_already_completed_upload(tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+
+    def receive(_method, _url, _headers, body):
+        if body: return 503, {}, b""
+        return 201, {}, {"id": "already-completed"}
+
+    http.on("PUT", "https://upload.example/session", receive)
+    result = YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=lambda _seconds: None).upload_video(video, META)
+    assert result.platform_ref == "already-completed" and len(http.calls) == 3
+
+
+def test_youtube_upload_checks_completion_after_last_uncertain_attempt(tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    chunks = []
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+
+    def receive(_method, _url, _headers, body):
+        if body:
+            chunks.append(body)
+            raise PlatformError("response lost")
+        if len(chunks) < 3: return 308, {}, b""
+        return 201, {}, {"id": "committed-on-final-attempt"}
+
+    http.on("PUT", "https://upload.example/session", receive)
+    result = YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=lambda _seconds: None).upload_video(video, META)
+    assert result.platform_ref == "committed-on-final-attempt"
+    assert len(http.calls) == 7
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows prevents atomic replacement of an open file")
+def test_youtube_upload_pins_approved_file_before_initializing_session(tmp_path):
+    video = tmp_path / "approved.mp4"
+    replacement = tmp_path / "replacement.mp4"
+    video.write_bytes(b"approved")
+    replacement.write_bytes(b"injected")
+
+    def initialize(_method, _url, headers, _body):
+        assert headers["X-Upload-Content-Length"] == "8"
+        os.replace(replacement, video)
+        return 200, {"location": "https://upload.example/session"}, b""
+
+    def receive(_method, _url, _headers, body):
+        assert body == b"approved", "atomic replacement during session init cannot substitute uploaded bytes"
+        return 201, {}, {"id": "approved-video"}
+
+    http = FakeHTTP().on("POST", UPLOAD_URL, initialize).on("PUT", "https://upload.example/session", receive)
+    assert YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META).platform_ref == "approved-video"
+
+
+def test_youtube_upload_uses_progress_reported_by_last_transient_probe(tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"0123456789")
+    chunks = []
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+
+    def receive(_method, _url, headers, body):
+        if body:
+            chunks.append(body)
+            if len(chunks) <= 3: raise PlatformError("response lost")
+            assert body == b"56789" and headers["Content-Range"] == "bytes 5-9/10"
+            return 201, {}, {"id": "resumed-after-progress"}
+        return 308, ({"range": "bytes=0-4"} if len(chunks) == 3 else {}), b""
+
+    http.on("PUT", "https://upload.example/session", receive)
+    result = YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=lambda _seconds: None).upload_video(video, META)
+    assert result.platform_ref == "resumed-after-progress" and len(chunks) == 4
+
+
+@pytest.mark.parametrize("status", [403, 503])
+def test_youtube_upload_stops_on_permanent_error_or_repeated_transient_errors(tmp_path, status):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+    http.on("PUT", "https://upload.example/session", lambda _m, _u, _h, body: (status, {}, b"") if body else (308, {}, b""))
+    with pytest.raises(PlatformError) as error:
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=lambda _seconds: None).upload_video(video, META)
+    assert error.value.status == status
+    assert len(http.calls) == (2 if status == 403 else 7)
+
+
+def test_youtube_upload_rejects_empty_or_missing_file_before_initializing(tmp_path):
+    video = tmp_path / "video.mp4"
+    http = FakeHTTP()
+    platform = YouTubePlatform(_store(tmp_path), http, lambda: NOW)
+    with pytest.raises(PlatformError, match="không có file"):
+        platform.upload_video(video, META)
+    video.write_bytes(b"")
+    with pytest.raises(PlatformError, match="file video rỗng"):
+        platform.upload_video(video, META)
+    assert http.calls == []
+
+
+def test_youtube_upload_detects_file_truncated_after_session_started(tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"video")
+
+    def initiate(_m, _u, _h, _body):
+        video.write_bytes(b"")
+        return 200, {"location": "https://upload.example/session"}, b""
+
+    http = FakeHTTP().on("POST", UPLOAD_URL, initiate)
+    with pytest.raises(PlatformError, match="file đã thay đổi"):
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META)
+
+
+@pytest.mark.parametrize("retry_after", ["2", "invalid"])
+def test_youtube_upload_honors_resume_delay_and_rejects_premature_completion(tmp_path, monkeypatch, retry_after):
+    monkeypatch.setattr("studio.platform.UPLOAD_CHUNK_BYTES", 256 * 1024)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"v" * (256 * 1024 + 1))
+    slept = []
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+    http.on("PUT", "https://upload.example/session", (308, {"range": "bytes=0-262143", "retry-after": retry_after}, b""))
+    # Sau chunk đầu, Range không tăng thì giới hạn số lượt để tránh vòng lặp vô hạn.
+    with pytest.raises(PlatformError, match="không nhận thêm byte"):
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=slept.append).upload_video(video, META)
+    assert slept == ([2.0] * 3 if retry_after == "2" else [])
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+    http.on("PUT", "https://upload.example/session", (201, {}, {"id": "premature"}))
+    with pytest.raises(PlatformError, match="trước khi nhận đủ file"):
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META)
 
 
 def test_youtube_retries_5xx_429_and_network_with_backoff_but_not_403(tmp_path):
