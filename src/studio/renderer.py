@@ -376,18 +376,24 @@ class Renderer:
         if prior is not None:
             return [MediaAsset.model_validate(e.payload) for e in prior if e.topic == "media-assets"]
         d = self._dir(spec.video_id) / "thumbnails"; out: list[MediaAsset] = []; notes: dict[str, str] = {}
-        for var in spec.variants:
-            prompt, size = f"{var.prompt} {NO_TEXT}", image_size(self.media.cfg, "16:9")
-            def generate_base(p: Path, prompt: str = prompt, size: str = size) -> MediaResult:
-                return self.media.image.generate(prompt, size, p)
-            base, _ = self.cache.produce({"kind": "thumbnail", "config": self.media.cfg.image, "prompt": prompt, "size": size},
-                                         d / f"{var.variant_id}_base.png",
-                                         generate_base)
-            fin = self.media.video.finish_thumbnail(base.path, d / f"{var.variant_id}.jpg", text=var.overlay_text)
-            notes[var.variant_id] = fin.notes
-            r = MediaResult(fin.path, base.provider, base.model)
-            out.append(self._asset(spec.video_id, "thumbnail", r, 0, prompt_ref=f"thumbnail:{var.variant_id}",
-                                   variant_id=var.variant_id))
-        if out: self._audit("thumbnail.finish", spec.video_id, notes)
-        self._publish(out, "render.thumbnails")
+        d.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".thumbnails-", dir=d) as temp:
+            for var in spec.variants:
+                prompt, size = f"{var.prompt} {NO_TEXT}", image_size(self.media.cfg, "16:9")
+                def generate_base(p: Path, prompt: str = prompt, size: str = size) -> MediaResult:
+                    return self.media.image.generate(prompt, size, p)
+                base, _ = self.cache.produce({"kind": "thumbnail", "config": self.media.cfg.image, "prompt": prompt, "size": size},
+                                             d / f"{var.variant_id}_base.png",
+                                             generate_base)
+                fin = self.media.video.finish_thumbnail(base.path, Path(temp) / f"{var.variant_id}.jpg", text=var.overlay_text)
+                notes[var.variant_id] = fin.notes
+                r = MediaResult(fin.path, base.provider, base.model)
+                out.append(self._asset(spec.video_id, "thumbnail", r, 0, prompt_ref=f"thumbnail:{var.variant_id}",
+                                       variant_id=var.variant_id))
+            # Complete every variant before replacing any published thumbnail.
+            for asset in out:
+                destination = d / f"{asset.variant_id}.jpg"
+                Path(asset.path).replace(destination); asset.path = str(destination)
+            if out: self._audit("thumbnail.finish", spec.video_id, notes)
+            self._publish(out, "render.thumbnails")
         return out

@@ -413,3 +413,99 @@ def test_prepared_output_refuses_damaged_artifact(tmp_path, monkeypatch, damage)
     with pytest.raises(MediaError, match=r'prepared output.*restore'):
         renderer.render(_manifest())
     assert not list(bus.replay('media-assets'))
+
+
+@pytest.mark.parametrize("operation", ["graph-image", "graph-video", "thumbnail", "finish-captions", "finish-music", "finish-both"])
+def test_all_ffmpeg_stages_bound_each_decoder_and_filter(tmp_path, monkeypatch, operation):
+    import subprocess
+
+    from studio.production import finish
+
+    monkeypatch.setattr("studio.media.shutil.which", lambda _: "/fake/ffmpeg")
+    runs = []
+
+    def encode(argv, **kwargs):
+        runs.append(argv)
+        Path(argv[-1]).write_bytes(b"complete encoded media")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    engine = FFmpegAssembler(threads=3, sandbox=SubprocessSandbox(runner=encode))
+    if operation.startswith("graph"):
+        visual = tmp_path / ("visual.mp4" if operation == "graph-video" else "visual.png")
+        engine.assemble([(visual, tmp_path / "voice.wav", 1.0)] * 2, tmp_path / "out.mp4", 10, "160x90")
+    elif operation == "thumbnail":
+        engine.finish_thumbnail(tmp_path / "image.png", tmp_path / "out.jpg")
+    else:
+        video = tmp_path / "out.mp4"; video.write_bytes(b"previous media")
+        captions = tmp_path / "captions.srt"; captions.write_text("1\n00:00:00,000 --> 00:00:01,000\nHello\n")
+        music = tmp_path / "music.wav"; music.write_bytes(b"music")
+        finish(engine, video, captions if operation != "finish-music" else None,
+               music if operation != "finish-captions" else None, "")
+    assert len(runs) == 1
+    argv = runs[0]
+    previous = 0
+    for index, arg in enumerate(argv):
+        if arg != "-i": continue
+        options = argv[previous:index]
+        assert "-threads" in options, f"unbounded decoder: {argv[index + 1]}"
+        assert options[options.index("-threads") + 1] == "3"
+        previous = index + 2
+    output_options = argv[previous:]
+    assert output_options[output_options.index("-threads") + 1] == "3"
+    for option in ("-filter_threads", "-filter_complex_threads"):
+        assert argv[argv.index(option) + 1] == "3"
+
+
+@pytest.mark.parametrize("failure_at", [1, 2, 3])
+def test_thumbnail_encoder_failure_keeps_previous_file(tmp_path, monkeypatch, failure_at):
+    monkeypatch.setattr("studio.media.shutil.which", lambda _: "/fake/ffmpeg")
+    engine = FFmpegAssembler()
+    out = tmp_path / "approved.jpg"; out.write_bytes(b"previous approved thumbnail")
+    calls = []
+
+    def interrupted(args, **kwargs):
+        calls.append(args)
+        Path(args[-1]).write_bytes(b"partial replacement" if len(calls) == failure_at else b"x" * 100)
+        if len(calls) == failure_at: raise MediaError("thumbnail encoder interrupted")
+
+    monkeypatch.setattr(engine, "_run", interrupted)
+    with pytest.raises(MediaError, match="interrupted"):
+        engine.finish_thumbnail(tmp_path / "source.png", out, max_bytes=16)
+    assert len(calls) == failure_at
+    assert out.read_bytes() == b"previous approved thumbnail"
+    assert not list(tmp_path.glob(".studio-*"))
+
+
+def test_thumbnail_batch_failure_preserves_published_variants_and_reuses_cache(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    bus = InMemoryBus()
+    renderer = Renderer(bus, make_media(MediaConfig(output_dir=tmp_path)), tmp_path)
+    spec = ThumbnailSpec(video_id="V1", variants=[
+        ThumbnailVariant(variant_id="A", prompt="old A", overlay_text="A"),
+        ThumbnailVariant(variant_id="B", prompt="old B", overlay_text="B")])
+    renderer.thumbnails(spec)
+    prior = list(bus.replay("media-assets"))
+    files = {e.payload["path"]: Path(e.payload["path"]).read_bytes() for e in prior}
+    spec.variants[0].prompt = "new A"
+    original = renderer.media.video.finish_thumbnail
+    renderer.media.image.generate = Mock(wraps=renderer.media.image.generate)
+
+    def fail_second(src, out, **kwargs):
+        if out.name == "B.jpg":
+            out.write_bytes(b"incomplete B")
+            raise MediaError("second variant interrupted")
+        return original(src, out, **kwargs)
+
+    monkeypatch.setattr(renderer.media.video, "finish_thumbnail", fail_second)
+    with pytest.raises(MediaError, match="second variant"):
+        renderer.thumbnails(spec)
+    assert all(Path(path).read_bytes() == content for path, content in files.items())
+    assert list(bus.replay("media-assets")) == prior
+    assert not list((tmp_path / "V1" / "thumbnails").glob(".thumbnails-*"))
+    assert renderer.media.image.generate.call_count == 1
+    renderer.media.image.generate.reset_mock()
+    monkeypatch.setattr(renderer.media.video, "finish_thumbnail", original)
+    completed = renderer.thumbnails(spec)
+    assert len(completed) == 2 and all(Path(a.path).is_file() for a in completed)
+    assert renderer.media.image.generate.call_count == 0

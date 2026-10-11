@@ -52,6 +52,24 @@ uv run python -m studio.youtube status
 
 Chọn `platform.provider: youtube` trong `media.yaml` sau khi hoàn tất OAuth của tài khoản bạn. Không chạy hai orchestrator trên cùng DB. Khi chạy VPS, giữ loopback và mở qua SSH tunnel; console không được thiết kế để public trực tiếp ra Internet.
 
+## Website → Video, lưu trên ổ C
+
+Trong xưởng thật, mở **Website → Video** (`/#website`), dán link công khai, chọn giới thiệu/hướng dẫn/cả hai, thời lượng mỗi video (20–300 giây), giọng nữ/nam và Full HD hoặc 4K. Mặc định lưu ở `C:\Videos\X-Studio`; mỗi yêu cầu có thư mục riêng với MP4, SRT, poster, kịch bản/nguồn, ảnh chụp, audio và báo cáo kiểm tra. Tiến độ, dừng và tiếp tục nằm ngay trong màn hình; MP4 phát/tải trực tiếp sau khi kiểm tra đạt.
+
+Sau `uv sync --all-packages --locked`, cài Chromium một lần trên **máy chạy console**:
+
+```bash
+uv run playwright install chromium
+# Linux thiếu thư viện hệ thống: dùng lệnh install-deps của Playwright với quyền quản trị thích hợp
+uv run python -m studio.console --db studio.sqlite --port 8765
+```
+
+Luồng này dùng backend `codex` hoặc `claude-code` đã đăng nhập trong `llm.yaml` để viết kịch bản; Edge TTS tạo giọng và mốc phụ đề thật. Cả CLI, Edge TTS và website cần Internet. Không cần API key mới. Cấu hình media của luồng dự án thường vẫn dùng các provider hiện có.
+
+Có thể đặt `STUDIO_WEBSITE_CHROMIUM` (đường dẫn executable Chromium), `STUDIO_WEBSITE_FFMPEG`, `STUDIO_WEBSITE_FFPROBE` và `STUDIO_WEBSITE_FONT` (file font Unicode `.ttf`) nếu các công cụ không ở vị trí mặc định. Trên WSL, thư mục C được ánh xạ `/mnt/c`; trên Windows dùng trực tiếp ổ C. Font Segoe UI lấy từ Windows khi có; Linux dùng DejaVu Sans hoặc font bạn cấu hình.
+
+Video hướng dẫn dựa trên những trang công khai, điều hướng và nội dung đã quan sát; không tự đăng nhập hay thực hiện thanh toán/gửi bài. Trang có CAPTCHA, nội dung cần POST hoặc phần chỉ dành cho thành viên có thể không truy cập được. Nút dừng xử lý ở checkpoint sau bước đang chạy. Video chỉ xuất cục bộ; việc đăng công khai vẫn qua gate của xưởng. Chi tiết: [ADR-0015](docs/adr/0015-website-to-local-video.md).
+
 ## Những gì đã được nâng cấp
 
 - **UI/UX:** tổng quan với việc cần làm tiếp theo, kho ý tưởng có lưu/khôi phục, dự án dạng thẻ hoặc Kanban, tìm kiếm/lọc, brief video dài/ngắn, đọc kịch bản và nguồn, phòng dựng theo cảnh, xem/tải bản cuối/SRT, checklist duyệt và số liệu đã đồng bộ; responsive và không phụ thuộc CDN. Kho ý tưởng lưu trên trình duyệt; dự án sản xuất lưu trong SQLite.
@@ -109,14 +127,14 @@ make verify            # lint/typecheck + coverage cả 3 package + eval replay
 make studio-demo       # kiểm tra workflow offline
 ```
 
-CI Linux cài FFmpeg/font, khóa phiên bản GitHub Actions và chạy cùng lệnh. Coverage yêu cầu 100% dòng cho từng package. Test renderer thực kiểm tra footage, nhạc, phụ đề, frame timing, cache và retry; test HTTP kiểm tra auth, Origin/CSRF và byte-range. Các lỗi retry nhánh, resume sau lỗi render, QC chưa hoàn tất và HTTP range được chặn bằng regression test; xem [ADR-0011](docs/adr/0011-recovery-and-bounded-checkpoints.md) và [ADR-0012](docs/adr/0012-durable-render-outbox-and-disk-budgets.md). Kiểm tra UI desktop/mobile bằng Chromium được ghi tại [VALIDATION.md](docs/VALIDATION.md).
+CI Linux cài FFmpeg/font, khóa phiên bản GitHub Actions và chạy cùng lệnh. Coverage yêu cầu 100% dòng cho từng package. Test renderer thực kiểm tra footage, nhạc, phụ đề, frame timing, cache và retry; test HTTP kiểm tra auth, Origin/CSRF và byte-range. Các lỗi retry nhánh, resume sau lỗi render, QC chưa hoàn tất và HTTP range được chặn bằng regression test; xem [ADR-0011](docs/adr/0011-recovery-and-bounded-checkpoints.md) và [ADR-0012](docs/adr/0012-durable-render-outbox-and-disk-budgets.md). Khởi động/đóng xưởng dọn khóa khi lỗi; ảnh bìa giữ bản cũ khi encode hoặc biến thể sau thất bại; decoder và filter áp dụng cấu hình luồng xử lý — xem [ADR-0014](docs/adr/0014-factory-cleanup-and-thumbnail-staging.md). Kiểm tra UI desktop/mobile bằng Chromium được ghi tại [VALIDATION.md](docs/VALIDATION.md).
 
 - `src/studio/`: factory, console, orchestration, render, QC, provider và YouTube adapter.
 - `src/studio/web/`: HTML/CSS/JavaScript native, đóng gói cùng Python.
 - `agents/`, `skills/`, `topics/`: 14 vai, 24 skill và schema sự kiện; giữ prompt hiện có.
 - `gateway/`, `xagents-core/`: thành viên uv workspace có test/coverage riêng.
-- `tests/`: pytest 951 ca / 64 file.
-- Test: 951 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
-- `docs/adr/`: ADR 0001–0013; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình.
+- `tests/`: pytest 1030 ca / 65 file.
+- Test: 1030 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
+- `docs/adr/`: ADR 0001–0015; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình.
 
 Tham khảo thêm: [kiến trúc nền](docs/architecture.md), [CLI chi tiết](docs/CLI-REFERENCE.md), [CLAUDE.md](CLAUDE.md). Các hướng dẫn cũ về gate được bổ sung bởi policy ủy quyền ở ADR-0010.

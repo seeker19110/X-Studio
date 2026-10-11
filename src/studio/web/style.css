@@ -3570,3 +3570,20 @@ footer b {
     scroll-behavior: auto !important;
   }
 }
+
+.website-layout {display:grid;grid-template-columns:minmax(0, 1.8fr) minmax(240px, 1fr);gap:24px;align-items:start;margin-bottom:36px}
+.website-form label {display:block;margin:18px 0;font-weight:600}
+.website-form input,.website-form select,.website-form textarea {width:100%;min-width:0;box-sizing:border-box;margin-top:8px}
+.website-form .form-row label {margin-bottom:0}
+.website-note ol {padding-left:22px;line-height:1.8}
+.website-note p {line-height:1.7;color:var(--muted)}
+.website-jobs {display:grid;gap:20px}
+.website-job-heading {display:flex;justify-content:space-between;gap:16px;align-items:start}
+.website-job h3 {overflow-wrap:anywhere;margin-top:14px}
+.website-job progress {width:100%;height:10px;accent-color:#da7051;border:0;margin-top:14px}
+.website-path {overflow-wrap:anywhere;color:var(--muted);font-size:12px}
+.website-results {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:20px}
+.website-results video {width:100%;aspect-ratio:16/9;border-radius:12px;background:#091c2e}
+.website-downloads {display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-top:12px;font-size:12px}
+@media(max-width:1000px){.website-layout{grid-template-columns:1fr}.website-note{display:none}}
+@media(max-width:600px){.website-job-heading{flex-direction:column}.website-layout{gap:16px}.website-form .button{width:100%}}
