@@ -1,5 +1,64 @@
 # Xác minh bản nâng cấp factory
 
+## Audit và hoàn thiện toàn workspace (2026-10-11)
+
+Đã lấy main `0dc1d81606c38b32cdf3bd7b29e76a0e9c4047a5` từ GitHub vào workspace,
+kiểm tra lại remote ở cuối lượt và hoàn thiện trên nhánh local `codex/audit-hardening`.
+Phạm vi gồm Studio, Gateway, xagents-core và toàn bộ thay đổi dashboard/playbook đang có.
+Không đổi prompt agent hoặc schema topic; không gọi provider trả phí hay đăng YouTube thật.
+
+Các lỗi được tái hiện bằng regression trước khi sửa:
+
+| Phạm vi | Kết quả sửa |
+|---|---|
+| Gate và policy | Quyết định mới nhất chi phối approval; gate đang mở không dùng approval cũ. Policy `production` chỉ duyệt plan; `publish` duyệt plan/publish; replies/escalation vẫn cần người. Signature Unicode/JSON hỏng bị từ chối. |
+| Gateway và console | Chặn domain giả loopback như `127.attacker.example` và authority có hậu tố sai. Bearer/cookie/login Unicode không gây 500. Token Gateway/YouTube ghi qua file tạm ngẫu nhiên 0600 và replace nguyên tử; lỗi refresh 5xx không đánh dấu credential hỏng. |
+| Workflow | Đóng connection SQLite sau mỗi transaction. Kiểm tra gate command trước enqueue và báo lỗi khi gate đã hết hiệu lực. Checkpoint từng reply đã thành công giúp retry/restart bỏ qua các reply đó. Fact review theo chương đọc budget từ brief bền vững. |
+| Render và QC | Staging giữ bản đã publish khi encode/finishing thất bại. Chặn scene ID trùng, order thiếu/trùng, locked asset khác video/cảnh/checksum và cut-list sai phiên bản/action. JSON probe hỏng, duration không hữu hạn/không dương hoặc final thiếu hình bị QC chặn. |
+| YouTube upload | Gửi từng chunk tối đa 8 MiB, dùng offset server xác nhận và status probe sau timeout/5xx. Mở file trước POST, `fstat` và đọc cùng descriptor. Xét tiến triển của Range trước giới hạn retry. HTTP giả kiểm cả thay file nguyên tử và probe thứ ba có tiến triển. |
+| Dashboard và brief | Giữ audience và hook/message/tone qua boundaries, hợp nhất giới hạn an toàn; manifest thực tế theo 16:9/9:16 và ngôn ngữ yêu cầu. Metadata và nhãn ngôn ngữ caption theo cùng yêu cầu, cả SEO retry. Kế hoạch bị từ chối trả `planning_error`, ý tưởng có thể thử lại. Polling giữ draft cấu hình và lý do duyệt; checklist thế hệ mới xóa draft cũ. |
+
+Nâng dependency khóa `multidict` từ 6.8.0 lên 6.9.1 để xử lý
+[CVE-2026-104874 / GHSA-54p9-h82j-f925](https://github.com/aio-libs/multidict/security/advisories/GHSA-54p9-h82j-f925).
+`pip-audit` trên export **toàn workspace và all extras** sau nâng cấp không phát hiện
+vulnerability đã biết. Đây là kiểm tra advisory hiện có, không chứng minh không còn lỗi bảo mật.
+
+Môi trường: Linux/WSL, Python **3.13.15**, uv **0.12.9**, FFmpeg
+**n8.1.3-17-gc389840894-20261010**, font DejaVu. FFmpeg và Chromium là công cụ
+kiểm chứng cục bộ ngoài repo, không trở thành dependency runtime mới.
+
+Lệnh `COVERAGE_FILE=/tmp/xstudio-audit-complete.coverage PATH=/tmp/xstudio-audit-tools/bin:$PATH make verify`
+đạt trên mã cuối. Coverage dùng file riêng để tránh xung đột với các lượt pytest đồng thời.
+
+| Kiểm tra | Kết quả |
+|---|---|
+| Studio | **752 passed**, 100% dòng, 4.743 dòng thực thi; 61 file test |
+| Gateway | **273 passed**, 100% dòng, 1.617 dòng thực thi |
+| xagents-core | **478 passed**, 100% dòng và nhánh; 2.285 dòng, 638 nhánh |
+| Ruff và mypy | Cả ba package đạt |
+| Eval replay strict | **28/28** ca ghi sẵn đạt, 14 vai; không gọi model live |
+| JavaScript | `node --check` đạt cho app và hai script smoke |
+| Dependency | `uv sync --all-packages --locked --check` không cần thay đổi; `pip-audit` all extras không có advisory đã biết |
+| Chromium console | 1440×1000 và 390×844: tạo ba dự án, xem review cập nhật trong dialog đang mở, đổi cấu hình, draft duyệt và đổi thế hệ checklist; 0 lỗi JavaScript, không tràn ngang |
+| Chromium dashboard | 1440×1080 và 390×844: lưu/reload/chuyển đổi/undo ý tưởng, long+short, audience/hook/message và `metadata.language=en`, Kanban/search, script/scenes/review, kế hoạch thiếu budget có thể thử lại, draft cấu hình trước/sau khi gửi; sáu màn hình mobile không tràn ngang, 0 lỗi JavaScript |
+
+Tổng **1.503 test Python**, không có test bị skip. Gateway còn một RuntimeWarning
+`runpy` đã có trước; không có ResourceWarning từ CommandStore.
+Script tái chạy: [console-smoke.cjs](../scripts/console-smoke.cjs) và
+[dashboard-smoke.cjs](../scripts/dashboard-smoke.cjs), chỉ dùng server `--demo` và DB riêng.
+Ảnh console ở [screenshots](screenshots/); ảnh dashboard hiện tại cũng được lưu tại đó.
+Smoke test cố ý tạo kế hoạch thiếu budget để kiểm tra thông báo lỗi và khả năng thử lại.
+
+ADR-0008/0011 và tài liệu Gateway đã cập nhật theo hành vi cuối. Thông tin quota YouTube
+trong ADR-0008 được đối chiếu lại với tài liệu chính thức ngày 2026-10-11.
+
+Giới hạn còn lại: chưa kiểm chứng end-to-end trên Windows, video 12 giờ, provider live,
+chất lượng nội dung/giọng/ảnh thật hoặc upload/lịch phát YouTube thật. Cache chưa tự giới hạn
+tổng dung lượng. Nhiều sidecar và publish bus chưa cùng một transaction; hard kill giữa
+hành động bên ngoài và checkpoint vẫn có thể lặp upload/reply. Upload resumable được
+kiểm bằng HTTP giả, chưa có phiên upload được lưu để tiếp tục qua restart toàn tiến trình.
+100% coverage và demo không thay thế các phạm vi xác minh đó.
+
 ## Bổ sung: khôi phục và giới hạn tài nguyên (2026-10-11)
 
 Nền tảng lần này: Linux, Python 3.12.14, FFmpeg 7.1.5; main đầu vào

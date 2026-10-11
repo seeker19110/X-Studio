@@ -8,11 +8,13 @@ thiếu quyền thì để 0 và nói rõ trong evidence.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import random
 import re
 import stat
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -21,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, BinaryIO, Protocol
 
 from .events import MetadataPackage, PerformanceSnapshot, RetentionPoint
 from .media import THUMBNAIL_MAX_BYTES, MediaConfig, load_media_config
@@ -37,6 +39,7 @@ TIMEOUT = 120.0
 MAX_ATTEMPTS = 3  # 5xx / 429 / lỗi mạng: thử lại với backoff mũ + jitter; 4xx khác (403 quota, 400...) không thử lại
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 BACKOFF_BASE_S = 0.5
+UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024  # 32 × 256 KiB, đúng hạn mức chunk của giao thức YouTube
 # reason trong error.errors[].reason của Google API cho biết 403 là hết quota hay thiếu quyền — xử lý khác nhau
 QUOTA_REASONS = frozenset({"quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded"})
 
@@ -217,13 +220,18 @@ class TokenStore:
         return Tokens(**{k: d.get(k, "" if k != "scopes" else []) for k in Tokens.__dataclass_fields__})
 
     def save(self, t: Tokens) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Tạo file với mode 0600 ngay từ đầu (không có khoảnh khắc 0644 rồi mới chmod); file cũ thì chmod lại cho chắc.
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(t.__dict__, ensure_ascii=False, indent=2))
-        try: os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
-        except OSError: pass
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent)
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(t.__dict__, ensure_ascii=False, indent=2))
+            with contextlib.suppress(OSError):
+                os.chmod(temp_path, stat.S_IRUSR | stat.S_IWUSR)
+            os.replace(temp_path, self.path)
+        finally:
+            with contextlib.suppress(OSError):
+                temp_path.unlink(missing_ok=True)
 
     def status(self) -> dict[str, Any]:
         if not self.path.exists(): return {"path": str(self.path), "logged_in": False}
@@ -286,11 +294,11 @@ class YouTubePlatform:
         self._tokens = t; return t.access_token
 
     def _call(self, method: str, url: str, body: bytes | None = None, headers: dict[str, str] | None = None,
-              ok: tuple[int, ...] = (200, 201)) -> tuple[int, dict[str, str], bytes]:
+              ok: tuple[int, ...] = (200, 201), *, attempts: int = MAX_ATTEMPTS) -> tuple[int, dict[str, str], bytes]:
         h = {"Authorization": f"Bearer {self._token()}", **(headers or {})}
         refreshed = False; err: PlatformError | None = None
         st, raw = 0, b""; rh: dict[str, str] = {}
-        for attempt in range(MAX_ATTEMPTS):
+        for attempt in range(attempts):
             try:
                 st, rh, raw = self.fetcher(method, url, h, body)
             except PlatformError as e:  # lỗi mạng/timeout từ fetcher → thử lại
@@ -304,7 +312,7 @@ class YouTubePlatform:
                 if st not in RETRY_STATUSES:
                     break
                 err = PlatformError(f"YouTube HTTP {st} tạm thời {method} {url.split('?')[0].rsplit('/', 1)[-1]}", status=st)
-            if attempt + 1 < MAX_ATTEMPTS:  # backoff mũ + jitter: 0.5s, 1s (+ ≤ 0.25s ngẫu nhiên)
+            if attempt + 1 < attempts:  # backoff mũ + jitter: 0.5s, 1s (+ ≤ 0.25s ngẫu nhiên)
                 self.sleep(BACKOFF_BASE_S * (2**attempt) + random.uniform(0, 0.25))
         else:
             assert err is not None
@@ -332,26 +340,72 @@ class YouTubePlatform:
 
     # --- upload / thumbnail / lịch ---
 
+    def _upload_chunks(self, video: BinaryIO, location: str, size: int) -> tuple[int, dict[str, str], bytes]:
+        """Gửi ≤ 8 MiB/lượt; sau lỗi vận chuyển hỏi offset thật, không đoán chunk đã được nhận hay chưa."""
+        offset, failures = 0, 0
+        while True:
+            video.seek(offset)
+            data = video.read(min(UPLOAD_CHUNK_BYTES, size - offset))
+            if not data: raise PlatformError("upload: file đã thay đổi hoặc bị cắt ngắn trong khi gửi")
+            end = offset + len(data)
+            last_error: PlatformError | None = None
+            try:
+                result = self._call("PUT", location, data,
+                                    {"Content-Type": "video/*", "Content-Length": str(len(data)),
+                                     "Content-Range": f"bytes {offset}-{end - 1}/{size}"},
+                                    ok=(200, 201, 308), attempts=1)
+            except PlatformError as error:
+                if error.status is not None and error.status not in RETRY_STATUSES: raise
+                last_error = error
+                failures += 1
+                self.sleep(BACKOFF_BASE_S * (2 ** (failures - 1)) + random.uniform(0, 0.25))
+                result = self._call("PUT", location, b"", {"Content-Length": "0", "Content-Range": f"bytes */{size}"},
+                                    ok=(200, 201, 308))
+            status, headers, _raw = result
+            if status != 308:
+                if end < size: raise PlatformError("upload: máy chủ báo hoàn tất trước khi nhận đủ file", status=status)
+                return result
+            received = headers.get("range")
+            match = re.fullmatch(r"bytes=0-([0-9]+)", received) if received else None
+            if received and match is None: raise PlatformError("upload: Range không hợp lệ từ máy chủ", status=308)
+            next_offset = int(match.group(1)) + 1 if match else 0
+            if not offset <= next_offset <= end:
+                raise PlatformError("upload: Range đi lùi hoặc vượt số byte đã gửi", status=308)
+            if next_offset == size: raise PlatformError("upload: thiếu xác nhận hoàn tất sau byte cuối", status=308)
+            if next_offset == offset:
+                if last_error is None: failures += 1
+                if failures >= MAX_ATTEMPTS:
+                    if last_error is not None: raise last_error
+                    raise PlatformError("upload: máy chủ không nhận thêm byte sau 3 lượt", status=308)
+            else:
+                failures = 0
+            if retry_after := headers.get("retry-after"):
+                with contextlib.suppress(ValueError):
+                    self.sleep(max(0, float(retry_after)))
+            offset = next_offset
+
     def upload_video(self, path: Path, metadata: MetadataPackage, privacy: str = "private", publish_at: str | None = None,
                      made_for_kids: bool = False) -> UploadResult:
         path = Path(path)
         if not path.exists(): raise PlatformError(f"không có file {path}")
-        size = path.stat().st_size
-        desc = metadata.description
-        if metadata.chapters: desc += "\n\n" + "\n".join(f"{c.time} {c.label}" for c in metadata.chapters)
-        snippet: dict[str, Any] = {"title": metadata.title[:100], "description": desc[:5000], "tags": metadata.tags[:50],
-                                   "defaultLanguage": metadata.language, "defaultAudioLanguage": metadata.language}
-        if metadata.category.isdigit(): snippet["categoryId"] = metadata.category
-        status: dict[str, Any] = {"privacyStatus": "private" if publish_at else privacy, "selfDeclaredMadeForKids": made_for_kids}
-        if publish_at: status["publishAt"] = publish_at
-        st1, rh, _ = self._call("POST", f"{UPLOAD_URL}?uploadType=resumable&part=snippet,status",
-                                json.dumps({"snippet": snippet, "status": status}).encode(),
-                                {"Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": "video/*",
-                                 "X-Upload-Content-Length": str(size)})
-        loc = rh.get("location")
-        if not loc: raise PlatformError(f"upload: không có Location sau bước 1 (HTTP {st1})", status=st1)
-        data = path.read_bytes()
-        st2, _, raw = self._call("PUT", loc, data, {"Content-Type": "video/*", "Content-Length": str(size)})
+        # Ghim file trước khi POST mở phiên: thay tên file nguyên tử trong lúc chờ HTTP không được đổi nội dung gửi.
+        with path.open("rb") as video:
+            size = os.fstat(video.fileno()).st_size
+            if not size: raise PlatformError("upload: file video rỗng")
+            desc = metadata.description
+            if metadata.chapters: desc += "\n\n" + "\n".join(f"{c.time} {c.label}" for c in metadata.chapters)
+            snippet: dict[str, Any] = {"title": metadata.title[:100], "description": desc[:5000], "tags": metadata.tags[:50],
+                                       "defaultLanguage": metadata.language, "defaultAudioLanguage": metadata.language}
+            if metadata.category.isdigit(): snippet["categoryId"] = metadata.category
+            status: dict[str, Any] = {"privacyStatus": "private" if publish_at else privacy, "selfDeclaredMadeForKids": made_for_kids}
+            if publish_at: status["publishAt"] = publish_at
+            st1, rh, _ = self._call("POST", f"{UPLOAD_URL}?uploadType=resumable&part=snippet,status",
+                                    json.dumps({"snippet": snippet, "status": status}).encode(),
+                                    {"Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": "video/*",
+                                     "X-Upload-Content-Length": str(size)})
+            loc = rh.get("location")
+            if not loc: raise PlatformError(f"upload: không có Location sau bước 1 (HTTP {st1})", status=st1)
+            st2, _, raw = self._upload_chunks(video, loc, size)
         v = json.loads(raw) if raw.strip() else {}
         vid = v.get("id")
         if not vid: raise PlatformError(f"upload: phản hồi không có id (HTTP {st2})", status=st2)

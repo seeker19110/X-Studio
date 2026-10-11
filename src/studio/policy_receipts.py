@@ -31,5 +31,7 @@ def sign(data: dict[str, Any]) -> dict[str, Any]:
 def verify(data: dict[str, Any]) -> bool:
     signature = data.get("signature")
     if not isinstance(signature, str) or not key_file().is_file(): return False
-    expected = hmac.new(key_file().read_bytes(), _message(data), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(signature, expected)
+    try: message = _message(data)
+    except (ValueError, TypeError): return False
+    expected = hmac.new(key_file().read_bytes(), message, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature.encode("utf-8", errors="surrogatepass"), expected.encode("ascii"))

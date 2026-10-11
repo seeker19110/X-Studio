@@ -47,59 +47,106 @@ const path = require("node:path");
     );
     if (!initial.demo)
       throw new Error("This smoke must only run against --demo");
-    for (const title of [
+    for (const [index, title] of [
       "Đại dương: thế giới chưa được kể",
       "Cỗ máy học hỏi mỗi ngày",
       "Những con phố thức giấc",
-    ]) {
+    ].entries()) {
       await page.locator("#new-project").click();
       await page.locator("#create-form [name=title]").fill(title);
       await page.locator("#create-form button[type=submit]").click();
       await page.waitForFunction(
         () => !document.querySelector("#create-dialog").open,
       );
+      if (index === 0) {
+        await page.waitForFunction(
+          (count) => document.querySelectorAll("#project-grid .project-card").length > count,
+          initial.projects.length,
+        );
+        await page.locator("#project-grid .project-card").last().click();
+        if (await page.locator('[data-detail-tab="review"]').count())
+          await page.locator('[data-detail-tab="review"]').click();
+        await page.waitForFunction(
+          () => {
+            const summary = document.querySelector(".review-summary");
+            return summary && !/chờ kiểm tra|Chưa kiểm tra/.test(summary.textContent);
+          },
+          undefined,
+          { timeout: 20000 },
+        );
+        await page.locator("[data-close=detail-dialog]").click();
+      }
     }
     await page.waitForFunction(
-      async () => {
+      async (expected) => {
         const s = await fetch("/api/state").then((r) => r.json());
         return (
-          s.projects.length >= 3 &&
+          s.projects.length >= expected &&
           s.projects.every((p) => Object.keys(p.reviews).length === 3)
         );
       },
-      undefined,
+      initial.projects.length + 3,
       { timeout: 60000 },
     );
     await page.waitForFunction(
-      () => document.querySelectorAll(".project-card").length >= 3,
+      () => document.querySelectorAll("#project-grid .project-card").length >= 3,
     );
-    await page.locator("[data-view=settings]").click();
-    await page.locator("#settings-form [name=threads]").fill("3");
+    await page.locator("nav [data-view=settings]").click();
+    const threads = initial.threads === 3 ? 4 : 3;
+    await page.locator("#settings-form [name=threads]").fill(String(threads));
+    await page.locator("#breadcrumb").click();
+    await page.evaluate(() => refresh());
+    if ((await page.locator("#settings-form [name=threads]").inputValue()) !== String(threads))
+      throw new Error("Polling discarded the unsaved settings draft");
     await page.locator("#settings-form button").click();
     await page.waitForFunction(
-      async () =>
-        (await fetch("/api/state").then((r) => r.json())).threads === 3,
+      async (expected) =>
+        (await fetch("/api/state").then((r) => r.json())).threads === expected,
+      threads,
     );
     await page.evaluate(() => refresh());
     await page.screenshot({
       path: path.join(output, "studio-settings.png"),
       fullPage: true,
     });
-    await page.locator("[data-view=projects]").click();
+    await page.locator("nav [data-view=projects]").click();
     await page.locator("#toast").waitFor({ state: "hidden" });
     await page.screenshot({
       path: path.join(output, "studio-desktop.png"),
       fullPage: true,
     });
-    await page.locator(".project-card").first().click();
+    await page.locator("#project-grid .project-card").first().click();
     await page.screenshot({
       path: path.join(output, "studio-detail.png"),
       fullPage: true,
     });
     await page.locator("[data-close=detail-dialog]").click();
-    await page.locator("[data-view=review]").click();
+    await page.locator("nav [data-view=review]").click();
+    const reason = page.locator("#gate-list input").first();
+    await reason.fill("Giữ lại để kiểm tra nguồn tư liệu");
+    await page.locator("#breadcrumb").click();
+    await page.evaluate(() => refresh());
+    if ((await reason.inputValue()) !== "Giữ lại để kiểm tra nguồn tư liệu")
+      throw new Error("Polling discarded the gate decision draft");
+    await reason.focus();
+    await page.evaluate(() => refresh());
+    if (!(await reason.evaluate((input) => document.activeElement === input)))
+      throw new Error("Polling discarded focus on the gate decision draft");
+    await page.route("**/api/state", async (route) => {
+      const response = await route.fetch();
+      const updated = await response.json();
+      updated.gates[0].request_at += ":new-generation";
+      updated.gates[0].checklist = ["Yêu cầu mới cần đọc lại trước khi duyệt"];
+      await route.fulfill({ response, json: updated });
+    });
+    await page.evaluate(() => refresh());
+    if ((await reason.inputValue()) !== "" ||
+        !(await page.locator("#gate-list").textContent()).includes("Yêu cầu mới cần đọc lại"))
+      throw new Error("A revised gate retained the previous decision draft");
+    await page.unroute("**/api/state");
+    await page.evaluate(() => refresh());
     await page.locator("[data-decision=hold]").first().click();
-    await page.locator("[data-view=projects]").click();
+    await page.locator("nav [data-view=projects]").click();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({
       path: path.join(output, "studio-mobile.png"),
@@ -114,7 +161,7 @@ const path = require("node:path");
       JSON.stringify({
         errors,
         overflow,
-        projects: await page.locator(".project-card").count(),
+        projects: await page.locator("#project-grid .project-card").count(),
       }),
     );
   } finally {

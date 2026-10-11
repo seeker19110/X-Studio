@@ -20,8 +20,9 @@ Ranh giới tin cậy vì thế là **máy**, không phải **kết nối**.
 
 - Đường dẫn: `$XAGENTS_HOME/auth/antigravity_tokens.json`, mặc định `~/.x-agents/` (`auth.py:81-86,95-96`). Không có
   đường dẫn nào trong repo; `.gitignore:43-44` chỉ bỏ `gateway/.venv/` vì không có gì khác để bỏ.
-- Ghi bằng `_atomic_write` (`auth.py:220-235`): thư mục cha `mkdir(mode=0o700)`, file tạm mở bằng
-  `os.open(..., O_WRONLY|O_CREAT|O_TRUNC, 0o600)` **ngay từ lúc tạo** — không có khoảng hở world-readable —
+- Ghi bằng `_atomic_write`: thư mục cha `mkdir(mode=0o700)`, file tạm tên ngẫu nhiên được tạo bằng
+  `tempfile.mkstemp` (`O_EXCL`, mode `0o600`) trong cùng thư mục **ngay từ lúc tạo** — không có khoảng hở
+  world-readable và không mở theo symlink của tên `.tmp` có sẵn —
   rồi `os.chmod(S_IRUSR|S_IWUSR)` khi không phải Windows, và `os.replace` vào chỗ. Lỗi giữa chừng thì xoá file
   tạm (`auth.py:232-235`). Test đo quyền 0600/0700 chỉ chạy trên POSIX (`tests/test_account_pool.py:205,301`);
   nhánh chmod vẫn được phủ trên Windows bằng monkeypatch `os.name` (`tests/test_account_pool.py:307-312`).
@@ -81,3 +82,5 @@ Mọi test dùng `httpx.MockTransport`/`aiohttp TestClient`/monkeypatch `urllib`
 - Đổi trường trả về của `/auth/status` hay dòng log là đổi bề mặt lộ dữ liệu: rà bảng §2 trước khi thêm trường.
 - Không có audit ai gọi gateway: bearer không định danh, log chỉ có tài khoản *phục vụ*, không có tài khoản *gọi*.
   Cần quy trách nhiệm theo phiên thì phải đọc audit-log của công ty, không phải log gateway.
+- Khi bind loopback, middleware kiểm toàn bộ `Host` và `Origin` bằng IP loopback thật hoặc `localhost`.
+  Tên miền bắt đầu bằng `127.` và chuỗi có hậu tố sau `[::1]` không được coi là loopback; không phân giải DNS.

@@ -599,6 +599,14 @@ class Orchestrator:
                                      chapter_minutes=float(self.renderer.media.cfg.production.get("chapter_minutes", 8)))
             outs = []
             for i, p in enumerate(g.payloads):
+                if r.topic_out in {"scene-manifests", "metadata-packages"}:
+                    brief = self.desk.briefs.get(str(p.get("video_id") or env.key))
+                    if brief:
+                        if r.topic_out == "scene-manifests": p["aspect"] = "9:16" if brief.format == "short" else "16:9"
+                        channel = self.latest("channel-briefs", brief.channel_id)
+                        if channel and (language := channel.payload.get("language")):
+                            if r.topic_out == "metadata-packages": p["language"] = language
+                            else: p["voice"] = {**p.get("voice", {}), "language": language}
                 output_key = key_for(r.topic_out, p, env.key)
                 # một lần gọi model → token chỉ tính ở payload đầu, kẻo supervisor cộng ngân sách gấp N lần
                 outs.append(self.runner.publish(r.agent, env, r.topic_out, p, key=output_key, tokens=g.tokens if i == 0 else 0, model=g.model,
@@ -755,13 +763,18 @@ class Orchestrator:
         except TransientError as e:
             self._transient("channel-strategist", e, res); return
         except (RunnerError, LLMError) as e:
-            res.actions.append("plan!failed"); self._audit("agent_failed", {"agent": "channel-strategist", "error": str(e)[:300]}); return
+            res.actions.append("plan!failed")
+            self._audit("agent_failed", {"agent": "channel-strategist", "error": str(e)[:300]}, channel_id=str(cid)); return
         requested = (_latest_payload(self, "channel-briefs", str(cid)) or {}).get("requested_video")
         if requested and g.payloads:
             g.payloads = g.payloads[:1]
             g.payloads[0].update(working_title=requested["title"], target_minutes=requested["target_minutes"],
                                  format=requested["format"], budget_tokens=requested["budget_tokens"],
-                                 video_id=f"{cid}-V1", channel_id=cid)
+                                 video_id=f"{cid}-V1", channel_id=cid, audience=requested["audience"])
+            boundaries = [*requested.get("boundaries", []), *g.payloads[0].get("boundaries", [])]
+            if requested.get("language"):
+                boundaries.append(f"Ngôn ngữ kịch bản và lời đọc: {requested['language']}.")
+            g.payloads[0]["boundaries"] = list(dict.fromkeys(boundaries))
         for b in g.payloads: b.setdefault("channel_id", cid)
         bad = self.desk.check_plan(g.payloads)
         self.runner.write_context("channel-strategist", env, g.context_writes)
@@ -871,10 +884,16 @@ class Orchestrator:
             return
         if sid in self.reply_batches:
             if dec == "approve":
-                for dr in self.reply_batches[sid]:
+                for index, dr in enumerate(self.reply_batches[sid]):
                     if dr.get("requires_human"): continue
+                    key = f"reply:{env.event_id}:{index}"
+                    if key in self.once: continue
                     e = Envelope(topic="reply-drafts", key=dr["video_id"], actor="human", payload=dr)
                     self._post_reply(e, res, approved_by=str(d.get("by")))
+                    # Retrying the gate event must not repost earlier public replies.
+                    # Keep the checkpoint per decision, so a later approved batch is independent.
+                    if res.transient: break
+                    self._remember(key)
             return
         if sid.startswith("ESC-"):
             vid = sid[4:]

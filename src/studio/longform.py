@@ -57,6 +57,11 @@ def generate_partitioned(runner: AgentRunner, agent: str, inp: Envelope, topic: 
             parts.append((payload, context))
     if not parts:
         return runner.generate(agent, inp, topic, many=many, extra=extra or None)
+    # Script payloads do not carry the project's budget. Resolve the durable brief
+    # before starting more paid chapter calls, including partitioned fact reviews.
+    if "budget_tokens" not in brief:
+        stored = list(runner.bus.replay("video-briefs", brief.get("video_id") or inp.key))
+        if stored: brief = {**stored[-1].payload, **brief}
     root.mkdir(parents=True, exist_ok=True)
     results: list[dict] = []; writes: list[dict] = []; models: set[str] = set()
     spent = sum(e.payload.get("tokens", 0) for e in runner.bus.replay("audit-log")

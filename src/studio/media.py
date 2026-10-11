@@ -31,6 +31,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import math
 import os
 import re
 import shlex
@@ -842,9 +843,13 @@ class FFmpegAssembler:
         """Một lệnh ffmpeg cho cả video: mỗi cảnh là ảnh có chuyển động + giọng đọc, nối bằng `xfade`/`acrossfade`,
         rồi chuẩn hoá âm lượng về -14 LUFS. Phần chồng lấn của chuyển cảnh nằm trọn trong đoạn im lặng đệm cuối cảnh
         (`transition_s ≤ tail_pad_s`), nên video và tiếng luôn khớp nhau và không câu nào bị chồng."""
+        if not segments or fps < 1:
+            raise MediaError("graph render requires scenes and positive fps")
         out.parent.mkdir(parents=True, exist_ok=True)
         w, h = (int(x) for x in resolution.lower().split("x"))
         durs = [round((probe_duration(a) or d) + self.tail_pad_s, 3) for _, a, d in segments]
+        if any(not math.isfinite(d) or d <= 0 for d in durs):
+            raise MediaError("graph render requires finite positive scene durations")
         t = self.transition_s if len(segments) > 1 else 0.0
         args: list[str] = []
         for (img, audio, _), d in zip(segments, durs, strict=True):
@@ -875,10 +880,13 @@ class FFmpegAssembler:
         aout = alast
         if self.loudness_lufs is not None:
             chains.append(f"[{alast}]loudnorm=I={self.loudness_lufs}:TP={TRUE_PEAK_DB}:LRA=11[aout]"); aout = "aout"
-        self._run([*args, "-filter_complex_threads", str(self.threads), "-filter_complex", ";".join(chains), "-map", f"[{vlast}]", "-map", f"[{aout}]",
-                   "-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p",
-                   "-threads", str(self.threads), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart",
-                   str(out.resolve())], cwd=out.parent)
+        with tempfile.TemporaryDirectory(prefix=".assemble-", dir=out.parent) as temp:
+            target = Path(temp) / "complete.mp4"
+            self._run([*args, "-filter_complex_threads", str(self.threads), "-filter_complex", ";".join(chains), "-map", f"[{vlast}]", "-map", f"[{aout}]",
+                       "-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p",
+                       "-threads", str(self.threads), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart",
+                       str(target.resolve())], cwd=out.parent)
+            target.replace(out)
         total = round(sum(durs) - t * (len(durs) - 1), 2)
         loud = f" {self.loudness_lufs} LUFS" if self.loudness_lufs is not None else ""
         return MediaResult(out, "ffmpeg", "libx264", total,

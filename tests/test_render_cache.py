@@ -97,6 +97,45 @@ def test_healthy_locked_scene_skips_paid_generation(tmp_path):
     assert r.media.tts.synthesize.call_count==1 and r.media.image.generate.call_count==1
 
 
+@pytest.mark.parametrize("reuse", ["unregistered", "other-video", "other-scene"])
+def test_locked_assets_require_their_own_scene_provenance(tmp_path, reuse):
+    r = renderer(tmp_path); m = manifest(); r.render(m)
+    m.scenes[0].locked = True
+    if reuse == "unregistered":
+        unrelated = tmp_path / "unrelated.png"; unrelated.write_bytes(b"private local file")
+        m.scenes[0].asset_refs["scene_image"] = str(unrelated)
+    elif reuse == "other-video":
+        m.video_id = "OTHER"
+    else:
+        m.scenes[0].scene_id = "OTHER"
+    with pytest.raises(MediaError, match="provenance"):
+        r.render(m)
+    assert r.media.tts.synthesize.call_count == 1 and r.media.image.generate.call_count == 1
+
+
+@pytest.mark.parametrize("change", [{"video_id": "OTHER"}, {"manifest_version": 2}])
+def test_cutlist_cannot_repair_a_different_video_or_manifest_version(tmp_path, change):
+    r = renderer(tmp_path); m = manifest(); r.render(m)
+    params = {"video_id": m.video_id, "manifest_version": m.version, **change}
+    with pytest.raises(MediaError, match="manifest"):
+        r.apply_cutlist(m, CutList(**params, decision="repair", repairs=[
+            Repair(scene_id="S1", action="regenerate_both", reason="fix")]))
+    assert r.media.tts.synthesize.call_count == 1 and r.media.image.generate.call_count == 1
+
+
+@pytest.mark.parametrize("repair", [
+    {"action": "regenerate_image", "new_narration": "Changed speech"},
+    {"action": "regenerate_audio", "new_visual_prompt": "Changed image"},
+    {"action": "replace_asset"},
+])
+def test_cutlist_fields_cannot_desynchronize_manifest_and_assets(tmp_path, repair):
+    r = renderer(tmp_path); m = manifest(); r.render(m)
+    with pytest.raises(MediaError, match="repair"):
+        r.apply_cutlist(m, CutList(video_id=m.video_id, manifest_version=m.version, decision="repair", repairs=[
+            Repair(scene_id="S1", reason="fix", **repair)]))
+    assert r.media.tts.synthesize.call_count == 1 and r.media.image.generate.call_count == 1
+
+
 def test_immutable_cache_result_avoids_duplicate_and_repairs_corruption(tmp_path):
     from studio.media import MediaResult
     from studio.render_cache import RenderCache

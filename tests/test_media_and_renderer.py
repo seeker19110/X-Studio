@@ -1,6 +1,7 @@
 import json
 import shutil
 from itertools import pairwise
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +10,62 @@ from studio.events import CutList, Repair, Scene, SceneManifest, ThumbnailSpec, 
 from studio.media import FFmpegAssembler, MediaConfig, MediaError, make_media
 from studio.renderer import Renderer
 from studio.sandbox import SubprocessSandbox
+
+
+def test_graph_render_commits_only_a_complete_output(tmp_path, monkeypatch):
+    monkeypatch.setattr("studio.media.shutil.which", lambda _: "/fake/ffmpeg")
+    monkeypatch.setattr("studio.media.probe_duration", lambda _: 1.0)
+    engine = FFmpegAssembler()
+    out = tmp_path / "final.mp4"
+    out.write_bytes(b"approved video")
+
+    def interrupted(args, **kwargs):
+        Path(args[-1]).write_bytes(b"incomplete replacement")
+        raise MediaError("encoder interrupted")
+
+    monkeypatch.setattr(engine, "_run", interrupted)
+    with pytest.raises(MediaError, match="interrupted"):
+        engine.assemble([(tmp_path / "image.png", tmp_path / "audio.wav", 1.0)], out, 30, "160x90")
+    assert out.read_bytes() == b"approved video"
+    assert not list(tmp_path.glob(".assemble-*"))
+
+    monkeypatch.setattr(engine, "_run", lambda args, **kwargs: Path(args[-1]).write_bytes(b"complete replacement"))
+    result = engine.assemble([(tmp_path / "image.png", tmp_path / "audio.wav", 1.0)], out, 30, "160x90")
+    assert result.path == out and out.read_bytes() == b"complete replacement"
+
+
+@pytest.mark.parametrize("order", [["S1"], ["S1", "S1"], ["S1", "missing"]])
+def test_renderer_rejects_incomplete_or_duplicate_scene_order(tmp_path, order):
+    r = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path)))
+    m = _manifest(); r.render(m)
+    with pytest.raises(MediaError, match="order"):
+        r.finalize(m, order)
+    with pytest.raises(MediaError, match="order"):
+        r.apply_cutlist(m, CutList(video_id=m.video_id, manifest_version=m.version,
+                                  decision="repair", order=order))
+
+
+def test_duplicate_scene_ids_fail_before_media_generation(tmp_path):
+    from unittest.mock import Mock
+
+    r = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path)))
+    m = _manifest(); m.scenes[1].scene_id = m.scenes[0].scene_id
+    r.media.tts.synthesize = Mock(side_effect=AssertionError("duplicate manifest paid for audio"))
+    with pytest.raises(MediaError, match="scene"):
+        r.render(m)
+
+
+@pytest.mark.parametrize("scenes,fps,duration", [(False, 30, 1), (True, 0, 1),
+                                                (True, 30, float("nan")), (True, 30, float("inf")),
+                                                (True, 30, -1)])
+def test_graph_invalid_timing_fails_before_encoding(tmp_path, monkeypatch, scenes, fps, duration):
+    monkeypatch.setattr("studio.media.shutil.which", lambda _: "/fake/ffmpeg")
+    monkeypatch.setattr("studio.media.probe_duration", lambda _: None)
+    engine = FFmpegAssembler()
+    monkeypatch.setattr(engine, "_run", lambda *args, **kwargs: pytest.fail("invalid timing reached ffmpeg"))
+    segments = [(tmp_path / "image.png", tmp_path / "audio.wav", duration)] if scenes else []
+    with pytest.raises(MediaError, match="requires"):
+        engine.assemble(segments, tmp_path / "final.mp4", fps, "160x90")
 
 
 def _manifest(vid="V1"):
@@ -97,7 +154,10 @@ def test_ffmpeg_builds_one_graph_with_motion_transition_and_loudness(tmp_path, m
     monkeypatch.setattr(media.shutil, "which", lambda b: f"/usr/bin/{b}")
     # lệnh đi qua Sandbox: bơm `runner=` giả vào SubprocessSandbox, KHÔNG vá `subprocess.run` — nếu assembler
     # lén gọi thẳng subprocess thì `runs` rỗng và test đỏ ngay.
-    sb = SubprocessSandbox(runner=lambda argv, *a, **k: (runs.append(argv), subprocess.CompletedProcess(argv, 0, "", ""))[1])
+    def run(argv, **kwargs):
+        runs.append(argv); Path(argv[-1]).write_bytes(b"rendered")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    sb = SubprocessSandbox(runner=run)
     segs = [(tmp_path / f"i{i}.png", tmp_path / f"a{i}.wav", 3.0) for i in range(3)]
     r = FFmpegAssembler(sandbox=sb).assemble(segs, tmp_path / "o.mp4", 30, "1920x1080")
     argv = next(a for a in runs if "-filter_complex" in a)
@@ -119,7 +179,10 @@ def test_ffmpeg_one_scene_or_no_transition_falls_back_to_concat(tmp_path, monkey
     monkeypatch.setattr(media.shutil, "which", lambda b: f"/usr/bin/{b}")
     # lệnh đi qua Sandbox: bơm `runner=` giả vào SubprocessSandbox, KHÔNG vá `subprocess.run` — nếu assembler
     # lén gọi thẳng subprocess thì `runs` rỗng và test đỏ ngay.
-    sb = SubprocessSandbox(runner=lambda argv, *a, **k: (runs.append(argv), subprocess.CompletedProcess(argv, 0, "", ""))[1])
+    def run(argv, **kwargs):
+        runs.append(argv); Path(argv[-1]).write_bytes(b"rendered")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+    sb = SubprocessSandbox(runner=run)
     one = [(tmp_path / "i.png", tmp_path / "a.wav", 2.0)]
     FFmpegAssembler(sandbox=sb).assemble(one, tmp_path / "one.mp4", 30, "1920x1080")
     g1 = runs[-1][runs[-1].index("-filter_complex") + 1]

@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -110,7 +112,13 @@ def _stream_error_chunk(exc: Exception) -> str:
 
 
 def is_loopback_host(host: str) -> bool:
-    return host in {"127.0.0.1", "localhost", "::1", "[::1]"} or host.startswith("127.")
+    if host.lower() == "localhost": return True
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def host_header_is_loopback(header: str | None) -> bool:
@@ -121,11 +129,13 @@ def host_header_is_loopback(header: str | None) -> bool:
     if header is None: return True
     value = header.strip()
     if not value: return True
-    if value.startswith("["):
-        value = value[1 : value.find("]")] if "]" in value else value[1:]
-    elif value.count(":") == 1:
-        value = value.split(":", 1)[0]
-    return is_loopback_host(value.lower())
+    # Kiểm toàn bộ authority: cắt ở dấu `]` hoặc chỉ nhìn tiền tố `127.` cho phép tên miền của kẻ tấn công.
+    match = re.fullmatch(r"(?:\[([^\[\]]+)\]|([^:\[\]]+))(?::([0-9]+))?", value)
+    if match is None: return False
+    host = match.group(1) or match.group(2)
+    port = match.group(3)
+    if port is not None and (len(port) > 5 or int(port) > 65535): return False
+    return is_loopback_host(host)
 
 
 def origin_is_local(origin: str | None) -> bool:

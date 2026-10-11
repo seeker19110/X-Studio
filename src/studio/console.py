@@ -49,13 +49,17 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     def json(self, status: int, data: dict, headers: dict | None = None) -> None:
         self.send(status, json.dumps(data, ensure_ascii=False).encode(), headers=headers)
 
+    def token_matches(self, candidate: str) -> bool:
+        return hmac.compare_digest(candidate.encode("utf-8", errors="surrogatepass"),
+                                   self.server.token.encode("utf-8", errors="surrogatepass"))
+
     def authorized(self) -> bool:
         bearer = self.headers.get("Authorization", "").removeprefix("Bearer ")
         cookie = SimpleCookie()
         try: cookie.load(self.headers.get("Cookie", ""))
         except Exception: return False
         session = cookie.get("studio_session")
-        return hmac.compare_digest(bearer, self.server.token) or bool(session and hmac.compare_digest(session.value, self.server.token))
+        return self.token_matches(bearer) or bool(session and self.token_matches(session.value))
 
     def same_origin(self) -> bool:
         host = self.headers.get("Host", "")
@@ -130,7 +134,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict): raise ValueError("JSON object required")
             if self.path == "/api/login":
-                if not hmac.compare_digest(str(body.get("token", "")), self.server.token):
+                if not self.token_matches(str(body.get("token", ""))):
                     self.json(401, {"error": "Mã truy cập không đúng"}); return
                 self.json(200, {"ok": True}, {"Set-Cookie": f"studio_session={self.server.token}; HttpOnly; SameSite=Strict; Path=/"}); return
             if not self.authorized(): self.json(401, {"error": "Authentication required"}); return

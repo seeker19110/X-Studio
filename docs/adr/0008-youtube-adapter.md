@@ -18,8 +18,14 @@ thật không bịa. Chủ dự án không muốn phụ thuộc SDK Google bắt
    Lỗi nền tảng ném `PlatformError` có HTTP status và thông điệp gốc (quota 403, 401 sau refresh, 5xx).
    - `FakePlatform`: lưu vào dict, sinh id giả, ghi `calls` để test/demo; mặc định khi không cấu hình.
    - `YouTubePlatform`: HTTP thuần `urllib` qua `fetcher(method, url, headers, body) -> (status, headers, bytes)` tiêm được.
-     Upload **resumable hai bước** (`POST /upload/youtube/v3/videos?uploadType=resumable&part=snippet,status` → `Location`
-     → `PUT` bytes); `thumbnails/set`; `videos.update` part=status cho lịch; `commentThreads.list` (phân trang, lọc `since`);
+     Upload **resumable** (`POST /upload/youtube/v3/videos?uploadType=resumable&part=snippet,status` → `Location`
+     → `PUT` từng chunk tối đa 8 MiB, `Content-Range` đúng offset). HTTP 308 lấy byte tiếp theo từ `Range`;
+     sau timeout/5xx, hỏi trạng thái bằng PUT rỗng trước khi gửi tiếp để tránh chồng byte đã nhận.
+     Chunk 8 MiB là bội số 256 KiB theo [giao thức chính thức](https://developers.google.com/youtube/v3/guides/using_resumable_upload_protocol);
+     không nạp toàn bộ video vào RAM. Range dị thường hoặc 3 lượt không tiến triển trả lỗi có mô tả.
+     File được mở trước khi tạo phiên; `fstat` và mọi chunk dùng cùng descriptor, nên thay tên file nguyên tử
+     trong khi chờ POST không đổi file đang gửi. Giới hạn retry áp sau khi đọc Range để không bỏ tiến triển thật.
+     `thumbnails/set`; `videos.update` part=status cho lịch; `commentThreads.list` (phân trang, lọc `since`);
      `comments.insert` (reply); Analytics `GET https://youtubeanalytics.googleapis.com/v2/reports` với
      `views,estimatedMinutesWatched,averageViewDuration,likes,comments` (filters `video==<id>`), retention qua
      `audienceWatchRatio` theo `elapsedVideoTimeRatio` (đổi sang giây bằng `contentDetails.duration` của `videos.list`).
@@ -28,7 +34,8 @@ thật không bịa. Chủ dự án không muốn phụ thuộc SDK Google bắt
 2. **OAuth do người dùng tự chạy** (`python -m studio.youtube login --client-secrets <file>`): installed-app flow, redirect
    loopback `http://127.0.0.1:<port>/`, mở trình duyệt, scopes `youtube.upload`, `youtube.force-ssl`,
    `yt-analytics.readonly`. Token lưu `~/.x-agents/auth/youtube_tokens.json` (`STUDIO_YOUTUBE_TOKENS` để đổi), quyền 0600,
-   không bao giờ nằm trong repo. Adapter tự refresh bằng `https://oauth2.googleapis.com/token` khi hết hạn hoặc gặp 401
+   không bao giờ nằm trong repo. Ghi token qua file tạm ngẫu nhiên mode 0600 và replace nguyên tử: không theo symlink
+   đích, và lỗi ghi giữ nguyên token trước đó. Adapter tự refresh bằng `https://oauth2.googleapis.com/token` khi hết hạn hoặc gặp 401
    (đúng một lần). `status` in tình trạng token (có/hết hạn/scopes) không in secret. Code không bao giờ tạo credential.
 3. **Cấu hình**: mục `platform:` trong `media.yaml` (`provider: fake | youtube`) hoặc `STUDIO_PLATFORM=fake|youtube`.
    Mặc định `fake` — test, demo, CI không chạm mạng.
@@ -52,7 +59,10 @@ thật không bịa. Chủ dự án không muốn phụ thuộc SDK Google bắt
 ## Hệ quả
 - Test offline toàn bộ: FakePlatform, YouTubePlatform với HTTP giả (resumable 2 bước, refresh khi 401, quota 403 →
   PlatformError, analytics thiếu quyền → trường 0 + evidence), orchestrator approval-first.
-- Quota YouTube Data API mặc định 10 000 đơn vị/ngày: một upload ≈ 1 600, `commentThreads.list` 1/trang, `comments.insert`
-  50; adapter không tự retry khi 403 quota — báo `failed`, người quyết định.
+- Theo [bảng quota chính thức](https://developers.google.com/youtube/v3/determine_quota_cost) kiểm tra ngày 2026-10-11,
+  `videos.insert` và `search.list` có bucket riêng, mỗi bucket mặc định 100 lượt/ngày;
+  các endpoint khác dùng chung 10 000 đơn vị/ngày.
+  `commentThreads.list` tốn 1/trang, `comments.insert` tốn 50; adapter không tự retry khi 403 quota — báo `failed`,
+  người quyết định. Đối chiếu quota thực tế của project trong Cloud Console khi vận hành.
 - Impressions/CTR phụ thuộc quyền và metric API; khi không có, analytics-analyst nhận `0` và evidence nói rõ, không suy diễn.
 - Chưa có: playlist, Shorts flag, đổi lịch/gỡ video (rollback vẫn do người), adapter nền tảng khác (TikTok…) — interface đã sẵn.

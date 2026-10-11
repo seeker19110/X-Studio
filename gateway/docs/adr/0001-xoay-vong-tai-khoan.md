@@ -72,7 +72,7 @@ Cooldown ghi hai trường `unavailable_until`, `last_failure_status` vào file 
 này chờ upstream. Xoá cooldown bằng tay: `python -m gateway reset [EMAIL]` → `mark_account_healthy` (`auth.py:386-388`).
 
 Refresh access token: làm sớm `REFRESH_SKEW_SECONDS = 120` trước hạn (`auth.py:73,121`), gọi Google với timeout 20 s
-(`auth.py:409`). Google từ chối (HTTP 4xx) → cooldown như 401 (`auth.py:340-345`); lỗi mạng → **bỏ qua lượt này,
+(`auth.py:409`). Google từ chối (HTTP 4xx) → cooldown như 401; lỗi mạng hoặc HTTP 5xx → **bỏ qua lượt này,
 không cooldown** (`auth.py:346-352`), để một nhịp DNS chập chờn không làm nguội cả pool.
 
 ### 4. Cả pool nghỉ → 429 kèm số giây thật, và không retry trong gateway

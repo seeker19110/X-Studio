@@ -126,6 +126,22 @@ def test_transient_refresh_error_skips_without_cooldown(manager):
     assert stored.get("unavailable_until", 0) == 0
 
 
+@pytest.mark.parametrize("status", [500, 502, 503, 504])
+def test_upstream_refresh_failure_skips_without_cooling_account(manager, status, caplog):
+    manager.save_credentials(_creds("a", refresh_token="synthetic-refresh", expires_at=1))
+    manager.save_credentials(_creds("b"))
+
+    def fail(_creds):
+        raise urllib.error.HTTPError(gw_auth.TOKEN_ENDPOINT, status, "upstream unavailable", {}, None)
+
+    manager.refresh_access_token = fail
+    assert [creds.email for creds in manager.resolve_credential_candidates()] == ["b@example.com"]
+    stored = json.loads(manager.token_file.read_text(encoding="utf-8"))["accounts"]["a@example.com"]
+    assert stored.get("unavailable_until", 0) == 0
+    assert stored.get("last_failure_status", 0) == 0
+    assert "synthetic-refresh" not in caplog.text
+
+
 def test_expired_without_refresh_token_is_skipped(manager):
     manager.save_credentials(_creds("a", expires_at=1))
     manager.save_credentials(_creds("b"))
@@ -320,7 +336,21 @@ def test_atomic_write_cleans_up_tmp_file_and_reraises_on_failure(manager, monkey
     with pytest.raises(OSError, match="disk full"):
         manager._atomic_write(manager.token_file, {"a": 1})
     assert not manager.token_file.with_suffix(".tmp").exists()
+    assert not list(manager.token_file.parent.glob(f".{manager.token_file.name}.*.tmp"))
     assert not manager.token_file.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink requires privileges on Windows")
+def test_atomic_write_does_not_follow_predictable_temp_symlink(manager, tmp_path):
+    victim = tmp_path / "other-file.json"
+    victim.write_text("must remain intact", encoding="utf-8")
+    manager.token_file.with_suffix(".tmp").symlink_to(victim)
+
+    manager._atomic_write(manager.token_file, {"access_token": "synthetic-secret"})
+
+    assert victim.read_text(encoding="utf-8") == "must remain intact"
+    assert not manager.token_file.is_symlink()
+    assert json.loads(manager.token_file.read_text(encoding="utf-8"))["access_token"] == "synthetic-secret"
 
 
 # ---------- save_credentials ----------

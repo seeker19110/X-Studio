@@ -155,3 +155,18 @@ def test_seq_deterministic_khi_phat_lai_cung_thu_tu():
         return [r.seq for r in (g.pending["A"], g.pending["B"], g.pending["C"])]
 
     assert dung() == dung() == [3, 2, 4]
+
+
+def test_reopening_gate_revokes_previous_approval():
+    gate = HumanGate()
+    gate.request(_req("G1"))
+    gate.decide("G1", "approve", by="human:reviewer")
+    assert gate.is_approved("G1")
+
+    gate.request(_req("G1"))
+    assert not gate.is_approved("G1"), "a pending replacement requires its own approval"
+    gate.decide("G1", "reject", by="human:reviewer")
+    assert not gate.is_approved("G1"), "an earlier approval cannot override the latest rejection"
+    gate.request(_req("G1"))
+    gate.decide("G1", "approve", by="human:reviewer")
+    assert gate.is_approved("G1")
