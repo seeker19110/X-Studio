@@ -1,5 +1,54 @@
 # Xác minh bản nâng cấp factory
 
+## Bổ sung sau PR #4: đầu ra bền vững và disk budget
+
+Base: `0dc1d81606c38b32cdf3bd7b29e76a0e9c4047a5` (PR #4 được merge bởi tác nhân
+khác trong lúc đang làm tiếp). Môi trường chạy bị tạo lại; checkout cũ chưa commit
+không còn, nên các sửa tiếp theo được tái dựng từ main bằng TDD. Không thay đổi hai
+repo X-Agents/projects-template, không gọi provider trả phí/upload/deploy.
+
+Regression tái hiện **hai draft thay vì một** khi render xong nhưng thumbnail-designer
+lỗi transient. Bản sửa kiểm tra cả restart SQLite và số lần editor được gọi. Chèn lỗi
+trước/sau publish của draft, repair, final, thumbnail xác minh dùng lại event ID, không
+gọi lại provider sau khi batch đã chuẩn bị bền vững. Có test từ chối output đã mất/hỏng,
+repair không nhảy version ở giới hạn vòng sửa, lỗi xóa cache không mất checkpoint active.
+QC được khôi phục cho reviewer sau restart; audit sai actor/malformed không ghi đè
+báo cáo hợp lệ. Kiểm chứng này dùng file/SQLite/provider giả và FFmpeg offline.
+
+`make verify` trên bản cuối đạt **707 Studio + 251 Gateway + 477 core = 1.435 test**,
+coverage 100% từng package (Studio 4.697 dòng thực thi); Ruff/mypy đạt và **28/28**
+eval replay đạt. Không skip; Gateway còn RuntimeWarning `runpy` đã có trước. Thêm
+22 regression cases so với PR #4, không thêm file test. Script benchmark cũng qua Ruff.
+
+Stress thật, Linux/Python 3.12.14/FFmpeg 7.1.5, lệnh:
+
+```bash
+uv run python scripts/benchmark-bounded.py --scenes 60 --scene-seconds 30 \
+  --resolution 640x360 --wall-budget 600
+```
+
+| Đo | Kết quả |
+|---|---:|
+| MP4 thực tế, 15 fps | 1.824 s (30 phút 24 giây) |
+| Cold / warm render | 61,071 s / 24,248 s |
+| Scene encode cold / warm | 60 / 0 |
+| QC toàn file | 5,815 s, scan_complete=true, không block |
+| Peak RSS từng tiến trình con / Python | 223.512 / 32.128 KiB |
+| CPU cộng dồn tiến trình con | 140,675 s |
+| Segment + metadata | 116.576.747 byte |
+| Workspace tạm gồm input và hai MP4 | 293.701.146 byte |
+| Ngân sách segment cấu hình | 536.870.912 byte (512 MiB) |
+
+1 thread cấu hình; nguồn là PPM một màu và sóng sine riêng từng cảnh, không phải footage
+hoặc giọng đọc live. Kiểm duration ffprobe và mtime cache không đổi. Script tự dọn thư
+mục tạm, giới hạn đầu vào tối đa 1 giờ, 2 độ phân giải, thời gian từng subprocess theo
+phần ngân sách còn lại. Đây không phải thử tải 12 giờ/1080p/Windows hoặc chi phí thật.
+
+Disk budget chỉ quản lý MKV checkpoint hợp lệ từng video. Cảnh đang encode có thể vượt
+ngân sách trước khi bị phát hiện; free-space estimate không thay filesystem quota.
+Audit outbox, paid cache và output người dùng chưa có chính sách dọn tự động. Xem
+[ADR-0012](adr/0012-durable-render-outbox-and-disk-budgets.md) về các cửa sổ lỗi còn lại.
+
 ## Bổ sung: khôi phục và giới hạn tài nguyên (2026-10-11)
 
 Nền tảng lần này: Linux, Python 3.12.14, FFmpeg 7.1.5; main đầu vào

@@ -20,6 +20,8 @@ render:
   mode: bounded
   threads: 2
   max_retries: 3
+  segment_cache_max_bytes: 0  # 0: không tự dọn; đặt ngân sách để dọn segment cũ không dùng
+  min_free_disk_bytes: 268435456  # giữ khoảng trống 256 MiB khi kiểm tra giữa các bước
   timeout_s: 86400  # trần mỗi lệnh; giảm khi chỉ làm video ngắn
 production:
   automation: production  # manual | production | publish; cũng đổi được trong UI

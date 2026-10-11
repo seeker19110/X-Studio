@@ -39,6 +39,7 @@ class Renderer:
     def __init__(self, bus: InMemoryBus, media: MediaSuite | None = None, out_dir: Path | None = None,
                  upload_dir: Path | None = None):
         self.bus = bus
+        self.operation_id: str | None = None
         self.media = media or make_media()
         self.out_dir = Path(out_dir) if out_dir else self.media.cfg.output_dir
         # `replacement_path` trong cut-list do model viết → chỉ chấp nhận file nằm TRONG thư mục upload này
@@ -71,17 +72,52 @@ class Renderer:
         a = AuditLog(actor=ACTOR, action=action, video_id=video_id, evidence=json.dumps(data, ensure_ascii=False))
         self.bus.publish(Envelope(topic="audit-log", key=ACTOR, actor=ACTOR, payload=a.model_dump()))
 
-    def _publish(self, assets: list[MediaAsset], action: str) -> list[Envelope]:
-        out = [self.bus.publish(Envelope(topic="media-assets", key=a.video_id, actor=ACTOR, payload=a.model_dump()))
-               for a in assets]
+    def _deliver(self, events: list[Envelope]) -> None:
+        # One orchestrator owns a database. Reuse prepared IDs after interruption,
+        # including the window between SQLite commit and code-stage checkpoint.
+        seen = {e.event_id for topic in {e.topic for e in events} for e in self.bus.replay(topic)}
+        for env in events:
+            if env.event_id not in seen:
+                self.bus.publish(env)
+
+    def _resume_output(self) -> list[Envelope] | None:
+        if self.operation_id is None: return None
+        for env in reversed(list(self.bus.replay("audit-log", ACTOR))):
+            if env.payload["action"] != "render.prepared": continue
+            data = json.loads(env.payload["evidence"])
+            if data["operation_id"] == self.operation_id:
+                events = [Envelope.model_validate(e) for e in data["events"]]
+                for output in events:
+                    if output.topic == "media-assets":
+                        asset = MediaAsset.model_validate(output.payload)
+                        path = Path(asset.path)
+                        if not path.is_file() or checksum(path) != asset.checksum:
+                            raise MediaError(f"prepared output damaged: {path}; restore the exact checkpoint file")
+                self._deliver(events)
+                return events
+        return None
+
+    def _publish(self, assets: list[MediaAsset], action: str,
+                 manifest: SceneManifest | None = None) -> list[Envelope]:
+        out = [Envelope(topic="media-assets", key=a.video_id, actor=ACTOR, payload=a.model_dump(),
+                        causation_id=self.operation_id) for a in assets]
+        events = list(out)
+        if manifest is not None:
+            events.insert(0, Envelope(topic="scene-manifests", key=manifest.video_id, actor=ACTOR,
+                                      payload=manifest.model_dump(), causation_id=self.operation_id))
         if assets:
             a = AuditLog(actor=ACTOR, action=action, video_id=assets[0].video_id,
                          evidence=json.dumps({"assets": [(x.kind, x.scene_id or x.variant_id) for x in assets],
                                               "providers": self.media.names,
-                                              # lệnh con (TTS cục bộ, ffmpeg) đã chạy trong sandbox nào — người
-                                              # duyệt publish thấy ngay video dựng bằng tiến trình trần hay container
                                               "sandbox": self.media.sandbox.name}, ensure_ascii=False))
-            self.bus.publish(Envelope(topic="audit-log", key=ACTOR, actor=ACTOR, payload=a.model_dump()))
+            events.append(Envelope(topic="audit-log", key=ACTOR, actor=ACTOR, payload=a.model_dump(),
+                                   causation_id=self.operation_id))
+        if self.operation_id is not None:
+            # Persist the entire outbox before its first visible output. This is a
+            # local bus recovery guarantee, not exactly-once remote provider work.
+            self._audit("render.prepared", assets[0].video_id if assets else "", {
+                "operation_id": self.operation_id, "events": [e.model_dump(mode="json") for e in events]})
+        self._deliver(events)
         return out
 
     # ---------- render ----------
@@ -160,6 +196,9 @@ class Renderer:
 
     def render(self, m: SceneManifest, only: set[str] | None = None) -> list[MediaAsset]:
         """Render các cảnh cần (chưa locked hoặc trong `only`) rồi ghép bản nháp. Trả về asset đã publish."""
+        prior = self._resume_output()
+        if prior is not None:
+            return [MediaAsset.model_validate(e.payload) for e in prior if e.topic == "media-assets"]
         assets: list[MediaAsset] = []
         selections(self.media.cfg, self.upload_dir, m)
         for s in m.scenes:
@@ -173,13 +212,15 @@ class Renderer:
         r = self.media.video.assemble(self._segments(m), self._dir(m.video_id) / f"draft_v{m.version}.mp4", fps, res)
         assets.append(self._asset(m.video_id, "draft_video", r, m.version, prompt_ref=f"manifest:v{m.version}"))
         # manifest cùng version nhưng đã có asset_refs/duration thật → publish lại để bus là nguồn sự thật (resume, editor, finalize)
-        self.bus.publish(Envelope(topic="scene-manifests", key=m.video_id, actor=ACTOR, payload=m.model_dump()))
-        self._publish(assets, "render.draft")
+        self._publish(assets, "render.draft", m)
         return assets
 
     def apply_cutlist(self, m: SceneManifest, cut: CutList) -> SceneManifest:
         """Sửa manifest theo cut-list: đổi prompt/narration, thay asset người tải lên, khoá cảnh. Trả về manifest mới
         (version + 1) đã render lại đúng các cảnh bị chạm."""
+        prior = self._resume_output()
+        if prior is not None:
+            return SceneManifest.model_validate(next(e.payload for e in prior if e.topic == "scene-manifests"))
         m = m.model_copy(deep=True)
         by_id = {s.scene_id: s for s in m.scenes}
         replacements: list[MediaAsset] = []
@@ -219,8 +260,7 @@ class Renderer:
         fps, res = self._video_opts(new.aspect)
         vr = self.media.video.assemble(self._segments(new), self._dir(new.video_id) / f"draft_v{new.version}.mp4", fps, res)
         assets.append(self._asset(new.video_id, "draft_video", vr, new.version, prompt_ref=f"manifest:v{new.version}"))
-        self.bus.publish(Envelope(topic="scene-manifests", key=new.video_id, actor=ACTOR, payload=new.model_dump()))
-        self._publish(assets, f"render.repair:{','.join(sorted(touched)) or 'none'}")
+        self._publish(assets, f"render.repair:{','.join(sorted(touched)) or 'none'}", new)
         return new
 
     def cues(self, m: SceneManifest, order: list[str] | None = None) -> list[Any]:
@@ -232,6 +272,10 @@ class Renderer:
     def finalize(self, m: SceneManifest, order: list[str] | None = None) -> MediaAsset:
         """Bản cuối + phụ đề. Phụ đề sinh thẳng từ narration của manifest (đó chính là văn bản đã đọc) nên không cần
         nhận dạng giọng nói, và mốc thời gian khớp bản dựng vì cùng một công thức."""
+        prior = self._resume_output()
+        if prior is not None:
+            return MediaAsset.model_validate(next(e.payload for e in prior
+                                                  if e.topic == "media-assets" and e.payload["kind"] == "final_video"))
         _, music = selections(self.media.cfg, self.upload_dir, m)
         fps, res = self._video_opts(m.aspect)
         r = self.media.video.assemble(self._segments(m, order), self._dir(m.video_id) / f"final_v{m.version}.mp4", fps, res)
@@ -260,6 +304,9 @@ class Renderer:
     def thumbnails(self, spec: ThumbnailSpec) -> list[MediaAsset]:
         """Ảnh nền không chữ (model ảnh) → CODE phủ `overlay_text`, thu về 1280x720, nén ≤ 2 MB. Asset publish là bản
         hoàn thiện; provenance vẫn ghi provider:model của ảnh nền, phần code làm nằm trong audit `render.thumbnails`."""
+        prior = self._resume_output()
+        if prior is not None:
+            return [MediaAsset.model_validate(e.payload) for e in prior if e.topic == "media-assets"]
         d = self._dir(spec.video_id) / "thumbnails"; out: list[MediaAsset] = []; notes: dict[str, str] = {}
         for var in spec.variants:
             prompt, size = f"{var.prompt} {NO_TEXT}", image_size(self.media.cfg, "16:9")

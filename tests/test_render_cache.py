@@ -115,3 +115,54 @@ def test_immutable_cache_result_avoids_duplicate_and_repairs_corruption(tmp_path
     repaired, hit = cache.produce('scene', requested, producer, materialize=False)
     assert not hit and repaired.path.read_bytes() == b'complete media'
     assert producer.call_count == 2
+
+
+def test_segment_budget_evicts_only_inactive_owned_blobs_oldest_first(tmp_path):
+    import os
+
+    from studio.media import MediaResult
+    from studio.render_cache import RenderCache
+
+    cache = RenderCache(tmp_path)
+    def generate(path):
+        path.write_bytes(b'x' * 10)
+        return MediaResult(path, 'ffmpeg', 'bounded-scene')
+    blobs = [cache.produce(key, tmp_path / 'unused.mkv', generate, materialize=False)[0].path
+             for key in ('old', 'recent', 'active')]
+    for i, path in enumerate(blobs): os.utime(path, (i + 1, i + 1))
+    user = tmp_path / 'user.mkv'; user.write_bytes(b'user')
+    (tmp_path / ('a' * 64 + '.mkv')).write_bytes(b'orphan')
+    (tmp_path / ('b' * 64 + '.json')).write_text('{broken')
+    (tmp_path / ('b' * 64 + '.mkv')).write_bytes(b'bad')
+    foreign, _ = cache.produce('paid', tmp_path / 'unused.mkv',
+        lambda p: (p.write_bytes(b'paid'), MediaResult(p, 'paid', 'bounded-scene'))[1], materialize=False)
+    cache.prune_segments(20, {blobs[2]})
+    assert not blobs[0].exists() and not blobs[0].with_suffix('.json').exists()
+    assert all(p.exists() for p in blobs[1:]) and user.exists() and foreign.path.exists()
+    with pytest.raises(MediaError, match=r'active.*budget'):
+        cache.prune_segments(5, {blobs[2]})
+    assert blobs[2].exists()
+    cache.prune_segments(0, set())
+
+
+@pytest.mark.parametrize('failed_suffix', ['.mkv', '.json'])
+def test_segment_eviction_failure_is_actionable_media_error_and_preserves_active(tmp_path, monkeypatch, failed_suffix):
+    from studio.media import MediaResult
+    from studio.render_cache import RenderCache
+
+    cache = RenderCache(tmp_path)
+    def generate(path):
+        path.write_bytes(b'x' * 10)
+        return MediaResult(path, 'ffmpeg', 'bounded-scene')
+    stale = cache.produce('stale', tmp_path / 'unused.mkv', generate, materialize=False)[0].path
+    active = cache.produce('active', tmp_path / 'unused.mkv', generate, materialize=False)[0].path
+    original_unlink = Path.unlink
+    def fail_unlink(path, *args, **kwargs):
+        if path == stale.with_suffix(failed_suffix):
+            raise PermissionError('read-only checkpoint')
+        return original_unlink(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'unlink', fail_unlink)
+    with pytest.raises(MediaError, match=r'evict.*permissions'):
+        cache.prune_segments(10, {active})
+    assert active.read_bytes() == b'x' * 10 and active.with_suffix('.json').exists()
+    assert stale.exists() == (failed_suffix == '.mkv')
