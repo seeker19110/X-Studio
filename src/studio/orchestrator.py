@@ -412,10 +412,10 @@ class Orchestrator:
             self._check_escalations()
         return out
 
-    def tick(self, now: datetime | None = None) -> list[StepResult]:
+    def tick(self, now: datetime | None = None, max_steps: int | None = None) -> list[StepResult]:
         if hasattr(self.bus, "poll"): self.bus.poll()
         self._retry_deferred(only="transient:")   # K3.3d: chỉ loại transport; `paused:` chờ đúng lệnh `resume`
-        results = self.run()
+        results = self.run(max_steps)
         self._sync(now)
         remind, overdue = self.gate.due(now)
         for sid in [*remind, *overdue]:
@@ -453,7 +453,7 @@ class Orchestrator:
                 self._call(route, fin, res); results.append(res)
         active = {vid for vid, st in self.desk.state.items() if st in ACTIVE_STATES}
         self.supervisor.check_timeouts(now, active=active)
-        results += self.run()
+        results += self.run(max_steps)
         return results
 
     def _sync(self, now: datetime | None = None) -> None:
@@ -533,6 +533,7 @@ class Orchestrator:
             self._rework(env, res)
         elif env.topic == "publish-events" and env.payload.get("status") == "rolled_back":
             self._rework(env, res, hint=f"rolled back: {env.payload.get('evidence', '')}")
+        if res.transient: return self._defer_transient(env, res)
         # --- kế hoạch biên tập ---
         when = PLAN_INPUTS.get(env.topic)
         if when and when(env, self):
@@ -583,7 +584,10 @@ class Orchestrator:
         try:
             if r.topic_out == CONTEXT_ONLY:
                 self.runner.run_context(r.agent, env, extra=data or None); res.actions.append(f"{r.agent}→context"); return []
-            g = self.runner.generate(r.agent, env, r.topic_out, many=r.many, extra=data or None)
+            from .longform import generate_partitioned
+            g = generate_partitioned(self.runner, r.agent, env, r.topic_out, data,
+                                     self.renderer.out_dir / ".cache" / "chapters", many=r.many,
+                                     chapter_minutes=float(self.renderer.media.cfg.production.get("chapter_minutes", 8)))
             outs = []
             for i, p in enumerate(g.payloads):
                 key = key_for(r.topic_out, p, env.key)
@@ -602,12 +606,26 @@ class Orchestrator:
 
     # ---------- bước code ----------
 
+    def _media_failure(self, env: Envelope, res: StepResult, error: Exception) -> None:
+        vid = env.payload.get("video_id")
+        attempts = sum(1 for e in self.bus.replay("audit-log") if e.payload.get("action") == "render_failed"
+                       and _evidence(e.payload).get("event_id") == env.event_id) + 1
+        self._audit("render_failed", {"error": str(error)[:300], "event_id": env.event_id, "attempt": attempts}, video_id=vid)
+        res.actions.append("render!failed")
+        limit = int(self.renderer.media.cfg.render.get("max_retries", 3))
+        if isinstance(error, MediaError) and attempts <= limit:
+            wait = min(300, 5 * 2 ** (attempts - 1))
+            self._transient("media", TransientError(f"media unavailable; thử lại sau {wait}s"), res)
+        elif vid in self.desk.briefs:
+            self.bus.publish(Envelope(topic="supervisor-actions", key=vid, actor="supervisor", payload={
+                "target": vid, "action": "pause", "reason": f"media failed after {attempts} attempts: {str(error)[:200]}"}))
+
     def _render(self, env: Envelope, res: StepResult) -> None:
         m = SceneManifest.model_validate(env.payload)
         try:
             assets = self.renderer.render(m); res.actions.append(f"render→{len(assets)} asset")
         except (MediaError, ValueError) as e:
-            self._audit("render_failed", {"error": str(e)[:300]}, video_id=m.video_id); res.actions.append("render!failed")
+            self._media_failure(env, res, e)
 
     def _apply_cut(self, env: Envelope, res: StepResult) -> None:
         cut = CutList.model_validate(env.payload); m = self.manifest(cut.video_id)
@@ -621,16 +639,27 @@ class Orchestrator:
                 final = self.renderer.finalize(m, cut.order or None); res.actions.append("finalize")
                 self._after_final(m, cut.order or None, final, res)
         except (MediaError, ValueError) as e:
-            self._audit("render_failed", {"error": str(e)[:300]}, video_id=cut.video_id); res.actions.append("render!failed")
+            self._media_failure(env, res, e)
 
     def _thumbs(self, env: Envelope, res: StepResult) -> None:
         try:
             n = len(self.renderer.thumbnails(ThumbnailSpec.model_validate(env.payload))); res.actions.append(f"thumbnails→{n}")
         except MediaError as e:
-            self._audit("render_failed", {"error": str(e)[:300]}, video_id=env.payload.get("video_id"))
+            self._media_failure(env, res, e)
 
     def _captions_of(self, vid: str) -> str | None:
         return next((a["path"] for a in reversed(_assets_of(self, vid)) if a["kind"] == "captions"), None)
+
+    def _credit_metadata(self, meta: MetadataPackage) -> None:
+        manifest = self.manifest(meta.video_id)
+        if manifest is None: return
+        paths = {p for scene in manifest.scenes for p in scene.asset_refs.values()}
+        assets = _assets_of(self, meta.video_id)
+        paths.update(a["path"] for a in assets if a["kind"] == "music" and a["manifest_version"] == manifest.version)
+        for asset in assets:
+            prov = asset["provenance"]; credit = prov.get("attribution", "").strip()
+            if asset["path"] in paths and prov["license"] == "cc-by" and credit and credit not in meta.description:
+                meta.description += f"\n\nCredit: {credit}" + (f"\n{prov['source_url']}" if prov.get("source_url") else "")
 
     def _after_final(self, m: SceneManifest, order: list[str] | None, final: MediaAsset, res: StepResult) -> None:
         """Hai việc CODE làm ngay khi có bản cuối, trước khi ai duyệt gì:
@@ -641,10 +670,11 @@ class Orchestrator:
         vid = m.video_id
         cues = self.renderer.cues(m, order)
         latest = _latest_payload(self, "metadata-packages", vid)
-        if latest and latest.get("chapters"):
+        if latest:
             meta = MetadataPackage.model_validate(latest)
             fixed = snap_chapters(meta.chapters, cues)
-            if [c.model_dump() for c in fixed] != [c.model_dump() for c in meta.chapters]:
+            self._credit_metadata(meta)
+            if [c.model_dump() for c in fixed] != [c.model_dump() for c in meta.chapters] or meta.description != latest["description"]:
                 meta.chapters = fixed
                 self._audit("chapters.snapped", {"video_id": vid, "chapters": [c.model_dump() for c in fixed]}, video_id=vid)
                 self.bus.publish(Envelope(topic="metadata-packages", key=vid, actor="chapters", payload=meta.model_dump()))
@@ -660,6 +690,9 @@ class Orchestrator:
 
     def _preflight(self, env: Envelope, res: StepResult) -> None:
         meta = MetadataPackage.model_validate(env.payload)
+        self._credit_metadata(meta)
+        if meta.description != env.payload["description"]:
+            self.bus.publish(Envelope(topic="metadata-packages", key=meta.video_id, actor="chapters", payload=meta.model_dump()))
         rep = preflight(meta, self._format(meta.video_id)); self.preflights[meta.video_id] = rep
         self._audit("preflight", {"video_id": meta.video_id, "blocked": rep.blocked, "findings": [f.model_dump() for f in rep.findings]},
                     video_id=meta.video_id)
@@ -712,6 +745,12 @@ class Orchestrator:
             self._transient("channel-strategist", e, res); return
         except (RunnerError, LLMError) as e:
             res.actions.append("plan!failed"); self._audit("agent_failed", {"agent": "channel-strategist", "error": str(e)[:300]}); return
+        requested = (_latest_payload(self, "channel-briefs", str(cid)) or {}).get("requested_video")
+        if requested and g.payloads:
+            g.payloads = g.payloads[:1]
+            g.payloads[0].update(working_title=requested["title"], target_minutes=requested["target_minutes"],
+                                 format=requested["format"], budget_tokens=requested["budget_tokens"],
+                                 video_id=f"{cid}-V1", channel_id=cid)
         for b in g.payloads: b.setdefault("channel_id", cid)
         bad = self.desk.check_plan(g.payloads)
         self.runner.write_context("channel-strategist", env, g.context_writes)
@@ -783,6 +822,10 @@ class Orchestrator:
         một chuỗi bất kỳ trên topic MỞ `audit-log`. `trusted_decision` bỏ qua bản ghi mạo danh; ở đây chỉ còn
         việc ghi lại rằng đã bỏ qua, vì một quyết định bị làm ngơ trong im lặng thì không ai đi tìm được."""
         d = trusted_decision(env)
+        if d and env.actor == "policy:studio":
+            accepted = next((g for g in reversed(self.gate.history) if g.subject_id == d["subject_id"]), None)
+            if not accepted or d.get("request_at") != accepted.created_at.isoformat() or d["subject_id"] in self.gate.pending:
+                d = None
         if d is None:
             raw = _evidence(env.payload)
             raw = raw if isinstance(raw, dict) else {}

@@ -20,6 +20,8 @@ from xagents_core.gates import GateRequest as CoreGateRequest
 from .bus import InMemoryBus
 from .events import AuditLog, Envelope
 from .gates import Decision, GateKind, GateRequest, HumanGate, gate_approvers
+from .policy_receipts import ACTOR as POLICY_ACTOR
+from .policy_receipts import verify
 
 DECISIONS: tuple[str, ...] = ("approve", "request_changes", "reject", "hold", "rollback")
 ITEM_WIDTH = 80  # `list` cắt mỗi mục checklist (vd. văn bản reply) ở đây trừ khi --full
@@ -37,6 +39,14 @@ def trusted_decision(env: Envelope) -> dict | None:
     chỉ là chuỗi tự do — thứ bus thật sự kiểm là `env.actor`. Hai chỗ studio siết thêm so với core:
     `uat_prefix=None` (phòng ban video không có gate nghiệm thu, nên actor hệ thống KHÔNG bao giờ ký thay
     người) và `decision` phải nằm trong `Decision` của studio."""
+    if env.actor == POLICY_ACTOR and env.topic == "audit-log" and env.payload.get("action") == "gate.decide":
+        import json
+        try: signed = json.loads(env.payload.get("evidence", ""))
+        except (ValueError, TypeError): return None
+        if isinstance(signed, dict) and signed.get("by") == POLICY_ACTOR and signed.get("decision") == "approve" \
+                and signed.get("policy") in {"production", "publish"} and verify(signed):
+            return signed
+        return None
     d = core_trusted_decision(env, uat_prefix=None)
     if d is None or d["decision"] not in get_args(Decision): return None
     return d
@@ -58,7 +68,11 @@ class PersistentGate(CorePersistentGate[Envelope, AuditLog], HumanGate):
         super().__init__(bus, envelope_cls=Envelope, audit_cls=AuditLog, request_cls=GateRequest, **kw)
 
     def _trusted(self, env: Envelope) -> dict | None:
-        return trusted_decision(env)
+        data = trusted_decision(env)
+        if data and env.actor == POLICY_ACTOR:
+            gate = self.pending.get(data["subject_id"])
+            if not gate or data.get("request_at") != gate.created_at.isoformat(): return None
+        return data
 
     def _request_kwargs(self, d: dict) -> dict:
         return {**super()._request_kwargs(d), "triggered_by": d.get("triggered_by")}

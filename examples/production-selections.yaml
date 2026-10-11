@@ -1,0 +1,22 @@
+# Ghép vào production: trong media.yaml. Thay V1/S1 bằng ID thật trong dự án.
+production:
+  library: library.yaml
+  scenes:
+    V1:
+      S2: coast
+  music:
+    V1: soundtrack
+  graphics:
+    V1:
+      S1:
+        template: title
+        title: "CÂU CHUYỆN CỦA ĐẠI DƯƠNG"
+        subtitle: "Những điều chúng ta đang tìm hiểu"
+        background: "101b29"
+        accent: "b6f3a2"
+      S3:
+        template: bars
+        title: "SỐ LIỆU MINH HỌA"
+        labels: ["Mẫu A", "Mẫu B"]
+        values: [30, 60]
+        source: "Dữ liệu minh họa do người dùng cung cấp; thay trước khi xuất bản"

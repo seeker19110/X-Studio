@@ -45,6 +45,7 @@ class _Resp:
     def __enter__(self): return self
     def __exit__(self, *a): return False
     def read(self): return self._data
+    def close(self): pass
 
 
 def test_openai_tts_posts_and_writes_mp3(tmp_path, monkeypatch):
@@ -111,7 +112,7 @@ def test_http_post_http_error_and_network_error(tmp_path, monkeypatch):
     import urllib.error
 
     def raise_http(req, timeout=None):
-        fp = types.SimpleNamespace(read=lambda: b"chi tiet loi")
+        fp = types.SimpleNamespace(read=lambda: b"chi tiet loi", close=lambda: None)
         raise urllib.error.HTTPError("u", 400, "bad", {}, fp)
 
     monkeypatch.setattr("studio.media.urllib.request.urlopen", raise_http)

@@ -51,3 +51,11 @@ watch:
 	uv run python -m studio.orchestrator run --watch 5
 status:
 	uv run python -m studio.orchestrator status
+
+.PHONY: studio studio-demo verify
+studio:         # xưởng với media.yaml và llm.yaml của bạn
+	uv run python -m studio.console
+studio-demo:    # demo offline, DB riêng, không gọi model/media API
+	uv run python -m studio.console --demo --db demo.sqlite
+verify:
+	$(MAKE) lint-all cov-all eval-replay

@@ -14,15 +14,17 @@ Kết quả publish lên `media-assets` dưới actor `renderer`, kèm audit.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 from .bus import InMemoryBus
 from .events import AssetKind, AuditLog, CutList, Envelope, MediaAsset, Provenance, Scene, SceneManifest, ThumbnailSpec
-from .media import MediaResult, MediaSuite, frame_size, image_size, make_media
-from .timeline import srt, timeline
+from .media import FFmpegAssembler, MediaError, MediaResult, MediaSuite, frame_size, image_size, make_media
+from .motion import MotionSpec, render_motion
+from .production import copy_asset, finish, selections
+from .render_cache import RenderCache, digest, fingerprint
+from .timeline import caption_pages, srt, timeline
 
 ACTOR = "renderer"
 # Chữ nằm trong ảnh sinh là lỗi (skill visual-direction): model ảnh viết sai dấu tiếng Việt, và chữ phải do code phủ lên.
@@ -30,7 +32,7 @@ NO_TEXT = "Không chữ, không watermark, không logo trong ảnh."
 
 
 def checksum(p: Path) -> str:
-    return hashlib.sha256(p.read_bytes()).hexdigest()[:16] if p.exists() else ""
+    return digest(p)[:16] if p.exists() else ""
 
 
 class Renderer:
@@ -41,6 +43,7 @@ class Renderer:
         self.out_dir = Path(out_dir) if out_dir else self.media.cfg.output_dir
         # `replacement_path` trong cut-list do model viết → chỉ chấp nhận file nằm TRONG thư mục upload này
         self.upload_dir = Path(upload_dir or self.media.cfg.upload_dir or self.out_dir / "uploads")
+        self.cache = RenderCache(self.out_dir / ".cache" / "media")
 
     # ---------- helpers ----------
 
@@ -83,18 +86,64 @@ class Renderer:
 
     # ---------- render ----------
 
-    def render_scene(self, m: SceneManifest, s: Scene, audio: bool = True, image: bool = True) -> list[MediaAsset]:
+    def render_scene(self, m: SceneManifest, s: Scene, audio: bool = True, image: bool = True,
+                     force: bool = False, revision: str = "") -> list[MediaAsset]:
         d = self._dir(m.video_id) / f"v{m.version}"; out: list[MediaAsset] = []
+        hits: dict[str, bool] = {}
+        local, _ = selections(self.media.cfg, self.upload_dir, m)
+        graphic = self.media.cfg.production.get("graphics", {}).get(m.video_id, {}).get(s.scene_id)
+        motion = MotionSpec.model_validate(graphic) if graphic else None
         if audio:
-            r = self.media.tts.synthesize(s.narration, m.voice, d / f"{s.scene_id}.wav")
+            key: dict[str, Any] = {"kind": "tts", "config": self.media.cfg.tts, "voice": m.voice, "text": s.narration,
+                   "adapter": type(self.media.tts).__qualname__, "revision": revision}
+            r, hits["audio"] = self.cache.produce(key, d / f"{s.scene_id}.wav",
+                lambda p: self.media.tts.synthesize(s.narration, m.voice, p), force=force)
             s.asset_refs["scene_audio"] = str(r.path); s.duration_s = r.duration_s or s.duration_s
             out.append(self._asset(m.video_id, "scene_audio", r, m.version, s.scene_id, prompt_ref=f"{s.scene_id}:narration"))
         if image:
-            r = self.media.image.generate(f"{s.visual_prompt} {NO_TEXT}", image_size(self.media.cfg, m.aspect),
-                                          d / f"{s.scene_id}.png")
-            s.asset_refs["scene_image"] = str(r.path)
-            out.append(self._asset(m.video_id, "scene_image", r, m.version, s.scene_id, prompt_ref=f"{s.scene_id}:visual_prompt"))
+            if motion:
+                if not isinstance(self.media.video, FFmpegAssembler):
+                    raise MediaError("motion graphics require video.provider=ffmpeg")
+                fps, resolution = self._video_opts(m.aspect)
+                duration = s.duration_s + self.media.video.tail_pad_s
+                key = {"motion": motion.model_dump(), "duration": duration, "fps": fps, "resolution": resolution, "revision": revision}
+                engine = self.media.video
+                r, hits["motion"] = self.cache.produce(key, d / f"{s.scene_id}_motion.mp4",
+                    lambda p: render_motion(motion, p, engine, duration, fps, resolution), force=force)
+                s.asset_refs.pop("scene_image", None); s.asset_refs["scene_video"] = str(r.path)
+                out.append(self._asset(m.video_id, "scene_video", r, m.version, s.scene_id, prompt_ref=f"motion:{s.scene_id}"))
+            elif s.scene_id in local:
+                source = local[s.scene_id]
+                path = copy_asset(source, d / f"{s.scene_id}_visual")
+                kind: AssetKind = "scene_video" if source.kind == "video" else "scene_image"
+                r = MediaResult(path, "local", "licensed-library")
+                asset = self._asset(m.video_id, kind, r, m.version, s.scene_id)
+                asset.provenance = source.provenance()
+                s.asset_refs.pop("scene_image", None); s.asset_refs.pop("scene_video", None)
+                s.asset_refs[kind] = str(path)
+                out.append(asset)
+            else:
+                style = str(self.media.cfg.production.get("style", "")).strip()
+                prompt, size = f"{style} {s.visual_prompt} {NO_TEXT}".strip(), image_size(self.media.cfg, m.aspect)
+                key = {"kind": "image", "config": self.media.cfg.image, "prompt": prompt, "size": size,
+                       "adapter": type(self.media.image).__qualname__, "revision": revision}
+                r, hits["image"] = self.cache.produce(key, d / f"{s.scene_id}.png",
+                    lambda p: self.media.image.generate(prompt, size, p), force=force)
+                s.asset_refs.pop("scene_video", None)
+                s.asset_refs["scene_image"] = str(r.path)
+                out.append(self._asset(m.video_id, "scene_image", r, m.version, s.scene_id, prompt_ref=f"{s.scene_id}:visual_prompt"))
+        self._audit("render.cache", m.video_id, {"scene_id": s.scene_id, "hits": hits})
         return out
+
+    def _check_locked(self, s: Scene) -> None:
+        for kind in ("scene_audio", "scene_video" if "scene_video" in s.asset_refs else "scene_image"):
+            path = Path(s.asset_refs.get(kind, ""))
+            if not path.is_file() or not path.stat().st_size:
+                raise MediaError(f"locked scene {s.scene_id}: missing {kind}; restore the approved file or unlock explicitly")
+            previous = next((e.payload for e in reversed(list(self.bus.replay("media-assets")))
+                             if e.payload["path"] == str(path) and e.payload.get("checksum")), None)
+            if previous and previous["checksum"] != checksum(path):
+                raise MediaError(f"locked scene {s.scene_id}: checksum mismatch for {kind}")
 
     def _segments(self, m: SceneManifest, order: list[str] | None = None) -> list[tuple[Path, Path, float]]:
         by_id = {s.scene_id: s for s in m.scenes}
@@ -102,15 +151,21 @@ class Renderer:
         segs = []
         for sid in ids:
             s = by_id[sid]
-            if "scene_image" not in s.asset_refs or "scene_audio" not in s.asset_refs:
+            visual = s.asset_refs.get("scene_video") or s.asset_refs.get("scene_image")
+            if not visual or "scene_audio" not in s.asset_refs:
                 raise ValueError(f"cảnh {sid} chưa có đủ asset để ghép")
-            segs.append((Path(s.asset_refs["scene_image"]), Path(s.asset_refs["scene_audio"]), s.duration_s))
+            if s.locked: self._check_locked(s)
+            segs.append((Path(visual), Path(s.asset_refs["scene_audio"]), s.duration_s))
         return segs
 
     def render(self, m: SceneManifest, only: set[str] | None = None) -> list[MediaAsset]:
         """Render các cảnh cần (chưa locked hoặc trong `only`) rồi ghép bản nháp. Trả về asset đã publish."""
         assets: list[MediaAsset] = []
+        selections(self.media.cfg, self.upload_dir, m)
         for s in m.scenes:
+            if s.locked:
+                self._check_locked(s)
+                continue
             need = (only is not None and s.scene_id in only) or (only is None and not (s.locked and len(s.asset_refs) >= 2))
             if need:
                 assets += self.render_scene(m, s)
@@ -125,7 +180,9 @@ class Renderer:
     def apply_cutlist(self, m: SceneManifest, cut: CutList) -> SceneManifest:
         """Sửa manifest theo cut-list: đổi prompt/narration, thay asset người tải lên, khoá cảnh. Trả về manifest mới
         (version + 1) đã render lại đúng các cảnh bị chạm."""
+        m = m.model_copy(deep=True)
         by_id = {s.scene_id: s for s in m.scenes}
+        replacements: list[MediaAsset] = []
         touched: set[str] = set(); regen: dict[str, tuple[bool, bool]] = {}
         for r in cut.repairs:
             s = by_id.get(r.scene_id)
@@ -140,7 +197,12 @@ class Renderer:
                     self._audit("replace_asset.rejected", m.video_id, {"scene_id": r.scene_id, "path": r.replacement_path[:200],
                                                                         "upload_dir": str(self.upload_dir)})
                     continue
-                s.asset_refs["scene_image"] = str(safe); s.locked = True; continue
+                s.asset_refs.pop("scene_video", None)
+                s.asset_refs["scene_image"] = str(safe); s.locked = True
+                # An uploaded file is not proof of a license. Rights review must resolve it.
+                replacements.append(self._asset(m.video_id, "scene_image", MediaResult(safe, "local", "upload"),
+                                                m.version + 1, s.scene_id, license="unknown"))
+                continue
             regen[r.scene_id] = (r.action in {"regenerate_audio", "regenerate_both"}, r.action in {"regenerate_image", "regenerate_both"})
             touched.add(r.scene_id)
         if cut.order:
@@ -149,10 +211,11 @@ class Renderer:
             m.scenes.sort(key=lambda x: x.order)
         new = SceneManifest(video_id=m.video_id, version=m.version + 1, script_version=m.script_version,
                             scenes=[Scene(**s.model_dump()) for s in m.scenes], voice=m.voice, aspect=m.aspect)
-        assets: list[MediaAsset] = []
+        assets: list[MediaAsset] = replacements
         for s in new.scenes:
             if s.scene_id in regen:
-                a, i = regen[s.scene_id]; assets += self.render_scene(new, s, audio=a, image=i)
+                a, i = regen[s.scene_id]
+                assets += self.render_scene(new, s, audio=a, image=i, revision=fingerprint(cut.model_dump()))
         fps, res = self._video_opts(new.aspect)
         vr = self.media.video.assemble(self._segments(new), self._dir(new.video_id) / f"draft_v{new.version}.mp4", fps, res)
         assets.append(self._asset(new.video_id, "draft_video", vr, new.version, prompt_ref=f"manifest:v{new.version}"))
@@ -163,21 +226,34 @@ class Renderer:
     def cues(self, m: SceneManifest, order: list[str] | None = None) -> list[Any]:
         """Mốc từng cảnh trong bản dựng cuối, tính theo đúng tham số ghép của assembler đang dùng."""
         return timeline(m, order, pad=getattr(self.media.video, "tail_pad_s", 0.0),
-                        transition=getattr(self.media.video, "transition_s", 0.0))
+                        transition=getattr(self.media.video, "transition_s", 0.0),
+                        frame_rate=self._video_opts(m.aspect)[0] if getattr(self.media.video, "bounded", False) else None)
 
     def finalize(self, m: SceneManifest, order: list[str] | None = None) -> MediaAsset:
         """Bản cuối + phụ đề. Phụ đề sinh thẳng từ narration của manifest (đó chính là văn bản đã đọc) nên không cần
         nhận dạng giọng nói, và mốc thời gian khớp bản dựng vì cùng một công thức."""
+        _, music = selections(self.media.cfg, self.upload_dir, m)
         fps, res = self._video_opts(m.aspect)
         r = self.media.video.assemble(self._segments(m, order), self._dir(m.video_id) / f"final_v{m.version}.mp4", fps, res)
-        a = self._asset(m.video_id, "final_video", r, m.version, prompt_ref=f"manifest:v{m.version}")
-        assets = [a]
-        text = srt(self.cues(m, order))
+        assets: list[MediaAsset] = []
+        captions = None
+        text = srt(caption_pages(self.cues(m, order),
+                                max_chars=int(self.media.cfg.video.get("caption_max_chars", 42))))
         if text:
             p = self._dir(m.video_id) / f"captions_v{m.version}.srt"
             p.write_text(text, encoding="utf-8")
+            captions = p
             cap = MediaResult(p, "studio", "srt-from-manifest")
             assets.append(self._asset(m.video_id, "captions", cap, m.version, prompt_ref=f"manifest:v{m.version}"))
+        music_path = None
+        if music:
+            music_path = copy_asset(music, self._dir(m.video_id) / f"music_v{m.version}")
+            ma = self._asset(m.video_id, "music", MediaResult(music_path, "local", "licensed-library"), m.version)
+            ma.provenance = music.provenance(); assets.append(ma)
+        finish(self.media.video, r.path, captions if self.media.cfg.video.get("burn_captions") else None,
+               music_path, music.attribution if music else "", float(self.media.cfg.production.get("music_volume", 0.12)))
+        a = self._asset(m.video_id, "final_video", r, m.version, prompt_ref=f"manifest:v{m.version}")
+        assets.insert(0, a)
         self._publish(assets, "render.final")
         return a
 
@@ -186,8 +262,12 @@ class Renderer:
         hoàn thiện; provenance vẫn ghi provider:model của ảnh nền, phần code làm nằm trong audit `render.thumbnails`."""
         d = self._dir(spec.video_id) / "thumbnails"; out: list[MediaAsset] = []; notes: dict[str, str] = {}
         for var in spec.variants:
-            base = self.media.image.generate(f"{var.prompt} {NO_TEXT}", image_size(self.media.cfg, "16:9"),
-                                             d / f"{var.variant_id}_base.png")
+            prompt, size = f"{var.prompt} {NO_TEXT}", image_size(self.media.cfg, "16:9")
+            def generate_base(p: Path, prompt: str = prompt, size: str = size) -> MediaResult:
+                return self.media.image.generate(prompt, size, p)
+            base, _ = self.cache.produce({"kind": "thumbnail", "config": self.media.cfg.image, "prompt": prompt, "size": size},
+                                         d / f"{var.variant_id}_base.png",
+                                         generate_base)
             fin = self.media.video.finish_thumbnail(base.path, d / f"{var.variant_id}.jpg", text=var.overlay_text)
             notes[var.variant_id] = fin.notes
             r = MediaResult(fin.path, base.provider, base.model)

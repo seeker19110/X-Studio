@@ -1,0 +1,37 @@
+# Hồ sơ vận hành xưởng. Giữ cấu hình TTS/ảnh thật của bạn khi ghép các block vào media.yaml.
+# Fake mặc định để một bản sao cấu hình không tự phát sinh chi phí API.
+output_dir: output
+upload_dir: output/uploads
+tts:
+  provider: fake
+image:
+  provider: fake
+video:
+  provider: ffmpeg
+  resolution: 1920x1080
+  fps: 30
+  motion: auto
+  fit: cover
+  tail_pad_s: 0.35
+  loudness_lufs: -14
+  burn_captions: true
+  caption_max_chars: 42
+render:
+  mode: bounded
+  threads: 2
+  max_retries: 3
+  timeout_s: 86400  # trần mỗi lệnh; giảm khi chỉ làm video ngắn
+production:
+  automation: production  # manual | production | publish; cũng đổi được trong UI
+  max_minutes: 720
+  chapter_minutes: 8
+  duration_tolerance: 0.20
+  allow_qc_warnings: false
+  style: "Cinematic documentary, natural light, coherent color palette, uncluttered composition."
+  music_volume: 0.12
+  library: library.yaml
+  scenes: {}
+  music: {}
+  graphics: {}
+platform:
+  provider: fake  # chọn youtube sau khi kết nối tài khoản của bạn

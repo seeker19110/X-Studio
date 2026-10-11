@@ -19,7 +19,7 @@ Topic = Literal[
 ]
 Namespace = Literal["strategy", "research", "voice", "production", "brand", "seo", "rights", "insights", "community", "knowledge"]
 ReviewSource = Literal["fact", "rights", "quality"]
-AssetKind = Literal["scene_audio", "scene_image", "draft_video", "final_video", "thumbnail", "captions"]
+AssetKind = Literal["scene_audio", "scene_image", "scene_video", "music", "draft_video", "final_video", "thumbnail", "captions"]
 VideoFormat = Literal["long", "short"]
 # `SupervisorActionKind` giống hệt bản company (đo được), nên nó lên core ở K3.5a; re-export giữ tên cũ.
 from xagents_core.events import SupervisorActionKind as SupervisorActionKind  # noqa: E402
@@ -125,6 +125,7 @@ class Provenance(BaseModel):
     prompt_ref: str | None = None
     license: str = "generated"  # generated | cc-by | licensed | owned | unknown
     source_url: str | None = None
+    attribution: str = ""
 
 
 class MediaAsset(BaseModel):

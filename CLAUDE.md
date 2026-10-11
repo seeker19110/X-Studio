@@ -1,4 +1,4 @@
-# Studio-creators — luật riêng (bổ sung `../AGENTS.md`, không thay)
+# X-Studio — hướng dẫn làm việc tại repo này
 
 Package `studio` (tên phân phối `video-creators`). Phòng ban video YouTube: 14 agent, 24 skill, 19 topic, 4 human
 gate (`plan`, `publish`, `replies`, `escalation`). Kế thừa kiến trúc của software-company; khác ở lớp **media** (TTS,
@@ -22,13 +22,14 @@ make test-all cov-all lint-all            # cả studio + gateway + xagents-core
 
 ## TDD ở package này
 
-`../AGENTS.md` luật bắt buộc 4 áp nguyên vẹn: viết test đỏ trong `tests/` trước, chạy `uv run pytest -q --cov -k
+Quy tắc TDD: viết test đỏ trong `tests/` trước, chạy `uv run pytest -q --cov -k
 <tên test>` thấy đỏ đúng lý do, rồi mới viết code trong `src/studio/` cho nó xanh. Test ghép video tự bỏ qua khi
 thiếu `ffmpeg` không tính là "đỏ đúng lý do" — kiểm bằng test khác không phụ thuộc `ffmpeg` nếu máy không có.
 
 ## Ba điều không được phá
 
 1. **Approval-first (ADR-0002)**: không có gì lên lịch / đăng / trả lời công khai trước gate `publish` / `replies`.
+   ADR-0010 cho phép policy đã được chủ xưởng ủy quyền tự duyệt plan/publish bằng chữ ký riêng; không giả human.
    Thêm đường đăng mới = thêm gate hoặc đi qua gate có sẵn, không có ngoại lệ "chỉ là thử".
 2. **Model quyết định – code hành động (ADR-0003)**: TTS, ảnh, ghép, preflight, A/B, upload là code. Tool duy nhất
    của model là web **chỉ đọc** (ADR-0007) cho `trend-researcher`, `fact-checker`.
@@ -39,7 +40,7 @@ thiếu `ffmpeg` không tính là "đỏ đúng lý do" — kiểm bằng test k
 
 | Sửa | Phải |
 |---|---|
-| `agents/`, `skills/` | 7 bước `../CONTRIBUTING.md` §3 (golden, eval-record với model thật) |
+| `agents/`, `skills/` | golden và eval-record với model thật; không đổi prompt mà chỉ chạy fake |
 | `topics/schemas/` | model trong `src/studio/events.py` cùng lúc |
 | pipeline render / scene manifest | ADR (0004 sửa từng cảnh, 0009 pipeline v2) — sửa cảnh, không dựng lại; ≤ 3 vòng |
 | thêm file test / ADR | số ca/file test và ADR mới nhất trong `README.md` (test đếm từ đĩa) |
@@ -48,4 +49,4 @@ thiếu `ffmpeg` không tính là "đỏ đúng lý do" — kiểm bằng test k
 ## Đọc thêm
 
 `ARCHITECTURE.md` (trỏ `docs/architecture.md`), `CODEMAP.md`, `TRAPS.md`, `docs/DANH-GIA-NANG-CAP-XUONG-VIDEO.md`
-(đánh giá nâng cấp), `docs/adr/` 0001–0009.
+(đánh giá nâng cấp), `docs/adr/` 0001–0010.

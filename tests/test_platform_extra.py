@@ -57,6 +57,7 @@ def test_default_fetcher_http_error_returns_status_and_body(monkeypatch):
     import studio.platform as plat
 
     class _FP:
+        def close(self): pass
         def read(self):
             return b'{"error": "bad"}'
 
