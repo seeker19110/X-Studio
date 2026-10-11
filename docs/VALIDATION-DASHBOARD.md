@@ -31,7 +31,7 @@ Chỉ chạy script với console `--demo` và database riêng; script tạo d�
 
 ## Kiểm thử Python và kiểm tra mã
 
-Lượt cuối `make verify` trên mã đã ổn định đạt: **752 Studio + 273 Gateway + 478 xagents-core = 1.503 ca**,
+Lượt cuối `make verify` trên mã đã ổn định đạt: **778 Studio + 273 Gateway + 478 xagents-core = 1.529 ca**,
 không có ca thất bại/skip; coverage **100%** ở mỗi package, gồm dòng và nhánh của xagents-core.
 Coverage dùng file riêng để tránh các lượt pytest đồng thời ghi đè dữ liệu; ngưỡng 100% của repository giữ nguyên.
 Chi tiết môi trường, sửa backend và giới hạn: [VALIDATION.md](VALIDATION.md).
