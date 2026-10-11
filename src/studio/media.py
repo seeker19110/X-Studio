@@ -183,9 +183,12 @@ def make_media(cfg: MediaConfig | None = None) -> MediaSuite:
     img: ImageGen = _pick("image", cfg.image, IMAGE_PROVIDERS, cfg, lambda: FakeImage(cfg))
     v = cfg.video
     assembler: type[FFmpegAssembler] = FFmpegAssembler
+    disk_options = {}
     if cfg.render.get("mode") == "bounded":
         from .long_render import BoundedAssembler
         assembler = BoundedAssembler
+        disk_options = {"segment_cache_max_bytes": int(cfg.render.get("segment_cache_max_bytes", 0)),
+                        "min_free_disk_bytes": int(cfg.render.get("min_free_disk_bytes", 256 * 1024 * 1024))}
     elif cfg.render.get("mode", "graph") != "graph":
         raise MediaError("render.mode must be graph or bounded")
     vid: VideoAssembler = (assembler(binary=str(v.get("binary") or "ffmpeg"), fit=str(v.get("fit") or "cover"),
@@ -193,7 +196,7 @@ def make_media(cfg: MediaConfig | None = None) -> MediaSuite:
                                            motion=str(v.get("motion") or "auto"), transition_s=float(v.get("transition_s", 0.3)),
                                            loudness_lufs=v.get("loudness_lufs", TARGET_LUFS),
                                            timeout=float(cfg.render.get("timeout_s") or RENDER_TIMEOUT_S), sandbox=sb,
-                                           threads=int(cfg.render.get("threads", 2)))
+                                           threads=int(cfg.render.get("threads", 2)), **disk_options)
                            if v.get("provider") == "ffmpeg" else _require_fake("video", v, FakeVideo()))
     return MediaSuite(tts=tts, image=img, video=vid, cfg=cfg, sandbox=sb)
 

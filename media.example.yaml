@@ -95,6 +95,9 @@ video:
 # `src/studio/sandbox.py` (bản tạm, sẽ chuyển vào lõi chung `xagents-core`).
 render:
   timeout_s: 600            # trần MỘT lệnh ffmpeg; hết giờ là lỗi render có thông báo, không phải cả phòng treo im lặng
+  # Với mode: bounded, ngân sách chỉ tính MKV checkpoint; không xóa cache TTS/ảnh hoặc tài nguyên người dùng.
+  # segment_cache_max_bytes: 21474836480  # tùy chọn 20 GiB mỗi video; mặc định 0 không tự dọn
+  # min_free_disk_bytes: 268435456       # mặc định 256 MiB; kiểm tra dung lượng giữa các bước, không phải quota OS
   # sandbox:
   #   mode: subprocess      # subprocess (mặc định) | container | auto. KHÔNG mặc định `auto` như software-company:
   #                         # ffmpeg đọc/ghi đường dẫn tuyệt đối trải trên nhiều thư mục (output, font, thư mục tạm) mà

@@ -43,6 +43,7 @@ from .events import (
     AuditLog,
     CutList,
     Envelope,
+    Finding,
     MediaAsset,
     MetadataPackage,
     PerformanceSnapshot,
@@ -312,6 +313,18 @@ class Orchestrator:
                 a = env.payload; d = _evidence(a)
                 if a["actor"] == ACTOR and a["action"] == "orchestrated": self.processed.add(d["event_id"])
                 elif a["actor"] == ACTOR and a["action"] == "once": self.once.add(d["key"])
+                elif env.actor == ACTOR and a["actor"] == ACTOR and a["action"] == "qc":
+                    # A completed code-stage is skipped on restart; retain its
+                    # measured report for reviewer retries instead of losing QC.
+                    vid = a.get("video_id")
+                    if (isinstance(vid, str) and vid and d.get("video_id") == vid
+                            and isinstance(d.get("available"), bool) and isinstance(d.get("metrics"), dict)
+                            and isinstance(d.get("findings"), list)):
+                        try:
+                            self.qcs[vid] = QCReport(available=d["available"], metrics=d["metrics"],
+                                                    findings=[Finding.model_validate(f) for f in d["findings"]])
+                        except ValidationError:
+                            pass  # Invalid newer evidence must not overwrite a valid report.
                 elif a["action"] == "plan.proposed": self.plans[d["plan_id"]] = d
                 elif a["action"] == "replies.proposed": self.reply_batches[d["batch_id"]] = d["drafts"]
                 elif a["action"] == "defer.until" and d.get("event_id"):
@@ -521,18 +534,30 @@ class Orchestrator:
         if target in self.paused and env.topic not in {"analytics-reports", "channel-briefs", "trend-reports"}:
             return self._defer(env, res, f"paused:{target}")
         # --- bước code (không model) ---
-        if env.topic == "scene-manifests" and env.actor != RENDERER:
-            self._render(env, res)
-        elif env.topic == "cut-lists":
-            self._apply_cut(env, res)
-        elif env.topic == "thumbnail-specs":
-            self._thumbs(env, res)
-        elif env.topic == "metadata-packages":
-            self._preflight(env, res)
-        elif env.topic == "review-results" and env.payload.get("verdict") != "pass":
-            self._rework(env, res)
-        elif env.topic == "publish-events" and env.payload.get("status") == "rolled_back":
-            self._rework(env, res, hint=f"rolled back: {env.payload.get('evidence', '')}")
+        key = f"code:{env.event_id}"
+        has_code_stage = (env.topic in {"cut-lists", "thumbnail-specs", "metadata-packages"}
+                          or (env.topic == "scene-manifests" and env.actor != RENDERER)
+                          or (env.topic == "review-results" and env.payload.get("verdict") != "pass")
+                          or (env.topic == "publish-events" and env.payload.get("status") == "rolled_back"))
+        if has_code_stage and key not in self.once:
+            self.renderer.operation_id = env.event_id
+            try:
+                if env.topic == "scene-manifests" and env.actor != RENDERER:
+                    self._render(env, res)
+                elif env.topic == "cut-lists":
+                    self._apply_cut(env, res)
+                elif env.topic == "thumbnail-specs":
+                    self._thumbs(env, res)
+                elif env.topic == "metadata-packages":
+                    self._preflight(env, res)
+                elif env.topic == "review-results" and env.payload.get("verdict") != "pass":
+                    self._rework(env, res)
+                elif env.topic == "publish-events" and env.payload.get("status") == "rolled_back":
+                    self._rework(env, res, hint=f"rolled back: {env.payload.get('evidence', '')}")
+            finally:
+                self.renderer.operation_id = None
+            if not res.transient and not res.deferred and "render!failed" not in res.actions:
+                self._remember(key)
         if res.transient: return self._defer_transient(env, res)
         if res.deferred: return res
         # --- kế hoạch biên tập ---
@@ -599,6 +624,9 @@ class Orchestrator:
                                      chapter_minutes=float(self.renderer.media.cfg.production.get("chapter_minutes", 8)))
             outs = []
             for i, p in enumerate(g.payloads):
+                if r.topic_out == "scene-manifests":
+                    previous = max((e.payload.get("version", 1) for e in self.bus.replay("scene-manifests", p["video_id"])), default=0)
+                    p = {**p, "version": max(p.get("version", 1), previous + 1)}
                 output_key = key_for(r.topic_out, p, env.key)
                 # một lần gọi model → token chỉ tính ở payload đầu, kẻo supervisor cộng ngân sách gấp N lần
                 outs.append(self.runner.publish(r.agent, env, r.topic_out, p, key=output_key, tokens=g.tokens if i == 0 else 0, model=g.model,
@@ -639,9 +667,30 @@ class Orchestrator:
             self._media_failure(env, res, e)
 
     def _apply_cut(self, env: Envelope, res: StepResult) -> None:
-        cut = CutList.model_validate(env.payload); m = self.manifest(cut.video_id)
+        cut = CutList.model_validate(env.payload)
+        # A repair may already have published the next manifest before interruption.
+        # Recover a prepared operation against its declared version. A fresh cut
+        # must still target the current version, or it could overwrite that repair.
+        history = list(self.bus.replay("scene-manifests", cut.video_id))
+        source = next((e for e in reversed(history)
+                       if e.payload.get("version", 1) == cut.manifest_version), None)
+        m = SceneManifest.model_validate(source.payload) if source else None
         if m is None: return
         try:
+            prior = self.renderer._resume_output()
+            if prior is not None:
+                final_env = next((e for e in prior if e.topic == "media-assets" and e.payload["kind"] == "final_video"), None)
+                if final_env is not None:
+                    self._after_final(m, cut.order or None, MediaAsset.model_validate(final_env.payload), res)
+                res.actions.append("repair→recovered" if final_env is None else "finalize")
+                return
+            current_version = max(e.payload.get("version", 1) for e in history)
+            if current_version != cut.manifest_version:
+                self._audit("cut.stale", {"event_id": env.event_id, "source_version": cut.manifest_version,
+                                         "current_version": current_version, "decision": cut.decision},
+                            video_id=cut.video_id)
+                res.actions.append("cut!stale")
+                return
             if cut.decision == "repair" and self.desk.repair_allowed(cut.video_id):
                 self.renderer.apply_cutlist(m, cut); res.actions.append(f"repair→v{m.version + 1}")
             else:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import tempfile
 from collections.abc import Callable
@@ -31,13 +32,55 @@ class RenderCache:
     def __init__(self, root: Path):
         self.root = root
 
+    def blob_path(self, key: Any, suffix: str) -> Path:
+        return self.root / (fingerprint({"format": 1, "input": key}) + suffix)
+
+    def prune_segments(self, max_bytes: int, protected: set[Path]) -> None:
+        """Bound committed scene media bytes; never evict active, foreign or symlink files.
+
+        Only owned ffmpeg scene checkpoints are disposable. Paid media caches and
+        user assets are outside this retention policy. Metadata overhead is excluded.
+        """
+        if not max_bytes:
+            return
+        entries = []
+        for blob in self.root.glob("*.mkv"):
+            meta = blob.with_suffix(".json")
+            if not re.fullmatch(r"[0-9a-f]{64}", blob.stem) or blob.is_symlink() or meta.is_symlink():
+                continue
+            try:
+                data = json.loads(meta.read_text(encoding="utf-8"))
+                if data.get("provider") != "ffmpeg" or data.get("model") != "bounded-scene":
+                    continue
+                stat = blob.stat()
+            except (OSError, ValueError, AttributeError):
+                continue
+            entries.append((stat.st_mtime_ns, blob, stat.st_size))
+        active = sum(size for _, blob, size in entries if blob in protected)
+        if active > max_bytes:
+            raise MediaError(f"active segment media {active} bytes exceeds segment cache budget {max_bytes}; "
+                             "increase render.segment_cache_max_bytes or split the manifest")
+        total = sum(size for _, _, size in entries)
+        for _, blob, size in sorted(entries):
+            if total <= max_bytes:
+                break
+            if blob not in protected:
+                try:
+                    # Keep metadata if the large blob cannot be removed, so a later
+                    # retention attempt can still identify and reclaim it.
+                    blob.unlink()
+                    blob.with_suffix(".json").unlink()
+                except OSError as exc:
+                    raise MediaError(f"cannot evict segment checkpoint {blob}: {exc}; "
+                                     "check cache directory permissions and filesystem health") from exc
+                total -= size
+
     def produce(self, key: Any, out: Path, generate: Callable[[Path], MediaResult], *,
                 force: bool = False, materialize: bool = True) -> tuple[MediaResult, bool]:
         """Use materialize=False only for consumers that never modify the returned blob."""
         self.root.mkdir(parents=True, exist_ok=True)
-        name = fingerprint({"format": 1, "input": key})
-        blob = self.root / (name + out.suffix)
-        meta = self.root / (name + ".json")
+        blob = self.blob_path(key, out.suffix)
+        meta = blob.with_suffix(".json")
         result = None
         if not force:
             try:
