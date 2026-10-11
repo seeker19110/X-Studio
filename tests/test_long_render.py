@@ -126,3 +126,91 @@ def test_interrupted_concat_preserves_final_and_resumes_valid_checkpoints(tmp_pa
     assembler._run.reset_mock()
     assembler.assemble([(image, audio, 1)], out, 10, '160x90')
     assert assembler._run.call_count == 2  # corrupt scene is repaired, then concatenated
+
+
+def test_bounded_disk_configuration_and_negative_limits(tmp_path):
+    from studio.long_render import BoundedAssembler
+    from studio.media import MediaError
+    suite = make_media(MediaConfig(render={'mode': 'bounded', 'segment_cache_max_bytes': 123,
+                                           'min_free_disk_bytes': 456}, video={'provider': 'ffmpeg'}))
+    assert suite.video.segment_cache_max_bytes == 123
+    assert suite.video.min_free_disk_bytes == 456
+    for kwargs in ({'segment_cache_max_bytes': -1}, {'min_free_disk_bytes': -1}):
+        with pytest.raises(MediaError, match='nonnegative'):
+            BoundedAssembler(**kwargs)
+
+
+def test_bounded_free_space_stops_before_encode_after_encode_and_before_concat(tmp_path, monkeypatch):
+    from collections import namedtuple
+    from pathlib import Path
+    from unittest.mock import Mock
+
+    from studio.long_render import BoundedAssembler
+    from studio.media import MediaError
+    usage = namedtuple('usage', 'total used free')
+    visual = tmp_path / 'v.png'; visual.write_bytes(b'image')
+    audio = tmp_path / 'a.wav'; audio.write_bytes(b'voice')
+    monkeypatch.setattr('studio.long_render.probe_duration', lambda _: 1)
+    for free_values, expected_calls in (([0], 0), ([1000, 0], 1), ([1000, 1000, 101], 1)):
+        out = tmp_path / str(expected_calls) / str(free_values[-1]) / 'out.mp4'
+        asm = BoundedAssembler(min_free_disk_bytes=100, segment_cache_max_bytes=1000)
+        def run(args, **kwargs): Path(args[-1]).write_bytes(b'x' * 10)
+        asm._run = Mock(side_effect=run)
+        monkeypatch.setattr('studio.long_render.shutil.disk_usage', Mock(side_effect=[usage(2000, 0, n) for n in free_values]))
+        with pytest.raises(MediaError, match='free disk'):
+            asm.assemble([(visual, audio, 1)], out, 10, '160x90')
+        assert asm._run.call_count == expected_calls
+        assert not out.exists()
+
+
+def test_bounded_retention_protects_future_scenes(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from studio.long_render import BoundedAssembler
+    visual = tmp_path / 'v.png'; visual.write_bytes(b'image')
+    audios = [tmp_path / f'a{i}.wav' for i in range(3)]
+    for i, audio in enumerate(audios): audio.write_bytes(str(i).encode())
+    monkeypatch.setattr('studio.long_render.probe_duration', lambda _: 1)
+    encoded = []
+    asm = BoundedAssembler(min_free_disk_bytes=0, motion='none')
+    def run(args, **kwargs):
+        if 'concat' not in args: encoded.append(args)
+        Path(args[-1]).write_bytes(b'x' * 10)
+    asm._run = run
+    scenes = [(visual, a, 1) for a in audios]
+    asm.assemble(scenes, tmp_path / 'out.mp4', 10, '160x90')
+    asm.segment_cache_max_bytes = 20
+    # Old first scene is inactive. Both later scenes must survive initial pruning.
+    asm.assemble(scenes[1:], tmp_path / 'out.mp4', 10, '160x90')
+    assert len(encoded) == 3
+    assert len(list((tmp_path / '.segments').glob('*.mkv'))) == 2
+
+
+def test_bounded_disk_failure_keeps_previous_final_and_active_checkpoints(tmp_path, monkeypatch):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from studio.long_render import BoundedAssembler
+    from studio.media import MediaError
+
+    visual = tmp_path / 'v.png'; visual.write_bytes(b'image')
+    audio = tmp_path / 'a.wav'; audio.write_bytes(b'voice')
+    out = tmp_path / 'out.mp4'; out.write_bytes(b'previous final')
+    monkeypatch.setattr('studio.long_render.probe_duration', lambda _: 1)
+    asm = BoundedAssembler(min_free_disk_bytes=100, segment_cache_max_bytes=5)
+    def run(args, **kwargs): Path(args[-1]).write_bytes(b'x' * 10)
+    asm._run = Mock(side_effect=run)
+    with pytest.raises(MediaError, match=r'active.*budget'):
+        asm.assemble([(visual, audio, 1)], out, 10, '160x90')
+    assert asm._run.call_count == 1 and out.read_bytes() == b'previous final'
+    assert len(list((tmp_path / '.segments').glob('*.mkv'))) == 1
+    asm.segment_cache_max_bytes = 10
+    asm._run.reset_mock()
+    monkeypatch.setattr('studio.long_render.shutil.disk_usage', Mock(side_effect=[
+        SimpleNamespace(free=100000), SimpleNamespace(free=0)]))
+    with pytest.raises(MediaError, match='free disk'):
+        asm.assemble([(visual, audio, 1)], out, 10, '160x90')
+    assert asm._run.call_count == 1  # cached segment; only concat
+    assert out.read_bytes() == b'previous final'
+    assert not list(tmp_path.glob('.concat-*'))

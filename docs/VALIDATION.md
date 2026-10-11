@@ -1,5 +1,24 @@
 # Xác minh bản nâng cấp factory
 
+## Xác minh bản tích hợp lên main cho PR #6 (2026-10-11)
+
+Đồng bộ nhánh audit với main `80a76e6` sau PR #5; giữ nhật ký đầu ra render,
+manifest version tăng đơn điệu, chặn cut-list lỗi thời và disk budget của ADR-0012.
+Kết hợp các ràng buộc aspect/ngôn ngữ và regression audit với các sửa đó.
+
+`COVERAGE_FILE=/tmp/xstudio-pr-merged.coverage PATH=/tmp/xstudio-audit-tools/bin:$PATH make verify`
+đạt trên bản tích hợp: **778 Studio + 273 Gateway + 478 xagents-core = 1.529 test**,
+không skip; coverage **100%** mỗi package, gồm line/branch của core. Studio có 4.868 dòng
+thực thi và 61 file test. Ruff/mypy cả ba package và eval replay strict **28/28** đạt.
+Môi trường Python 3.13.15/FFmpeg n8.1.3-17 giống lượt audit bên dưới.
+
+Tái chạy cả `console-smoke.cjs` và `dashboard-smoke.cjs` trên server demo/SQLite riêng
+bằng mã đã tích hợp: long/short, audience/hook/message, metadata English, gate generation,
+settings drafts và retry kế hoạch thiếu budget đạt; không lỗi JavaScript/tràn ngang.
+Kiểm tra responsive sau cập nhật CSS đạt **49 tổ hợp** bảy màn hình × bảy chiều rộng
+1920/1440/1280/1024/768/390/360px, đúng một nav active/aria-current và bốn cột ở 1920px.
+Không gọi provider tính phí, YouTube thật hoặc chạy lại benchmark dài của PR #5.
+
 ## Audit và hoàn thiện toàn workspace (2026-10-11)
 
 Đã lấy main `0dc1d81606c38b32cdf3bd7b29e76a0e9c4047a5` từ GitHub vào workspace,
@@ -58,6 +77,58 @@ tổng dung lượng. Nhiều sidecar và publish bus chưa cùng một transact
 hành động bên ngoài và checkpoint vẫn có thể lặp upload/reply. Upload resumable được
 kiểm bằng HTTP giả, chưa có phiên upload được lưu để tiếp tục qua restart toàn tiến trình.
 100% coverage và demo không thay thế các phạm vi xác minh đó.
+
+## Bổ sung sau PR #4: đầu ra bền vững và disk budget
+
+Base: `0dc1d81606c38b32cdf3bd7b29e76a0e9c4047a5` (PR #4 được merge bởi tác nhân
+khác trong lúc đang làm tiếp). Môi trường chạy bị tạo lại; checkout cũ chưa commit
+không còn, nên các sửa tiếp theo được tái dựng từ main bằng TDD. Không thay đổi hai
+repo X-Agents/projects-template, không gọi provider trả phí/upload/deploy.
+
+Regression tái hiện **hai draft thay vì một** khi render xong nhưng thumbnail-designer
+lỗi transient. Bản sửa kiểm tra cả restart SQLite và số lần editor được gọi. Chèn lỗi
+trước/sau publish của draft, repair, final, thumbnail xác minh dùng lại event ID, không
+gọi lại provider sau khi batch đã chuẩn bị bền vững. Có test từ chối output đã mất/hỏng,
+repair không nhảy version ở giới hạn vòng sửa, lỗi xóa cache không mất checkpoint active.
+Bốn ca repair/approve lỗi thời, có/không restart, xác minh không gọi renderer,
+không ghi đè v2 và journal trước đó vẫn khôi phục được. Luồng request_changes từ
+kịch bản tăng phiên bản manifest, kể cả model bỏ trường version hợp lệ theo schema.
+QC được khôi phục cho reviewer sau restart; audit sai actor/malformed không ghi đè
+báo cáo hợp lệ. Kiểm chứng này dùng file/SQLite/provider giả và FFmpeg offline.
+
+`make verify` trên bản cuối đạt **711 Studio + 251 Gateway + 477 core = 1.439 test**,
+coverage 100% từng package (Studio 4.706 dòng thực thi); Ruff/mypy đạt và **28/28**
+eval replay đạt. Không skip; Gateway còn RuntimeWarning `runpy` đã có trước. Thêm
+26 regression cases so với PR #4, không thêm file test. Script benchmark cũng qua Ruff.
+
+Stress thật, Linux/Python 3.12.14/FFmpeg 7.1.5, lệnh:
+
+```bash
+uv run python scripts/benchmark-bounded.py --scenes 60 --scene-seconds 30 \
+  --resolution 640x360 --wall-budget 600
+```
+
+| Đo | Kết quả |
+|---|---:|
+| MP4 thực tế, 15 fps | 1.824 s (30 phút 24 giây) |
+| Cold / warm render | 61,071 s / 24,248 s |
+| Scene encode cold / warm | 60 / 0 |
+| QC toàn file | 5,815 s, scan_complete=true, không block |
+| Peak RSS từng tiến trình con / Python | 223.512 / 32.128 KiB |
+| CPU cộng dồn tiến trình con | 140,675 s |
+| Segment + metadata | 116.576.747 byte |
+| Workspace tạm gồm input và hai MP4 | 293.701.146 byte |
+| Ngân sách segment cấu hình | 536.870.912 byte (512 MiB) |
+
+1 thread cấu hình; nguồn là PPM một màu và sóng sine riêng từng cảnh, không phải footage
+hoặc giọng đọc live. Kiểm duration ffprobe và mtime cache không đổi. Script tự dọn thư
+mục tạm, giới hạn đầu vào tối đa 1 giờ, 2 độ phân giải, thời gian từng subprocess theo
+phần ngân sách còn lại. Đây không phải thử tải 12 giờ/1080p/Windows hoặc chi phí thật.
+
+Disk budget chỉ quản lý MKV checkpoint hợp lệ từng video. Cảnh đang encode có thể vượt
+ngân sách trước khi bị phát hiện; free-space estimate không thay filesystem quota.
+Audit outbox, paid cache và output người dùng chưa có chính sách dọn tự động. Xem
+[ADR-0012](adr/0012-durable-render-outbox-and-disk-budgets.md) về các cửa sổ lỗi còn lại.
 
 ## Bổ sung: khôi phục và giới hạn tài nguyên (2026-10-11)
 

@@ -338,3 +338,78 @@ def test_ffmpeg_thumbnail_is_1280x720_jpeg_with_vietnamese_overlay(tmp_path):
     assert probe.startswith("mjpeg,1280,720") and out.stat().st_size <= THUMBNAIL_MAX_BYTES
     assert "1280x720" in r.notes and ("chữ=1 dòng" in r.notes if find_font() else "KHÔNG phủ được chữ" in r.notes)
     assert list(tmp_path.glob(".studio-*")) == []  # thư mục tạm đã dọn
+
+
+@pytest.mark.parametrize('stage', ['render', 'repair', 'final', 'thumbnails'])
+@pytest.mark.parametrize('crash_after', [False, True])
+def test_prepared_output_recovers_partial_publication(tmp_path, monkeypatch, stage, crash_after):
+    from studio.sqlite_bus import SQLiteBus
+
+    path = tmp_path / 'journal.sqlite'
+    bus = SQLiteBus(path)
+    r = Renderer(bus, make_media(MediaConfig(output_dir=tmp_path)), tmp_path)
+    m = _manifest()
+    if stage != 'render':
+        r.render(m)
+    cut = CutList(video_id='V1', manifest_version=1, decision='repair', repairs=[
+        Repair(scene_id='S1', action='regenerate_image', reason='fix')])
+    spec = ThumbnailSpec(video_id='V1', variants=[ThumbnailVariant(variant_id='A', prompt='desk', overlay_text='Hi')])
+
+    def invoke(renderer):
+        renderer.operation_id = 'operation-1'
+        if stage == 'render': return renderer.render(m.model_copy(deep=True))
+        if stage == 'repair': return renderer.apply_cutlist(m, cut)
+        if stage == 'final': return renderer.finalize(m)
+        return renderer.thumbnails(spec)
+
+    publish = bus.publish
+    target_kind = {'render': 'draft_video', 'repair': 'draft_video', 'final': 'final_video', 'thumbnails': 'thumbnail'}[stage]
+
+    def interrupted(env):
+        if env.topic == 'media-assets' and env.payload['kind'] == target_kind:
+            if crash_after: publish(env)
+            raise RuntimeError('power loss')
+        return publish(env)
+
+    monkeypatch.setattr(bus, 'publish', interrupted)
+    with pytest.raises(RuntimeError, match='power loss'): invoke(r)
+    before = [e.event_id for e in bus.replay('media-assets')]
+    bus.close()
+    bus = SQLiteBus(path)
+    resumed = Renderer(bus, make_media(MediaConfig(output_dir=tmp_path)), tmp_path)
+    def forbidden(*args, **kwargs): raise AssertionError('completed media generated twice')
+    monkeypatch.setattr(resumed.media.video, 'assemble', forbidden)
+    monkeypatch.setattr(resumed.media.image, 'generate', forbidden)
+    invoke(resumed)
+    invoke(resumed)
+    outputs = list(bus.replay('media-assets'))
+    assert all(sum(e.event_id == eid for e in outputs) == 1 for eid in before)
+    expected = 2 if stage == 'repair' else 1
+    assert sum(e.payload['kind'] == target_kind for e in outputs) == expected
+    assert any(e.causation_id == 'operation-1' for e in outputs)
+    if stage == 'repair':
+        assert max(e.payload['version'] for e in bus.replay('scene-manifests')) == 2
+    bus.close()
+
+
+@pytest.mark.parametrize('damage', ['missing', 'changed'])
+def test_prepared_output_refuses_damaged_artifact(tmp_path, monkeypatch, damage):
+    from pathlib import Path
+
+    bus = InMemoryBus()
+    renderer = Renderer(bus, make_media(MediaConfig(output_dir=tmp_path)), tmp_path)
+    renderer.operation_id = 'damaged-operation'
+    deliver = renderer._deliver
+    def interrupted(events): raise RuntimeError('before delivery')
+    monkeypatch.setattr(renderer, '_deliver', interrupted)
+    with pytest.raises(RuntimeError, match='before delivery'): renderer.render(_manifest())
+    journal = next(json.loads(e.payload['evidence']) for e in bus.replay('audit-log')
+                   if e.payload['action'] == 'render.prepared')
+    asset = next(e for e in journal['events'] if e['topic'] == 'media-assets')
+    path = Path(asset['payload']['path'])
+    if damage == 'missing': path.unlink()
+    else: path.write_bytes(b'changed')
+    monkeypatch.setattr(renderer, '_deliver', deliver)
+    with pytest.raises(MediaError, match=r'prepared output.*restore'):
+        renderer.render(_manifest())
+    assert not list(bus.replay('media-assets'))

@@ -10,6 +10,8 @@ một bước: vá một chỗ là để lại hai chỗ y hệt (TRAPS.md §1 k
 """
 from __future__ import annotations
 
+import pytest
+
 from studio.bus import InMemoryBus
 from studio.events import Envelope
 from studio.fakes import make_scripted_client
@@ -282,4 +284,198 @@ def test_reply_batch_retry_and_restart_do_not_repost_completed_replies(tmp_path,
     replies = [e.payload["comment_id"] for e in bus.replay("publish-events")]
     assert replies == ["c1", "c2", "c3"]
     assert calls == ["c1", "c2", "c2", "c3"]
+    bus.close()
+
+
+def test_render_checkpoint_survives_thumbnail_failure_and_restart(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from studio.events import Scene, SceneManifest
+    from studio.sqlite_bus import SQLiteBus
+
+    path = tmp_path / 'render.sqlite'
+    bus = SQLiteBus(path)
+    o = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    env = Envelope(topic='scene-manifests', key='V1', actor='production-manager', payload=SceneManifest(
+        video_id='V1', scenes=[Scene(scene_id='S1', order=0, narration='hello', visual_prompt='desk')]).model_dump())
+    bus.publish(env)
+    calls = []
+
+    def generate(runner, agent, *args, **kwargs):
+        calls.append(agent)
+        if agent == 'thumbnail-designer' and calls.count(agent) == 1:
+            raise TransientError('retry')
+        return SimpleNamespace(payloads=[], tokens=0, model='fake', context_writes=[], cache_hit_ratio=0)
+
+    monkeypatch.setattr('studio.longform.generate_partitioned', generate)
+    assert o.process(env).transient
+    o.queue = [queued for queued in o.queue if queued.event_id != env.event_id]
+    o.run()  # editor consumes the successful draft while thumbnail is deferred
+    bus.close()
+    bus = SQLiteBus(path)
+    resumed = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    resumed.run()
+    drafts = [e for e in bus.replay('media-assets') if e.payload['kind'] == 'draft_video']
+    assert len(drafts) == 1
+    assert calls.count('editor') == 1
+    assert calls.count('thumbnail-designer') == 2
+    bus.close()
+
+
+def test_draft_published_before_stage_checkpoint_does_not_repeat_editor(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+
+    from studio.events import Scene, SceneManifest
+    from studio.sqlite_bus import SQLiteBus
+
+    path = tmp_path / 'stage.sqlite'
+    bus = SQLiteBus(path)
+    o = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    env = Envelope(topic='scene-manifests', key='V1', actor='production-manager', payload=SceneManifest(
+        video_id='V1', scenes=[Scene(scene_id='S1', order=0, narration='hello', visual_prompt='desk')]).model_dump())
+    bus.publish(env)
+    calls = []
+    def generate(runner, agent, *args, **kwargs):
+        calls.append(agent)
+        return SimpleNamespace(payloads=[], tokens=0, model='fake', context_writes=[], cache_hit_ratio=0)
+    monkeypatch.setattr('studio.longform.generate_partitioned', generate)
+    remember = o._remember
+    def interrupted(key):
+        if key == f'code:{env.event_id}': raise RuntimeError('checkpoint interrupted')
+        return remember(key)
+    monkeypatch.setattr(o, '_remember', interrupted)
+    with pytest.raises(RuntimeError, match='checkpoint interrupted'): o.process(env)
+    bus.close()
+    bus = SQLiteBus(path)
+    resumed = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    def forbidden(*args, **kwargs): raise AssertionError('must reuse prepared output')
+    monkeypatch.setattr(resumed.renderer.media.video, 'assemble', forbidden)
+    resumed.run()
+    assert sum(e.payload['kind'] == 'draft_video' for e in bus.replay('media-assets')) == 1
+    assert calls.count('editor') == 1
+    bus.close()
+
+
+@pytest.mark.parametrize("decision", ["repair", "approve"])
+def test_cut_restart_uses_source_version_and_completes_prepared_output(tmp_path, monkeypatch, decision):
+    import pytest
+
+    from studio.events import CutList, Scene, SceneManifest
+    from studio.sqlite_bus import SQLiteBus
+
+    path = tmp_path / 'cut.sqlite'
+    bus = SQLiteBus(path)
+    o = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    manifest = SceneManifest(video_id='V1', scenes=[Scene(scene_id='S1', order=0, narration='hello', visual_prompt='desk')])
+    o.renderer.render(manifest)
+    env = Envelope(topic='cut-lists', key='V1', actor='editor', payload=CutList(
+        video_id='V1', manifest_version=1, decision=decision, repairs=[]).model_dump())
+    bus.publish(env)
+    publish = bus.publish
+    def interrupted(event):
+        if event.topic == 'media-assets' and event.payload['kind'] == ('draft_video' if decision == 'repair' else 'final_video'):
+            raise RuntimeError('partial repair')
+        return publish(event)
+    monkeypatch.setattr(bus, 'publish', interrupted)
+    with pytest.raises(RuntimeError, match='partial repair'): o.process(env)
+    assert o.manifest('V1').version == (2 if decision == 'repair' else 1)
+    bus.close()
+    bus = SQLiteBus(path)
+    resumed = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    monkeypatch.setattr(resumed.desk, 'repair_allowed', lambda vid: False)
+    result = resumed.process(env)
+    assert ('repair→recovered' if decision == 'repair' else 'finalize') in result.actions
+    assert resumed.manifest('V1').version == (2 if decision == 'repair' else 1)
+    assert sum(e.payload['kind'] == 'draft_video' for e in bus.replay('media-assets')) == (2 if decision == 'repair' else 1)
+    assert (decision == 'approve') == any(e.payload['kind'] == 'final_video' for e in bus.replay('media-assets'))
+    bus.close()
+
+
+def test_restart_restores_latest_trusted_qc_for_reviewers(tmp_path):
+    import json
+
+    from studio.events import AuditLog, Finding
+    from studio.qc import QCReport
+    from studio.sqlite_bus import SQLiteBus
+
+    path = tmp_path / 'qc.sqlite'
+    bus = SQLiteBus(path)
+    original = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    previous = QCReport(available=False)
+    expected = QCReport(available=True, metrics={'duration_s': 42}, findings=[
+        Finding(level='warn', text='soft issue', location='video')])
+    original._audit('qc', {'video_id': 'V1', **previous.as_dict()}, video_id='V1')
+    original._audit('qc', {'video_id': 'V1', **expected.as_dict()}, video_id='V1')
+    # Neither malformed nor actor-spoofed evidence may replace a measured report.
+    original._audit('qc', {'video_id': 'V1', 'available': True, 'metrics': {},
+                           'findings': [{'level': 'invalid'}]}, video_id='V1')
+    for evidence in ({'video_id': 'V1'}, {'video_id': 'V1', 'available': 'yes', 'metrics': [], 'findings': []}):
+        original._audit('qc', evidence, video_id='V1')
+    for actor, payload_actor in [('renderer', 'orchestrator'), ('orchestrator', 'renderer')]:
+        audit = AuditLog(actor=payload_actor, action='qc', video_id='V1',
+                         evidence=json.dumps({'video_id': 'V1', **previous.as_dict()}))
+        bus.publish(Envelope(topic='audit-log', key=actor, actor=actor, payload=audit.model_dump()))
+    bus.close()
+    bus = SQLiteBus(path)
+    resumed = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    assert resumed.qcs['V1'].as_dict() == expected.as_dict()
+    from studio.orchestrator import _with_package
+    trigger = Envelope(topic='media-assets', key='V1', actor='renderer', payload={'video_id': 'V1'})
+    assert _with_package(trigger, resumed)['package']['qc'] == expected.as_dict()
+    bus.close()
+
+
+@pytest.mark.parametrize('decision', ['repair', 'approve'])
+@pytest.mark.parametrize('restart', [False, True])
+def test_fresh_stale_cut_cannot_overwrite_newer_repair(tmp_path, decision, restart, monkeypatch):
+    from pathlib import Path
+    from unittest.mock import Mock
+
+    from studio.events import CutList, Repair, Scene, SceneManifest
+    from studio.renderer import checksum
+    from studio.sqlite_bus import SQLiteBus
+
+    database = tmp_path / 'stale.sqlite'
+    bus = SQLiteBus(database)
+    orch = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    source = SceneManifest(video_id='V1', scenes=[
+        Scene(scene_id='S1', order=0, narration='original first', visual_prompt='desk'),
+        Scene(scene_id='S2', order=1, narration='original second', visual_prompt='room')])
+    orch.renderer.render(source)
+    first_cut = CutList(video_id='V1', manifest_version=1, decision='repair', repairs=[
+        Repair(scene_id='S1', action='regenerate_audio', reason='first edit', new_narration='first accepted edit')])
+    first = Envelope(topic='cut-lists', key='V1', actor='editor', payload=first_cut.model_dump())
+    bus.publish(first)
+    orch.process(first)
+    accepted = orch.manifest('V1').model_dump()
+    outputs = list(bus.replay('media-assets'))
+    files = {e.payload['path']: checksum(Path(e.payload['path'])) for e in outputs}
+    if restart:
+        bus.close()
+        bus = SQLiteBus(database)
+        orch = _orch(bus, tmp_path, TransientError('unused'), n=0)
+    repair = Mock(wraps=orch.renderer.apply_cutlist)
+    finalize = Mock(wraps=orch.renderer.finalize)
+    monkeypatch.setattr(orch.renderer, 'apply_cutlist', repair)
+    monkeypatch.setattr(orch.renderer, 'finalize', finalize)
+    stale = Envelope(topic='cut-lists', key='V1', actor='editor', payload=CutList(
+        video_id='V1', manifest_version=1, decision=decision, repairs=[
+            Repair(scene_id='S2', action='regenerate_audio', reason='late edit', new_narration='late conflicting edit')]
+        if decision == 'repair' else []).model_dump())
+    bus.publish(stale)
+    result = orch.process(stale)
+    assert 'cut!stale' in result.actions
+    repair.assert_not_called()
+    finalize.assert_not_called()
+    assert orch.manifest('V1').model_dump() == accepted
+    assert len(list(bus.replay('media-assets'))) == len(outputs)
+    assert {path: checksum(Path(path)) for path in files} == files
+    rejected = [e for e in bus.replay('audit-log') if e.payload['action'] == 'cut.stale']
+    assert _evidence(rejected[-1].payload)['event_id'] == stale.event_id
+    # Rejecting the distinct stale event must leave the first operation's durable
+    # output intact and replayable, including its original media checksums.
+    orch.renderer.operation_id = first.event_id
+    assert orch.renderer.apply_cutlist(source, first_cut).model_dump() == accepted
     bus.close()

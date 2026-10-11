@@ -29,7 +29,18 @@ def test_routes_match_front_matter():
     assert check_routes(load_agents()) == []
 
 
-def test_full_pipeline_stops_at_gates_and_publishes_after_approval(tmp_path):
+def test_full_pipeline_stops_at_gates_and_publishes_after_approval(tmp_path, monkeypatch):
+    from studio import longform
+    generate = longform.generate_partitioned
+
+    def omit_manifest_version(*args, **kwargs):
+        result = generate(*args, **kwargs)
+        if args[3] == "scene-manifests":
+            for payload in result.payloads:
+                payload.pop("version", None)  # schema allows the default to be omitted
+        return result
+
+    monkeypatch.setattr(longform, "generate_partitioned", omit_manifest_version)
     bus = InMemoryBus(); o = _orch(bus, tmp_path, plan_size=2, repairs=1)
     bus.publish(Envelope(topic="channel-briefs", key="CH1", actor="human", payload=CHANNEL))
     o.run()
@@ -54,10 +65,12 @@ def test_full_pipeline_stops_at_gates_and_publishes_after_approval(tmp_path):
     ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")]
     assert ev and ev[0]["status"] == "scheduled" and o.desk.state["CH1-V1"] == "scheduled"
     # video 2 bị request_changes → làm lại từ kịch bản với hint, quay về gate publish lần nữa
+    before_rework = o.manifest("CH1-V2").version
     o.gate.decide("PUB-CH1-V2", "request_changes", by="human:editor", reason="hook yếu"); o.run()
     briefs = [e.payload for e in bus.replay("video-briefs", "CH1-V2")]
     assert briefs[-1]["retry"] == 1 and "hook yếu" in briefs[-1]["hint"]
     assert "PUB-CH1-V2" in o.gate.pending
+    assert o.manifest("CH1-V2").version > before_rework
     # số liệu thật → phân tích với điểm rơi map vào cảnh → strategy nhận insight
     bus.publish(Envelope(topic="publish-events", key="CH1-V1", actor="human", payload={"video_id": "CH1-V1", "status": "published"}))
     bus.publish(Envelope(topic="performance-snapshots", key="CH1-V1", actor="human", payload={
