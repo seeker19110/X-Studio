@@ -54,7 +54,12 @@
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="m8 12 3 3 5-6" />
             <rect x="4" y="3" width="16" height="18" rx="2" /></svg
-          >Duyệt & xuất bản <i id="gate-count">0</i>
+          >Phòng duyệt <i id="gate-count">0</i>
+        </button>
+        <button type="button" class="nav" data-view="publishing">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 16V3m-5 5 5-5 5 5M4 14v6h16v-6" /></svg
+          >Xuất bản <i id="publishing-count">0</i>
         </button>
         <button type="button" class="nav" data-view="activity">
           <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -350,11 +355,7 @@
         >
           <div id="workflow-guide" class="workflow-guide"></div>
         </section>
-        <section
-          id="review-view"
-          class="view hidden"
-          aria-label="Duyệt và xuất bản"
-        >
+        <section id="review-view" class="view hidden" aria-label="Phòng duyệt">
           <div class="section-heading">
             <div>
               <h2>Sẵn sàng cho quyết định của bạn</h2>
@@ -363,6 +364,74 @@
             <span class="badge lavender">ĐIỂM KIỂM SOÁT</span>
           </div>
           <div id="gate-list"></div>
+        </section>
+        <section id="publishing-view" class="view hidden" aria-label="Xuất bản">
+          <div id="publishing-platform" class="publishing-platform panel"></div>
+          <div class="publishing-summary" aria-label="Tiến độ xuất bản">
+            <article>
+              <small>Chờ kiểm tra / duyệt</small
+              ><strong id="publishing-ready">0</strong>
+            </article>
+            <article>
+              <small>Đã lên lịch</small
+              ><strong id="publishing-scheduled">0</strong>
+            </article>
+            <article>
+              <small>Đã xuất bản</small><strong id="publishing-live">0</strong>
+            </article>
+          </div>
+          <div class="section-heading publishing-heading">
+            <div>
+              <h2>Lịch đăng & video</h2>
+              <p>Video vẫn ở đây sau khi yêu cầu duyệt đã hoàn tất.</p>
+            </div>
+            <div
+              class="publishing-filters"
+              aria-label="Lọc trạng thái xuất bản"
+            >
+              <button
+                type="button"
+                class="button small selected"
+                data-publishing-filter="all"
+                aria-pressed="true"
+              >
+                Tất cả
+              </button>
+              <button
+                type="button"
+                class="button small"
+                data-publishing-filter="ready"
+                aria-pressed="false"
+              >
+                Chờ duyệt
+              </button>
+              <button
+                type="button"
+                class="button small"
+                data-publishing-filter="scheduled"
+                aria-pressed="false"
+              >
+                Đã lên lịch
+              </button>
+              <button
+                type="button"
+                class="button small"
+                data-publishing-filter="published"
+                aria-pressed="false"
+              >
+                Đã đăng
+              </button>
+              <button
+                type="button"
+                class="button small"
+                data-publishing-filter="attention"
+                aria-pressed="false"
+              >
+                Cần xử lý
+              </button>
+            </div>
+          </div>
+          <div id="publishing-list" class="publishing-grid"></div>
         </section>
         <section id="activity-view" class="view hidden" aria-label="Hoạt động">
           <div class="section-heading">
@@ -600,7 +669,7 @@
               >Ngân sách token tối đa<input
                 name="budget_tokens"
                 type="number"
-                value="150000"
+                value="1000000"
                 min="1000"
                 max="10000000"
             /></label>

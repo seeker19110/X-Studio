@@ -341,6 +341,18 @@ def test_tool_loop_stops_on_token_budget():
     assert any(e.payload["action"] == "budget_exhausted" for e in bus.replay("audit-log"))
 
 
+def test_configured_tool_budget_accepts_cli_usage_but_still_enforces_cap():
+    client = FakeClient(tokens_per_call=(70000, 1), responses=[
+        {"video_id": "V1", "source": "fact", "verdict": "pass", "findings": []}])
+    client.tool_budget_tokens = 180000
+    runner = AgentRunner(InMemoryBus(), client, AGENTS, toolbox_factory=lambda spec: _web_toolbox())
+    assert runner.generate("fact-checker", _script_env(), "review-results").tokens == 70001
+    client.tool_budget_tokens = 65000
+    client.responses.append({"video_id": "V1", "source": "fact", "verdict": "pass", "findings": []})
+    with pytest.raises(RunnerError, match="65000"):
+        runner.generate("fact-checker", _script_env(), "review-results")
+
+
 def test_agent_without_tools_never_gets_tools():
     client = FakeClient(responses=[{"video_id": "V1", "source": "rights", "verdict": "pass"}], tool_handler=lambda m, t: [ToolCall("c", "web_fetch", {"url": "x"})])
     env = Envelope(topic="media-assets", key="V1", actor="renderer", payload={"video_id": "V1", "kind": "final_video", "path": "f",

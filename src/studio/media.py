@@ -7,7 +7,8 @@ biến môi trường `STUDIO_MEDIA_*`. `fake` sinh file giữ chỗ hợp lệ 
   `elevenlabs`, `azure` (Azure Speech, giọng vi-VN-HoaiMyNeural/NamMinhNeural), `google` (Cloud Text-to-Speech, vi-VN-Neural2),
   `command` (lệnh cục bộ: Piper, Kokoro, edge-tts… — self-hosted, không tốn tiền).
 - Ảnh: `openai` (`/images/generations`), `gemini` (Gemini Image `gemini-*-image` hoặc Imagen `imagen-*` theo tên model),
-  `stability` (Stable Image core/sd3/ultra), `replicate` (Flux, SDXL… qua predictions có `Prefer: wait`).
+  `stability` (Stable Image core/sd3/ultra), `replicate` (Flux, SDXL… qua predictions có `Prefer: wait`),
+  `command` (chương trình cục bộ tạo PNG thật; prompt qua stdin, không chạy shell).
 - Video: `ffmpeg` ghép ảnh + audio thành MP4 bằng ffmpeg trên PATH; cũng là nơi hoàn thiện thumbnail (thu về 1280x720,
   phủ chữ bằng `drawtext`, xuất JPEG ≤ 2 MB) — model ảnh không bao giờ được yêu cầu vẽ chữ (nó viết sai dấu tiếng Việt).
 
@@ -661,6 +662,40 @@ class CommandTTS:
         return MediaResult(p, "command", self.model, audio_duration(p, text))
 
 
+class CommandImage:
+    """PNG from an explicitly configured command; prompt on UTF-8 stdin, no shell.
+
+    Allows local renderers and CLI-designed vector art without an image API key.
+    The command owns PNG encoding; renderer still records provenance and checksum.
+    """
+    def __init__(self, cfg: MediaConfig, sandbox: Sandbox | None = None):
+        section = cfg.image
+        if not section.get("command"):
+            raise MediaError("image: provider command cần image.command")
+        self.argv = shlex.split(str(section["command"]))
+        self.model = str(section.get("model") or Path(self.argv[0]).name)
+        self.timeout = float(section.get("timeout_s") or 300)
+        self.sandbox = sandbox if sandbox is not None else sandbox_from_config(cfg)
+
+    def generate(self, prompt: str, size: str, out: Path) -> MediaResult:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        target = out.with_suffix(".png")
+        fields = _SafeMap(prompt=prompt, size=size, out=str(target))
+        try:
+            result = self.sandbox.run(RunSpec(
+                argv=[arg.format_map(fields) for arg in self.argv], cwd=Path.cwd(),
+                env={**clean_env(), "PYTHONIOENCODING": "utf-8"}, timeout=self.timeout, stdin=prompt))
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise MediaError(f"lệnh ảnh không chạy được: {exc}") from exc
+        if result.timed_out:
+            raise MediaError(f"lệnh ảnh quá {self.timeout}s (image.timeout_s)")
+        if result.exit_code != 0:
+            raise MediaError(f"lệnh ảnh lỗi ({result.exit_code}): {result.stderr[-400:]}")
+        if not target.is_file() or not target.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
+            raise MediaError("lệnh ảnh không tạo file PNG hợp lệ")
+        return MediaResult(target, "command", self.model)
+
+
 # ---------- Ảnh: OpenAI-compatible ----------
 
 class OpenAIImage:
@@ -780,6 +815,7 @@ TTS_PROVIDERS: dict[str, Callable[[MediaConfig], Any]] = {
     "command": CommandTTS,
 }
 IMAGE_PROVIDERS: dict[str, Callable[[MediaConfig], Any]] = {
+    "command": CommandImage,
     "openai": OpenAIImage, "gemini": GeminiImage, "stability": StabilityImage, "replicate": ReplicateImage,
 }
 

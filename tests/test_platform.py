@@ -315,6 +315,7 @@ def test_sync_comments_and_metrics_publish_real_data_to_bus():
 
 
 def test_cli_status_and_sync_with_fake_platform(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("studio.youtube.load_media_config", lambda: MediaConfig())
     monkeypatch.setenv("STUDIO_YOUTUBE_TOKENS", str(tmp_path / "none.json")); monkeypatch.delenv("STUDIO_PLATFORM", raising=False)
     assert main(["status"]) == 0
     out = json.loads(capsys.readouterr().out); assert out["provider"] == "fake" and out["logged_in"] is False
