@@ -857,7 +857,8 @@ class FFmpegAssembler:
         # do sandbox lo; `errors="replace"` ở đó để lỗi ffmpeg có đường dẫn tiếng Việt luôn tới được người dùng
         # thay vì ném UnicodeDecodeError che mất chính lỗi cần đọc (Windows giải mã cp1252).
         # `timeout`: ffmpeg treo (input hỏng, filtergraph chờ mãi) trước đây treo luôn cả phòng — không có ai giết.
-        r = self.sandbox.run(RunSpec(argv=[self.binary, "-y", "-loglevel", "error", *args],
+        r = self.sandbox.run(RunSpec(argv=[self.binary, "-y", "-loglevel", "error",
+                                     "-filter_threads", str(self.threads), "-filter_complex_threads", str(self.threads), *args],
                                      cwd=cwd or Path.cwd(), env=clean_env(), timeout=self.timeout))
         if r.timed_out:
             raise MediaError(f"ffmpeg quá {self.timeout}s (media.yaml render.timeout_s): {' '.join(args)[:200]}")
@@ -902,8 +903,8 @@ class FFmpegAssembler:
             # đường dẫn tuyệt đối: cwd của lệnh là thư mục output (thư mục được mount khi chạy trong container)
             moving = img.suffix.lower() in {".mp4", ".mov", ".webm", ".mkv"}
             opts = ["-stream_loop", "-1"] if moving else ["-loop", "1", "-framerate", str(fps)]
-            args += [*opts, "-t", f"{d:.3f}", "-i", str(Path(img).resolve()),
-                     "-i", str(Path(audio).resolve())]
+            args += [*opts, "-t", f"{d:.3f}", "-threads", str(self.threads), "-i", str(Path(img).resolve()),
+                     "-threads", str(self.threads), "-i", str(Path(audio).resolve())]
         chains: list[str] = []
         for i, d in enumerate(durs):
             mo = "static" if segments[i][0].suffix.lower() in {".mp4", ".mov", ".webm", ".mkv"} else motion_for(i, self.motion)
@@ -951,6 +952,7 @@ class FFmpegAssembler:
         font = self.font if self.font and self.font.is_file() else find_font()
         tmp = Path(tempfile.mkdtemp(prefix=".studio-", dir=out.parent))
         try:
+            target = tmp / "complete.jpg"
             vf = self._scale(str(w), str(h))
             note = f"{size}"
             if len(wrapped) > len(lines): note += f" CẮT {len(wrapped) - len(lines)} dòng chữ phủ (quá dài)"
@@ -972,11 +974,13 @@ class FFmpegAssembler:
             elif lines:
                 note += " KHÔNG phủ được chữ: không tìm thấy font (đặt video.font trong media.yaml)"
             for q in (3, 6, 9):
-                self._run(["-i", str(src.resolve()), "-vf", vf, "-frames:v", "1", "-q:v", str(q), str(out.resolve())],
+                self._run(["-threads", str(self.threads), "-i", str(src.resolve()), "-vf", vf,
+                           "-frames:v", "1", "-q:v", str(q), "-threads", str(self.threads), str(target.resolve())],
                           cwd=tmp)
-                if out.stat().st_size <= max_bytes: break
-            size_b = out.stat().st_size
+                if target.stat().st_size <= max_bytes: break
+            size_b = target.stat().st_size
             note += f", {size_b // 1024} KB" + (f" (VƯỢT {max_bytes // 1_000_000} MB)" if size_b > max_bytes else "")
+            target.replace(out)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         return MediaResult(out, "ffmpeg", "mjpeg", notes=note)

@@ -7,7 +7,7 @@ import re
 import sqlite3
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -24,6 +24,7 @@ from .media import MediaConfig, make_media
 from .orchestrator import Orchestrator
 from .platform import PlatformError, YouTubePlatform
 from .sqlite_bus import SQLiteBus
+from .website import JobAction, WebsiteJobs, WebsiteRequest
 
 
 class ProjectRequest(CinemaSpec):
@@ -94,32 +95,39 @@ class CommandStore:
 class Factory:
     def __init__(self, db: Path, cfg: MediaConfig, *, demo: bool = False):
         db.parent.mkdir(parents=True, exist_ok=True)
-        self.lease = Lease(db); self.lease.acquire()
-        self.bus = SQLiteBus(db)
-        self.commands = CommandStore(db)
-        try:
+        with ExitStack() as cleanup:
+            self.lease = Lease(db); self.lease.acquire()
+            cleanup.callback(self.lease.release)
+            self.bus = SQLiteBus(db)
+            cleanup.callback(self.bus.close)
+            self.commands = CommandStore(db)
+            self.websites = WebsiteJobs(db)
+            cleanup.callback(self.websites.close)
             client = make_scripted_client(plan_size=1, repairs=0) if demo else make_client()
             self.orch = Orchestrator(self.bus, client, media=make_media(cfg))
-        except Exception:
-            self.bus.close(); self.lease.release(); raise
-        self.autopilot = Autopilot(self.orch)
-        self.demo = demo
-        last = self.commands.last_done(("run", "pause"))
-        self.running = last is None or last["kind"] == "run"
-        saved = self.commands.last_done(("settings",))
-        if saved: self.apply_settings(json.loads(saved["body"]))
-        self.stop = threading.Event()
-        self._mutex = threading.Lock()
-        self._snapshot: dict[str, Any] = {}
-        self.refresh()
+            self.autopilot = Autopilot(self.orch)
+            self.demo = demo
+            last = self.commands.last_done(("run", "pause"))
+            self.running = last is None or last["kind"] == "run"
+            saved = self.commands.last_done(("settings",))
+            if saved: self.apply_settings(json.loads(saved["body"]))
+            self.stop = threading.Event()
+            self._mutex = threading.Lock()
+            self._snapshot: dict[str, Any] = {}
+            self.refresh()
+            cleanup.pop_all()
 
     def command(self, kind: str, body: dict) -> str:
-        if kind not in {"create", "run", "pause", "gate", "settings"}: raise ValueError("unknown command")
+        if kind not in {"create", "run", "pause", "gate", "settings", "website", "website_action"}: raise ValueError("unknown command")
         if not isinstance(body, dict): raise ValueError("command data must be an object")
         if kind == "create":
             request = ProjectRequest.model_validate(body)
             if request.visual_mode == "generated_video" and self.orch.renderer.media.scene_video is None:
                 raise ValueError("Chế độ clip AI cần cấu hình scene_video.provider trong media.yaml")
+        if kind == "website":
+            if self.demo: raise ValueError("Website → Video cần xưởng thật; chế độ demo không gọi model hoặc dịch vụ giọng đọc thật")
+            WebsiteRequest.model_validate(body)
+        if kind == "website_action": JobAction.model_validate(body)
         if kind == "settings": FactorySettings.model_validate(body)
         if kind == "gate": GateDecision.model_validate(body)
         id = uuid4().hex
@@ -139,6 +147,10 @@ class Factory:
         body = json.loads(row["body"]); kind = row["kind"]
         if kind in {"run", "pause"}:
             self.running = kind == "run"
+        elif kind == "website":
+            self.websites.enqueue(row["id"], body)
+        elif kind == "website_action":
+            self.websites.action(JobAction.model_validate(body))
         elif kind == "settings":
             self.apply_settings(body)
         elif kind == "create":
@@ -166,6 +178,7 @@ class Factory:
             except (ValueError, KeyError, PermissionError) as exc:
                 self.commands.complete(command["id"], error=str(exc)[:300])
         if self.running:
+            self.websites.start()
             self.refresh()  # expose accepted commands before a potentially slow CLI/model stage
             self.orch.tick(max_steps=1)
             self.autopilot.advance()
@@ -262,13 +275,21 @@ class Factory:
         with self._mutex: self._snapshot = snapshot
 
     def snapshot(self) -> dict:
-        with self._mutex: return copy.deepcopy(self._snapshot)
+        with self._mutex: result = copy.deepcopy(self._snapshot)
+        result["website_jobs"] = self.websites.snapshot()
+        result["website_output_dir"] = "C:\\Videos\\X-Studio"
+        return result
 
     def media_path(self, id: str) -> Path | None:
+        if id.startswith("website-"): return self.websites.media_path(id)
         asset = next((e.payload for e in self.bus.replay("media-assets") if e.event_id == id), None)
         if asset is None: return None
         path = Path(asset["path"]).resolve()
         return path if path.is_relative_to(self.orch.renderer.out_dir.resolve()) and path.is_file() else None
 
     def close(self) -> None:
-        self.stop.set(); self.bus.close(); self.lease.release()
+        self.stop.set()
+        try: self.websites.close()
+        finally:
+            try: self.bus.close()
+            finally: self.lease.release()
