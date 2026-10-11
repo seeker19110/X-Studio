@@ -15,6 +15,7 @@ import pytest
 from studio import youtube as yt
 from studio.bus import InMemoryBus
 from studio.events import Envelope, PerformanceSnapshot
+from studio.media import MediaConfig
 from studio.platform import Comment, PlatformError, SnapshotResult, TokenStore
 
 
@@ -112,6 +113,7 @@ def test_load_client_secrets_missing_fields_raises(tmp_path):
 
 
 def test_main_sync_comments_no_new_comments_prints_message(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(yt, "load_media_config", lambda: MediaConfig())
     db = tmp_path / "s.sqlite"
     from studio.sqlite_bus import SQLiteBus
     bus = SQLiteBus(db)

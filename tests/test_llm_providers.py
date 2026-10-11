@@ -24,6 +24,18 @@ from studio.llm import (
 )
 from studio.tools import ToolCall, ToolSpec
 
+
+def test_tool_budget_configuration_reaches_model_client():
+    client = llm.make_client(LLMConfig(extra={"tool_budget_tokens": 180000}))
+    assert client.tool_budget_tokens == 180000
+    assert llm.make_client(LLMConfig()).tool_budget_tokens == 0
+
+
+@pytest.mark.parametrize("budget", [-1, 10000001])
+def test_tool_budget_rejects_invalid_configuration(budget):
+    with pytest.raises(LLMError, match="tool_budget_tokens"):
+        llm.make_client(LLMConfig(extra={"tool_budget_tokens": budget}))
+
 # ---------- Completion.json() — fallback khi model không trả JSON trần ----------
 
 def test_completion_json_object_in_fence():

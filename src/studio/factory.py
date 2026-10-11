@@ -22,6 +22,7 @@ from .film import CinemaSpec
 from .llm import make_client
 from .media import MediaConfig, make_media
 from .orchestrator import Orchestrator
+from .platform import PlatformError, YouTubePlatform
 from .sqlite_bus import SQLiteBus
 
 
@@ -165,6 +166,7 @@ class Factory:
             except (ValueError, KeyError, PermissionError) as exc:
                 self.commands.complete(command["id"], error=str(exc)[:300])
         if self.running:
+            self.refresh()  # expose accepted commands before a potentially slow CLI/model stage
             self.orch.tick(max_steps=1)
             self.autopilot.advance()
         self.refresh()
@@ -251,6 +253,12 @@ class Factory:
                         style=o.renderer.media.cfg.production.get("style", ""),
                         scene_video_provider=o.renderer.media.cfg.scene_video.get("provider", "none"),
                         scene_video_ready=o.renderer.media.scene_video is not None)
+        snapshot["youtube_oauth_configured"] = False
+        if isinstance(o.platform, YouTubePlatform):
+            try:
+                snapshot["youtube_oauth_configured"] = bool(o.platform.store.status().get("logged_in"))
+            except (OSError, ValueError, TypeError, AttributeError, PlatformError):
+                pass  # local MP4 production remains available when OAuth is absent or damaged
         with self._mutex: self._snapshot = snapshot
 
     def snapshot(self) -> dict:
