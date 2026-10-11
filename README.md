@@ -53,6 +53,35 @@ Chọn `platform.provider: youtube` trong `media.yaml` sau khi hoàn tất OAuth
 
 Tư liệu local: đặt file của bạn dưới `output/uploads`, điền [examples/library.yaml](examples/library.yaml), rồi ánh xạ video/cảnh bằng [examples/production-selections.yaml](examples/production-selections.yaml). Chỉ khai quyền sử dụng mà bạn thực sự có. Credit CC-BY được thêm vào mô tả trước preflight. File thay thế qua cut-list chưa có hồ sơ quyền sử dụng được đánh dấu `unknown` để review chặn.
 
+## Tạo phim và hoạt hình
+
+Trong **Tạo video mới**, chọn **Phim ngắn** hoặc **Hoạt hình**, nhập tóm tắt câu chuyện,
+hồ sơ nhân vật và phong cách (điện ảnh/2D/3D/anime). Định dạng 16:9/9:16 chọn độc lập.
+Phong cách, character bible, negative prompt và seed được lưu trong brief/manifest;
+phòng dựng hiển thị storyboard và cho xem/tải clip của từng cảnh.
+
+- **Ảnh có chuyển động**: dựng theo pipeline TTS + ảnh + FFmpeg hiện có, phù hợp xem trước nhịp câu chuyện.
+- **Clip AI**: sinh shot ngắn qua **ComfyUI** với workflow API-format đã cài, hoặc chương trình
+  cục bộ qua `command`. FFmpeg lặp footage để phủ lời đọc và ghép bản cuối, phụ đề, nhạc.
+  Chọn phong cách 3D là chỉ dẫn hình ảnh, chưa phải engine rig/animation Blender.
+
+Ghép phần `scene_video` từ [media.film.example.yaml](media.film.example.yaml) vào cấu hình
+đang dùng. Provider mặc định `none`; demo dùng `fake` và chỉ sinh tệp mô phỏng. ComfyUI
+cần model/nodes/GPU phù hợp, graph xuất ở **API format**, bindings prompt/seed bắt buộc
+và output node lưu **MP4**. `num_frames` cho phép khai số frame phù hợp model, chẳng hạn
+81 với workflow yêu cầu 4n+1. `scene_video` sinh shot; `video.provider=ffmpeg` ghép phim.
+Không cần thêm dependency Python cho adapter ComfyUI.
+
+Cache nhận diện graph và cấu hình; accepted job lưu `prompt_id` để tiếp tục sau timeout.
+Sửa cảnh sinh lại dùng seed mới ổn định theo lượt sửa, giữ cảnh đã khóa; bản quyền của
+clip mặc định `unknown` cho tới khi được khai đúng. Mô tả/seed giúp quản lý nhân vật,
+chưa bảo đảm danh tính; v1 dùng một giọng kể, chưa tự upload reference hoặc lip-sync.
+UI báo provider đã cấu hình, không xác nhận GPU/backend đang hoạt động.
+
+Ví dụ brief: [film-brief.json](examples/film-brief.json). Đối chiếu ComfyUI, Wan,
+HunyuanVideo, LTX, AnimateDiff, MoviePy, Blender và Storyboarder cùng license:
+[nghiên cứu GitHub](docs/RESEARCH-FILM-ANIMATION.md), [ADR-0013](docs/adr/0013-film-animation-scene-generation.md).
+
 ## Thời lượng, tài nguyên và giới hạn thực tế
 
 Console nhận mục tiêu **0–720 phút** (lớn hơn 0). [YouTube](https://support.google.com/youtube/answer/71673?hl=en) giới hạn 12 giờ hoặc 256 GB, tùy giới hạn đạt trước; trên 15 phút cần tài khoản đã xác minh. Đây là giới hạn thiết kế/đầu vào, **chưa có benchmark render và upload 12 giờ trong đợt nâng cấp này**.
@@ -61,7 +90,7 @@ Console nhận mục tiêu **0–720 phút** (lớn hơn 0). [YouTube](https://s
 - Burn-in phụ đề cần thêm lượt encode cuối. Muốn tiết kiệm CPU, tắt burn-in, dùng SRT riêng. Subtitle timing theo tỷ lệ lời đọc trong cảnh, chưa phải forced alignment/karaoke từng từ.
 - Với video nhiều giờ, điều chỉnh `render.timeout_s` và `STUDIO_QC_TIMEOUT_S` theo máy; mặc định QC 300 giây. Ví dụ đặt `STUDIO_QC_TIMEOUT_S=86400` trước khi khởi động worker. Không tắt timeout hoàn toàn.
 - Ngân sách token là token model text, không phải trần tiền cho TTS/ảnh. Dừng trước chương tiếp theo khi đã hết; một request đang chạy có thể vượt phần còn lại. Chất lượng sáng tạo, tính đúng đắn nội dung và thời lượng thực phụ thuộc model/provider; QC giữ lại sản phẩm lệch mục tiêu quá 20% mặc định.
-- Chưa tích hợp stock search tự tải, video diffusion, tracking người nói, editor timeline kéo thả hoặc render cluster. Không cài đồng thời 28 thư viện; xem [đối chiếu nguồn và quyết định tích hợp](docs/RESEARCH-VIDEO-FACTORIES.md).
+- Video diffusion chạy qua workflow ComfyUI cấu hình riêng; chưa cài/benchmark model GPU. Chưa tích hợp stock search tự tải, tracking người nói, editor timeline kéo thả hoặc render cluster. Xem [đối chiếu nguồn và quyết định tích hợp](docs/RESEARCH-VIDEO-FACTORIES.md).
 
 ## Phát triển và xác minh
 
@@ -76,8 +105,8 @@ CI Linux cài FFmpeg/font, khóa phiên bản GitHub Actions và chạy cùng l�
 - `src/studio/web/`: HTML/CSS/JavaScript native, đóng gói cùng Python.
 - `agents/`, `skills/`, `topics/`: 14 vai, 24 skill và schema sự kiện; giữ prompt hiện có.
 - `gateway/`, `xagents-core/`: thành viên uv workspace có test/coverage riêng.
-- `tests/`: pytest 778 ca / 61 file.
-- Test: 778 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
-- `docs/adr/`: ADR 0001–0012; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc mới và đánh đổi.
+- `tests/`: pytest 906 ca / 63 file.
+- Test: 906 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
+- `docs/adr/`: ADR 0001–0013; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình.
 
 Tham khảo thêm: [kiến trúc nền](docs/architecture.md), [CLI chi tiết](docs/CLI-REFERENCE.md), [CLAUDE.md](CLAUDE.md). Các hướng dẫn cũ về gate được bổ sung bởi policy ủy quyền ở ADR-0010.

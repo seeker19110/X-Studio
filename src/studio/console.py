@@ -153,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--media", type=Path, help="media profile; default media.yaml")
     parser.add_argument("--demo", action="store_true", help="offline simulation, fake media and platform")
     args = parser.parse_args(argv)
-    cfg = MediaConfig(output_dir=Path("output/demo"), production={"automation": "production"}) if args.demo else load_media_config(args.media)
+    cfg = MediaConfig(output_dir=Path("output/demo"), production={"automation": "production"},
+                      scene_video={"provider": "fake"}) if args.demo else load_media_config(args.media)
     factory = Factory(args.db, cfg, demo=args.demo)
     token = os.environ.get("STUDIO_CONSOLE_TOKEN") or secrets.token_urlsafe(24)
     try: server = ConsoleServer(("127.0.0.1", args.port), factory, token)

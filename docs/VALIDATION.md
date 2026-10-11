@@ -1,5 +1,39 @@
 # Xác minh bản nâng cấp factory
 
+## Phim và hoạt hình (2026-10-11)
+
+Thêm `CinemaSpec`, storyboard trong phòng dựng, `scene_video` provider độc lập và
+adapter ComfyUI/command; xem [ADR-0013](adr/0013-film-animation-scene-generation.md)
+và [nguồn nghiên cứu](RESEARCH-FILM-ANIMATION.md). Xác minh trên nhánh phim/hoạt hình
+riêng từ main `07b242f`; các thay đổi khác trong workspace không thuộc bản này.
+
+- Studio: **906 test đạt**, không skip, **100%** dòng (5.239 statements) qua
+  `COVERAGE_FILE=/tmp/xstudio-film-pr.coverage PATH=/tmp/xstudio-audit-tools/bin:$PATH make verify`.
+- Gateway: **273 test đạt**, coverage 100%; core: **478 test đạt**, coverage dòng/nhánh 100%.
+  Tổng **1.657 test Python**. Gateway có một RuntimeWarning `runpy` đã có trước.
+- `make verify` đạt: Ruff/mypy cả ba package, eval ghi sẵn **28/28**;
+  không chạy eval model live. `node --check` và `git diff --check` đạt.
+- Provider có 107 test offline: API-format, prompt/seed bindings, outputs video trong
+  `images`/`gifs`/`videos`, giới hạn tham số/bytes, không redirect, ffprobe, job lỗi,
+  timeout và tiếp tục job đã nhận; cache invalidation theo graph/`num_frames`.
+- FFmpeg thật: command nhận JSON stdin sinh clip chuyển động ngắn, renderer lặp clip
+  phủ narration, ghép MP4 H.264 có audio ở **320×180 và 180×320**; warm render không gọi
+  lại generator. Fixture là `testsrc2` tổng hợp, không đại diện chất lượng phim AI.
+- `scripts/film-smoke.cjs` đạt với Chromium: payload phim/hoạt hình, aspect độc lập,
+  mặc định giải trí, giữ input khi polling, provider chưa cấu hình/bị gỡ, escape dữ liệu,
+  xem/tải clip, nhãn fake, chuyển ý tưởng và mobile 390px không tràn ngang. Ảnh thay thế
+  mới nhất được hiển thị thay clip/đường tải/license cũ (regression đỏ trước khi sửa).
+- Browser + console HTTP/worker/SQLite riêng khởi động trên port 8766: tạo phim 16:9
+  (seed 101) và hoạt hình 9:16 (seed 202), mỗi dự án hai cảnh, qua brief/manifest,
+  `scene_video`, final và hai gate publish; hồ sơ nhân vật/logline/style/seed đúng,
+  không lỗi JS; bảy màn hình mobile 390px không tràn ngang.
+  Toàn bộ media của lượt này là **fake**, không đăng YouTube; server/DB thử được dọn sau chạy.
+
+Môi trường: Python 3.12.14 (cùng minor với CI), FFmpeg n8.1.3-17-gc389840894-20261010, Linux/WSL.
+Chưa cài/chạy ComfyUI hoặc model GPU thật; chưa đánh giá chất lượng continuity,
+reference conditioning, lip-sync, tốc độ/VRAM/chi phí diffusion hoặc Windows end-to-end.
+UI chỉ xác nhận đã cấu hình provider; không xác nhận endpoint/model sẵn sàng.
+
 ## Xác minh bản tích hợp lên main cho PR #6 (2026-10-11)
 
 Đồng bộ nhánh audit với main `80a76e6` sau PR #5; giữ nhật ký đầu ra render,
