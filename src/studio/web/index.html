@@ -457,6 +457,59 @@
         </div>
         <h2 id="create-title">Biến ý tưởng thành một dự án.</h2>
         <p class="muted">Một brief rõ ràng là khởi đầu của một video tốt.</p>
+        <div class="form-row production-options">
+          <label>Loại nội dung<select name="production_type">
+            <option value="explainer">Video thuyết minh</option>
+            <option value="film">Phim ngắn</option>
+            <option value="animation">Hoạt hình</option>
+          </select></label>
+          <label>Cách tạo hình ảnh<select name="visual_mode" aria-describedby="scene-video-note">
+            <option value="images">Ảnh có chuyển động</option>
+            <option value="generated_video" disabled>Clip AI (ComfyUI / lệnh cục bộ)</option>
+          </select></label>
+        </div>
+        <p id="scene-video-note" class="provider-note" role="status">
+          Đang đọc cấu hình tạo clip của xưởng.
+        </p>
+        <label
+          >Tên dự án <span class="required">*</span
+          ><input
+            name="title"
+            required
+            maxlength="200"
+            placeholder="Ví dụ: Vì sao chúng ta cần học suốt đời?"
+        /></label>
+        <fieldset id="cinema-fields" class="cinema-fields" hidden disabled>
+          <legend>Thiết kế câu chuyện & hình ảnh</legend>
+          <p class="cinema-workflow">Kịch bản → storyboard từng cảnh → hình ảnh hoặc clip → dựng & lồng tiếng.</p>
+          <label>Tóm tắt câu chuyện <span class="optional">Tùy chọn</span>
+            <textarea name="logline" maxlength="1500" rows="2"
+              placeholder="Nhân vật chính muốn điều gì, gặp trở ngại nào và câu chuyện thay đổi ra sao?"></textarea>
+          </label>
+          <label>Hồ sơ nhân vật <span class="optional">Tùy chọn</span>
+            <textarea name="character_bible" maxlength="3000" rows="3"
+              placeholder="Tên, ngoại hình, trang phục, tính cách. Mô tả cố định để giữ nhân vật nhất quán giữa các cảnh."></textarea>
+          </label>
+          <div class="style-presets" aria-label="Gợi ý phong cách hình ảnh">
+            <button type="button" data-style-preset="cinematic" aria-pressed="false">Điện ảnh</button>
+            <button type="button" data-style-preset="2d" aria-pressed="false">Hoạt hình 2D</button>
+            <button type="button" data-style-preset="3d" aria-pressed="false">Hoạt hình 3D</button>
+            <button type="button" data-style-preset="anime" aria-pressed="false">Anime</button>
+          </div>
+          <label>Phong cách hình ảnh <span class="optional">Tùy chọn</span>
+            <textarea name="visual_style" maxlength="1000" rows="2"
+              placeholder="Ví dụ: hoạt hình 2D, nét vẽ màu nước, ánh sáng ấm, chuyển động nhẹ."></textarea>
+          </label>
+          <div class="form-row">
+            <label>Seed tạo hình <span class="optional">Tùy chọn</span>
+              <input name="seed" type="number" min="0" max="2147483647" step="1" placeholder="0" />
+            </label>
+            <label>Chi tiết hình ảnh cần tránh <span class="optional">Tùy chọn</span>
+              <textarea name="negative_prompt" maxlength="1000" rows="2"
+                placeholder="Ví dụ: nhấp nháy, chữ trên hình, biến dạng khuôn mặt."></textarea>
+            </label>
+          </div>
+        </fieldset>
         <div
           id="create-preset"
           class="preset-options"
@@ -476,14 +529,6 @@
             ><span class="preset-check" aria-hidden="true">✓</span>
           </button>
         </div>
-        <label
-          >Chủ đề video <span class="required">*</span
-          ><input
-            name="title"
-            required
-            maxlength="200"
-            placeholder="Ví dụ: Vì sao chúng ta cần học suốt đời?"
-        /></label>
         <div class="form-row">
           <label
             >Dành cho ai?<input

@@ -10,6 +10,8 @@ from xagents_core.events import SharedContext as CoreSharedContext
 from xagents_core.events import SupervisorAction as CoreSupervisorAction
 from xagents_core.events import can_transition as _can_transition
 
+from .film import CinemaSpec
+
 Topic = Literal[
     "channel-briefs", "trend-reports", "video-briefs", "research-dossiers", "scripts",
     "scene-manifests", "media-assets", "cut-lists", "thumbnail-specs", "metadata-packages",
@@ -54,7 +56,7 @@ class Envelope(CoreEnvelope):
     topic: Topic
 
 
-class VideoBrief(BaseModel):
+class VideoBrief(CinemaSpec):
     """Một video trong kế hoạch biên tập (channel-strategist tạo, human gate `plan` duyệt rồi code dispatch)."""
     video_id: str = Field(pattern=ID_PATTERN)
     channel_id: str
@@ -64,9 +66,9 @@ class VideoBrief(BaseModel):
     audience: str
     format: VideoFormat = "long"
     target_minutes: float = 8.0
-    key_points: list[str] = []
-    boundaries: list[str] = []  # điều kênh không làm (nội dung, giọng điệu, nguồn)
-    risk_tags: list[str] = []
+    key_points: list[str] = Field(default_factory=list)
+    boundaries: list[str] = Field(default_factory=list)  # điều kênh không làm (nội dung, giọng điệu, nguồn)
+    risk_tags: list[str] = Field(default_factory=list)
     priority: int = 3  # 1 cao nhất
     estimate_tokens: int | None = None
     budget_tokens: int = 150_000
@@ -118,6 +120,7 @@ class SceneManifest(BaseModel):
     scenes: list[Scene]
     voice: dict[str, Any] = {}  # voice_id, pace, language
     aspect: Literal["16:9", "9:16"] = "16:9"
+    cinema: CinemaSpec = Field(default_factory=CinemaSpec)
 
 
 class Provenance(BaseModel):

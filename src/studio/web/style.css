@@ -2099,6 +2099,84 @@ dialog > form > p.muted {
   justify-content: flex-end;
   gap: 12px;
 }
+.production-options {
+  margin-top: 24px;
+}
+.provider-note {
+  margin: -4px 0 20px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.provider-note.simulated {
+  color: #996720;
+}
+.cinema-fields {
+  margin: 22px 0;
+  padding: 16px 18px 0;
+  border: 1px solid #dce5f0;
+  border-radius: 12px;
+  background: #f8faff;
+  min-width: 0;
+}
+.cinema-fields[hidden] {
+  display: none;
+}
+.cinema-fields legend {
+  padding: 0 7px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #53637d;
+}
+.cinema-workflow {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+.style-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 20px;
+}
+.style-presets button {
+  border: 1px solid #dce5f0;
+  border-radius: 16px;
+  background: white;
+  padding: 7px 11px;
+  color: #64748b;
+  font-size: 11px;
+}
+.style-presets button:hover,
+.style-presets button[aria-pressed="true"] {
+  border-color: #bfdbfe;
+  background: var(--accent-soft);
+  color: var(--accent-dark);
+}
+.production-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+.storyboard-prompt {
+  padding: 12px 14px;
+  margin: 16px 0;
+  background: #f7f9fc;
+  border: 1px solid #e7edf5;
+  border-radius: 8px;
+}
+.storyboard-prompt p,
+.cinema-brief .script-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.scene-clip-link {
+  display: inline-block;
+  margin: 7px 0 12px;
+  font-size: 12px;
+}
 .preset-options {
   display: grid;
   grid-template-columns: 1fr 1fr;

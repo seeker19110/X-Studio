@@ -1,0 +1,16 @@
+{
+  "title": "Cáo và ngọn đèn cuối rừng",
+  "production_type": "animation",
+  "visual_mode": "images",
+  "format": "long",
+  "target_minutes": 1,
+  "audience": "Gia đình yêu thích truyện ngắn nhẹ nhàng",
+  "language": "vi",
+  "visual_style": "Hoạt hình 2D màu nước, đường nét mềm, ánh sáng ấm",
+  "logline": "Một chú cáo lạc đường học cách nhờ bạn bè giúp đỡ để mang ngọn đèn về nhà trước khi trời tối.",
+  "character_bible": "Cáo tên Mây: lông cam, chóp đuôi trắng, khăn xanh, túi vải nâu. Cú tên Đốm: lông xám, kính tròn. Giữ trang phục và màu sắc giữa các cảnh.",
+  "negative_prompt": "watermark, text, flicker, inconsistent clothing, extra limbs",
+  "seed": 42,
+  "boundaries": ["Câu chuyện hư cấu; không bạo lực", "Một giọng kể, không yêu cầu lip-sync"],
+  "budget_tokens": 150000
+}
