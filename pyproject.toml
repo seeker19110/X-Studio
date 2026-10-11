@@ -6,6 +6,9 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6",
+    "playwright>=1.58",  # website public-page capture; Chromium is installed separately
+    "pillow>=11",
+    "edge-tts>=7.2",       # Vietnamese narration and real word timings
     "xagents-core",   # lõi chung (ADR gốc 0001); mã chuyển sang theo bảy bước K3.1-K3.7
 ]
 

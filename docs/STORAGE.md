@@ -44,8 +44,15 @@ việc một file được xếp vào nhóm nào.
 
 ## Đây không phải filesystem quota
 
-Các ngưỡng chỉ bảo vệ admission của **Factory/console**. CLI chạy orchestrator
-trực tiếp không đi qua lớp này. Không ước lượng hay giữ chỗ dung lượng tương lai,
+Các ngưỡng chỉ bảo vệ admission của dự án **Tạo video mới** (`create`) trong
+Factory/console. CLI chạy orchestrator trực tiếp không đi qua lớp này.
+Luồng **Website → Video** mới trên main dùng command `website` và không đi qua
+admission `create`; thư mục xuất riêng của website (mặc định `C:\Videos\X-Studio`)
+không được đo nếu nằm ngoài `output_dir`/`upload_dir`. Trạng thái dung lượng ở
+Cấu hình không phải quota hay admission cho các job website. PR này giữ nguyên
+workflow website, chưa mở rộng phạm vi storage sang workflow đó.
+
+Không ước lượng hay giữ chỗ dung lượng tương lai,
 không chặn syscall ghi file, không dừng encode/provider đang chạy. Nhiều dự án
 được nhận khi còn dưới ngưỡng có thể cùng tăng dung lượng vượt ngưỡng sau đó.
 

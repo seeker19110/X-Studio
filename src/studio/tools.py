@@ -142,13 +142,18 @@ def domain_allowed(url: str, domains: list[str]) -> bool:
 
 def default_fetcher(url: str,
                     opener: Callable[[str, urllib.request.Request], Any] = _open_pinned,
-                    allowed_domains: list[str] | None = None) -> tuple[int, str, str, bytes]:
+                    allowed_domains: list[str] | None = None,
+                    request_headers: dict[str, str] | None = None) -> tuple[int, str, str, bytes]:
     cur = str(url)
     for _hop in range(MAX_HOPS + 1):
         if not domain_allowed(cur, allowed_domains or []):
             raise ToolError("domain outside research allowlist")
         cur, ip = pin_url(cur)  # host công khai trả 302 về 169.254.169.254 hay 127.0.0.1 thì dừng ở đây
-        req = urllib.request.Request(cur, headers={"User-Agent": UA, "Accept": "text/html,application/json,text/plain;q=0.9,*/*;q=0.5"})
+        headers = {"user-agent": UA, "accept": "text/html,application/json,text/plain;q=0.9,*/*;q=0.5"}
+        # Preserve public app navigation (Next.js RSC etc.); credentials and arbitrary headers are never forwarded.
+        public_headers = {"accept", "rsc", "next-router-prefetch", "next-router-state-tree", "next-url"}
+        headers.update({k.lower(): v for k, v in (request_headers or {}).items() if k.lower() in public_headers})
+        req = urllib.request.Request(cur, headers=headers)
         try:
             with opener(ip, req) as r:
                 return r.status, r.headers.get("Content-Type", ""), cur, r.read(MAX_BYTES + 1)

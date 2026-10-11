@@ -95,6 +95,7 @@ function cinemaBrief(p) {
   ].filter(([, value]) => value).map(([label, value]) => `<h4>${label}</h4><p class="script-text">${esc(value)}</p>`).join("")}${c.production_type && c.production_type !== "explainer" && c.seed != null ? `<p class="muted">Seed tạo hình: ${esc(c.seed)}</p>` : ""}</div>`;
 }
 const views = {
+  website: ["Website → Video", "Website của bạn. Một video dễ hiểu.", "Nhập link, chọn thời lượng và lưu video giới thiệu hoặc hướng dẫn ngay trên ổ C."],
   dashboard: [
     "Tổng quan",
     "Mọi ý tưởng đều có một hành trình.",
@@ -1108,6 +1109,7 @@ function render() {
   const projects = state.projects;
   renderStorage();
   syncProductionOptions();
+  if (state.demo) {$("website-submit").disabled = true;$("website-error").textContent = "Website → Video cần mở xưởng thật. Chế độ demo giữ mọi dịch vụ ở trạng thái offline.";}
   $("stat-active").textContent = projects.filter(
     (p) =>
       !latest(p, "final_video") &&
@@ -1207,6 +1209,7 @@ function render() {
   renderDashboard();
   renderGates();
   renderPublishing();
+  renderWebsiteJobs();
   if ($("detail-dialog").open) renderDetail();
 }
 async function refresh() {
@@ -1223,6 +1226,38 @@ async function refresh() {
     refreshing = false;
   }
 }
+
+const websiteStates = {queued: "Đang chờ", capturing: "Đọc website", planning: "Viết kịch bản", voicing: "Tạo giọng đọc", rendering: "Dựng video", verifying: "Kiểm tra video", completed: "Đã lưu trên ổ C", failed: "Cần xử lý", cancelled: "Đã dừng"};
+const websiteSignatures = new Map();
+function renderWebsiteJobs() {
+  const jobs = state.website_jobs || [];
+  $("website-job-summary").textContent = jobs.length ? `${jobs.length} tác vụ · ${jobs.filter(j => j.status === "completed").length} đã hoàn thành` : "Chưa có video. Bắt đầu bằng một link website.";
+  for (const job of [...jobs].reverse()) {
+    const signature = JSON.stringify(job);
+    if (websiteSignatures.get(job.id) === signature) continue;
+    let node = $("website-job-" + job.id);
+    if (!node) { node = document.createElement("article"); node.id = "website-job-" + job.id; node.className = "content-card website-job"; $("website-jobs").prepend(node); }
+    const done = job.status === "completed", stopped = ["failed", "cancelled"].includes(job.status);
+    node.innerHTML = `<div class="website-job-heading"><div><span class="badge ${done ? "success" : stopped ? "red" : "amber"}">${esc(websiteStates[job.status] || job.status)}</span><h3>${external(job.request.url, new URL(job.request.url).hostname)}</h3><p class="muted">${esc({intro:"Giới thiệu",tutorial:"Hướng dẫn",both:"Giới thiệu + hướng dẫn"}[job.request.mode])} · ${esc(job.request.duration_s)} giây/video · ${job.request.quality === "4k" ? "4K" : "Full HD"}</p></div>${stopped ? `<button class="button quiet small" data-website-action="retry" data-job-id="${esc(job.id)}">Tiếp tục</button>` : !done ? `<button class="button quiet small" data-website-action="cancel" data-job-id="${esc(job.id)}">Dừng</button>` : ""}</div>
+      <progress max="100" value="${Number(job.progress) || 0}" aria-label="Tiến độ tạo video"></progress><p class="muted">${esc(job.message)} · ${Number(job.progress) || 0}%</p>
+      ${job.error ? `<p class="form-error">${esc(job.error)}</p>` : ""}<p class="website-path">${esc(job.request.output_dir)}<br>${esc(job.directory.split(/[\\/]/).pop())}</p>
+      <div class="website-results">${["intro","tutorial"].filter(k => job.files[k]).map(k => `<div><h4>${k === "intro" ? "Video giới thiệu" : "Video hướng dẫn"}</h4><video controls preload="metadata" poster="${esc(job.files[k + "-poster"] || "")}" src="${esc(job.files[k])}"></video><div class="website-downloads"><a class="button quiet small" href="${esc(job.files[k])}" download="${k}.mp4">Tải MP4</a><a href="${esc(job.files[k + "-subtitles"])}" download>Phụ đề</a><a href="${esc(job.files[k + "-script"])}" download>Kịch bản & nguồn</a><a href="${esc(job.files[k + "-report"])}" download>Báo cáo kiểm tra</a></div></div>`).join("")}</div>`;
+    node.querySelectorAll("[data-website-action]").forEach(button => button.onclick = async () => {button.disabled = true; try { await command("website_action", {job_id:button.dataset.jobId, action:button.dataset.websiteAction}); } catch(error) {toast(error.message);button.disabled = false;}});
+    websiteSignatures.set(job.id, signature);
+  }
+}
+$("website-duration-preset").onchange = event => {
+  if (event.target.value !== "custom") $("website-form").elements.duration_s.value = event.target.value;
+};
+$("website-form").elements.duration_s.oninput = () => {$("website-duration-preset").value = "custom";};
+$("website-form").onsubmit = async event => {
+  event.preventDefault(); const data = Object.fromEntries(new FormData(event.target));
+  data.duration_s = Number(data.duration_s); $("website-error").textContent = ""; $("website-submit").disabled = true;
+  try {await command("website", data); toast("Đã thêm tác vụ website. Tiến độ và video sẽ xuất hiện bên dưới.");}
+  catch (error) {$("website-error").textContent = error.message;}
+  finally {$("website-submit").disabled = false;}
+};
+
 bindDynamic();
 for (const b of document.querySelectorAll("[data-close]"))
   b.onclick = () => $(b.dataset.close).close();
