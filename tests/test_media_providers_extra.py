@@ -356,3 +356,44 @@ def test_command_tts_ep_stdin_utf8_du_bang_ma_cuc_bo_cua_con_khac(tmp_path, monk
     cfg = MediaConfig(tts={"provider": "command", "command": cmd + " {out}"})
     r = CommandTTS(cfg).synthesize("xin chào", {}, tmp_path / "S1.wav")
     assert r.path.is_file()
+
+
+def test_command_image_preserves_prompt_stdin_and_filters_credentials(tmp_path, monkeypatch):
+    from studio.media import CommandImage, _solid_png
+    from studio.sandbox import Result
+    prompt = "ảnh tiếng Việt; $(touch should-not-exist)"
+    monkeypatch.setenv("OPENAI_API_KEY", "never-forward-this")
+    class Recorder:
+        name = "test"
+        def run(self, spec):
+            assert spec.argv == ["paint", "11x7", str(tmp_path / "image.png")]
+            assert spec.stdin == prompt and spec.env["PYTHONIOENCODING"] == "utf-8"
+            assert "OPENAI_API_KEY" not in spec.env
+            Path(spec.argv[-1]).write_bytes(_solid_png(11, 7, (25, 70, 90)))
+            return Result(0, "", "", False, "test")
+    cfg = MediaConfig(image={"provider": "command", "command": "paint {size} {out}", "model": "local-art"})
+    result = CommandImage(cfg, sandbox=Recorder()).generate(prompt, "11x7", tmp_path / "image.png")
+    assert result.provider == "command" and result.model == "local-art"
+    assert result.path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert isinstance(make_media(cfg).image, CommandImage)
+
+
+@pytest.mark.parametrize("mode,match", [("timeout", "quá"), ("exit", "lỗi"), ("missing", "PNG"),
+                                         ("invalid", "PNG"), ("oserror", "không chạy")])
+def test_command_image_rejects_failed_or_invalid_output(tmp_path, mode, match):
+    from studio.media import CommandImage
+    from studio.sandbox import Result
+    class Recorder:
+        name = "test"
+        def run(self, spec):
+            if mode == "oserror": raise OSError("missing executable")
+            if mode == "invalid": Path(spec.argv[-1]).write_text("placeholder")
+            return Result(1 if mode == "exit" else 0, "", "renderer failed", mode == "timeout", "test")
+    image = CommandImage(MediaConfig(image={"provider": "command", "command": "paint {out}"}), sandbox=Recorder())
+    with pytest.raises(MediaError, match=match): image.generate("p", "11x7", tmp_path / "out.png")
+
+
+def test_command_image_requires_explicit_command():
+    from studio.media import CommandImage
+    with pytest.raises(MediaError, match=r"image\.command"):
+        CommandImage(MediaConfig(image={"provider": "command"}))

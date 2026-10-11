@@ -51,7 +51,7 @@ tts:
   # timeout_s: 300
 
 image:
-  provider: openai          # openai | gemini | stability | replicate | fake
+  provider: openai          # openai | gemini | stability | replicate | command | fake
   # --- openai: POST {base_url}/images/generations. KÍCH THƯỚC THEO MODEL: gpt-image-1 nhận 1024x1024 | 1536x1024 | 1024x1536
   #     (sai kích thước → HTTP 400); dall-e-3 nhận 1792x1024 | 1024x1792. Bỏ trống `size` là an toàn nhất: code tự chọn
   #     kích thước hợp lệ của model theo `aspect` của manifest (16:9 cho video dài, 9:16 cho Shorts), và sửa lại nếu khai sai.
@@ -76,6 +76,14 @@ image:
   # input: {num_inference_steps: 4}
   # poll_s: 2
   # poll_max: 60
+  #
+  # --- command: chương trình tạo PNG thật; prompt đi qua stdin, lệnh chạy không qua shell.
+  #     {size} = WIDTHxHEIGHT, {out} = đường dẫn PNG, {prompt} = prompt (ưu tiên stdin để tránh lộ trên argv).
+  #     CLI vector dùng backend đăng nhập trong llm.yaml; model thiết kế SVG, code kiểm tra rồi rasterize bằng FFmpeg.
+  # provider: command
+  # model: cli-vector
+  # command: ".venv/bin/python -m studio.cli_visual --size {size} --out {out}"
+  # timeout_s: 900
 
 video:
   provider: ffmpeg          # ffmpeg (ghép ảnh + audio thành MP4, cần ffmpeg trên PATH; có ffprobe thì thời lượng audio đo thật) | fake

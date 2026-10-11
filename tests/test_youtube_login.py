@@ -12,6 +12,7 @@ from typing import ClassVar
 
 import pytest
 
+from studio.media import MediaConfig
 from studio.platform import PlatformError, TokenStore
 from studio.youtube import _wait_for_code, login, main
 
@@ -99,7 +100,8 @@ def test_login_exchanges_code_and_saves_token_without_opening_browser(tmp_path, 
     assert store.load().access_token == "a"
 
 
-def test_cli_sync_comments_prints_no_new_comments_when_env_is_none(tmp_path, capsys):
+def test_cli_sync_comments_prints_no_new_comments_when_env_is_none(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr("studio.youtube.load_media_config", lambda: MediaConfig())
     from studio.events import Envelope
     from studio.sqlite_bus import SQLiteBus
 

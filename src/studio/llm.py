@@ -131,6 +131,10 @@ def make_client(cfg: LLMConfig | None = None) -> ModelClient:
                                transient_cooldown_s=float(r.get("transient_cooldown_s", 60)),
                                prefer={str(k): str(v) for k, v in (r.get("prefer") or {}).items()})
     client.max_input_chars = cfg.max_input_chars
+    tool_budget = int(cfg.extra.get("tool_budget_tokens", 0))
+    if not 0 <= tool_budget <= 10_000_000:
+        raise LLMError("extra.tool_budget_tokens phải trong khoảng 0–10000000")
+    client.tool_budget_tokens = tool_budget
     return client
 
 

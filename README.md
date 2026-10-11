@@ -15,6 +15,10 @@ make studio-demo
 
 Mở `http://127.0.0.1:8765`, nhập mã truy cập trong terminal, chọn **Tạo video mới**. Demo có DB riêng `demo.sqlite`, model/media/nền tảng giả; tệp MP4 demo không phải video thật. Các test FFmpeg riêng vẫn dựng video thật từ fixture cục bộ.
 
+**Phòng duyệt** giữ các quyết định đang chờ. **Xuất bản** hiển thị bản cuối, lịch đăng và kết quả đăng cả sau khi đã duyệt; có bộ lọc chờ duyệt, đã lên lịch, đã đăng và cần xử lý. Có thể mở thẳng `http://127.0.0.1:8765/#publishing`. Lịch demo được ghi rõ là mô phỏng và không có liên kết video thật.
+
+Với bản MP4 thật, chọn **Xem video** để phát ngay trong dự án, hoặc **Metadata & QC** để xem thông tin đăng và kết quả đo. Có thể dựng và xem video cục bộ trước khi kết nối YouTube; adapter xuất bản giả không biến bản dựng thật thành media mô phỏng.
+
 Vận hành với cấu hình hiện có:
 
 ```bash
@@ -24,6 +28,12 @@ uv run python -m studio.console --media media.yaml --db studio.sqlite --port 876
 ```
 
 Giữ `llm.yaml` và cấu hình provider TTS/ảnh của bạn; tham khảo [media.example.yaml](media.example.yaml) và ghép các block `video`, `render`, `production` từ [media.factory.yaml](media.factory.yaml). Hồ sơ factory mặc định provider giả để không tự phát sinh phí khi sao chép. API key dùng biến môi trường/`api_key_env`, không nhập vào source hoặc giao diện. Adapter hiện có hỗ trợ nhiều provider và TTS cục bộ qua lệnh không shell.
+
+Để dùng gói ChatGPT và Claude đã đăng nhập, cấu hình hai backend `codex` / `claude-code` trong `llm.yaml`, với `binary`, `config_dir` và model được tài khoản hỗ trợ. Không cần API key cho hai CLI này. CLI có thể dùng nhiều lượt nội bộ và báo cả token đọc cache; đặt `extra: {tool_budget_tokens: 180000}` ở gốc `llm.yaml` nếu cần trần riêng cho một tác vụ web. Bỏ cấu hình này giữ hạn mức từng agent; trần tổng video vẫn do brief và supervisor kiểm tra, không bỏ đếm token.
+
+Giọng đọc có thể dùng `tts.provider: command` với Edge TTS; Edge cần Internet. Hình minh họa vector dùng `image.provider: command`, lệnh `.venv/bin/python -m studio.cli_visual --size {size} --out {out}` và `model: cli-vector`. CLI thiết kế SVG theo cảnh; code kiểm tra SVG rồi rasterize thành PNG thật. Khi gọi helper trực tiếp, SVG và file `.art.json` ghi model/token nằm cùng ảnh; khi đi qua cache renderer, PNG được giữ và tệp trung gian được dọn. Đây là minh họa vector, không phải mô hình sinh ảnh chụp. FFmpeg cần decoder `librsvg` cho hồ sơ này.
+
+Sau khi cấu hình media thật và `production.automation: production`, chạy `bash scripts/run-live.sh`. Launcher dùng DB riêng `output/live/production.sqlite`, từ chối backend/media giả và giữ bước đăng ở cửa duyệt. Bản dựng MP4, SRT và thumbnail được lưu dưới `output_dir` của hồ sơ; toàn bộ cấu hình tài khoản và đầu ra này bị gitignore.
 
 Trong **Cấu hình xưởng**, chọn phong cách hình ảnh, số luồng CPU, burn-in phụ đề và chế độ:
 
@@ -109,8 +119,8 @@ CI Linux cài FFmpeg/font, khóa phiên bản GitHub Actions và chạy cùng l�
 - `src/studio/web/`: HTML/CSS/JavaScript native, đóng gói cùng Python.
 - `agents/`, `skills/`, `topics/`: 14 vai, 24 skill và schema sự kiện; giữ prompt hiện có.
 - `gateway/`, `xagents-core/`: thành viên uv workspace có test/coverage riêng.
-- `tests/`: pytest 938 ca / 64 file.
-- Test: 938 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
+- `tests/`: pytest 983 ca / 65 file.
+- Test: 983 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
 - `docs/adr/`: ADR 0001–0013; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình.
 
 Tham khảo thêm: [kiến trúc nền](docs/architecture.md), [CLI chi tiết](docs/CLI-REFERENCE.md), [CLAUDE.md](CLAUDE.md). Các hướng dẫn cũ về gate được bổ sung bởi policy ủy quyền ở ADR-0010.

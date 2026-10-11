@@ -250,7 +250,8 @@ class AgentRunner(CoreAgentRunner[Envelope, AgentSpec]):
         if tools is None:
             c = self._complete(spec, inp, user, out_schema); total, turns = c.tokens, 1
         else:
-            c, total, turns = self._tool_loop(spec, inp, user, out_schema, tools, max_turns, spec.budget_tokens_per_task)
+            budget = getattr(self.client, "tool_budget_tokens", 0) or spec.budget_tokens_per_task
+            c, total, turns = self._tool_loop(spec, inp, user, out_schema, tools, max_turns, budget)
         try:
             data = c.json()
             if not isinstance(data, dict): raise BusError("đầu ra phải là JSON object")

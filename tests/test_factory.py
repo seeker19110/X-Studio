@@ -13,6 +13,40 @@ def test_project_requests_validate_duration_and_budget():
     assert ProjectRequest(title="x", target_minutes=720).target_minutes == 720
 
 
+@pytest.mark.parametrize("credential", [None, "invalid", '{"refresh_token":"test-token"}'])
+def test_snapshot_distinguishes_youtube_adapter_from_oauth(tmp_path, monkeypatch, credential):
+    from studio.platform import TokenStore, YouTubePlatform
+    monkeypatch.setenv("STUDIO_POLICY_KEY_FILE", str(tmp_path / "policy.key"))
+    f = Factory(tmp_path / "studio.sqlite", MediaConfig(output_dir=tmp_path / "out"), demo=True)
+    try:
+        token_path = tmp_path / "youtube.json"
+        if credential is not None: token_path.write_text(credential)
+        f.orch.platform = YouTubePlatform(TokenStore(token_path))
+        f.refresh()
+        snapshot = f.snapshot()
+        assert snapshot["platform"] == "youtube"
+        assert snapshot["youtube_oauth_configured"] is (credential is not None and credential != "invalid")
+        assert "test-token" not in str(snapshot)
+    finally:
+        f.close()
+
+
+def test_commands_are_visible_while_the_model_stage_is_running(tmp_path, monkeypatch):
+    f = Factory(tmp_path / "studio.sqlite", MediaConfig(output_dir=tmp_path / "out"), demo=True)
+    try:
+        command = f.command("create", {"title": "Live production"})
+        def model_stage(**kwargs):
+            snapshot = f.snapshot()
+            assert snapshot["running"] is True
+            assert snapshot["commands"][0]["id"] == command
+            assert snapshot["commands"][0]["status"] == "done"
+            assert snapshot["queue"] > 0
+        monkeypatch.setattr(f.orch, "tick", model_stage)
+        f.cycle()
+    finally:
+        f.close()
+
+
 def test_commands_survive_restart_and_deduplicate(tmp_path):
     db = tmp_path / "commands.sqlite"
     store = CommandStore(db); store.add("a", "pause", {})
