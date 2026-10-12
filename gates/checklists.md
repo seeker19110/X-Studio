@@ -20,6 +20,9 @@ Kết quả: approve (desk dispatch) / request_changes / reject
 - [ ] Đã xem bản cuối `output/<video>/final_v<n>.mp4` và thumbnail `chosen`
 - [ ] Dòng `qc:` trong checklist: khung hình, thời lượng, âm lượng (≈ -14 LUFS) đúng; không finding `qc:block`
 - [ ] Phụ đề `captions:` có và đúng ngôn ngữ kênh (thiếu thì chỉ là warn, nhưng mất tiếp cận và SEO)
+- [ ] Đã soi `contact_sheet:` (một khung giữa mỗi cảnh của chính bản cuối): không cảnh đen/sai khung/chữ đè; `qc:warn:motion`
+      (hình đứng yên ≥ 8 s) có lý do giữ hoặc yêu cầu sửa
+- [ ] Nếu có dòng `media_cost:`: chi phí media ước tính hợp lý so với kế hoạch (ADR-0016)
 - [ ] Không vi phạm `boundaries` và content-policy (YMYL có miễn trừ)
 - [ ] Lịch đăng theo chiến lược (`strategy`) hoặc nêu trong reason
 - [ ] Người duyệt ≠ người tạo (desk)

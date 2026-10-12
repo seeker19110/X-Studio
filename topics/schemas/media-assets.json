@@ -51,7 +51,8 @@
             "thumbnail",
             "captions",
             "scene_video",
-            "music"
+            "music",
+            "contact_sheet"
           ],
           "type": "string"
         },

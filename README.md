@@ -77,6 +77,7 @@ Video hướng dẫn dựa trên những trang công khai, điều hướng và 
 - **Tiết kiệm gọi API:** TTS, ảnh, thumbnail có cache theo nội dung/cấu hình, checksum và commit nguyên tử. Nhật ký đầu ra render dùng lại event ID sau restart để tránh phát draft/editor lặp. Cảnh sửa có định danh riêng; lỗi giữa chừng không làm mất phần đã tạo thành công. Không tái sinh cảnh đã khóa khi file bị thiếu: báo lỗi để khôi phục đúng tài nguyên.
 - **Video dài:** chia kịch bản theo chương, chia scene planning/fact review theo nhóm; ghi nhận token từng chương. Segment mới dùng FLAC lossless, concat đọc trực tiếp cache để tránh bản sao trung gian; decoder cũng bị giới hạn luồng. Bộ dựng `bounded` mã hóa một cảnh mỗi lần, tái sử dụng segment, ghép video bằng stream copy; `graph` cũ vẫn dùng được.
 - **Hình và tiếng:** ảnh có chuyển động, footage video, catalog có giấy phép, nhạc duck dưới lời đọc, chuẩn hóa loudness, phụ đề chia trang và burn-in tùy chọn. Motion template title/quote/bars vẽ chữ Việt bằng code; biểu đồ bắt buộc có nguồn.
+- **Soát trước khi đăng (ADR-0016, học từ kho [`stored`](https://github.com/seeker19110/stored)):** QC bắt hình đứng yên ≥ 8 giây (nguy cơ slideshow, `STUDIO_QC_MAX_STATIC_S`); bản cuối có **contact sheet** — một khung giữa mỗi cảnh trích từ chính MP4 cuối, có nhãn cảnh/mốc giờ — hiện ở thẻ duyệt xuất bản và tab Kiểm tra & đăng; **sổ chi phí media** tính USD theo bảng giá bạn khai (`tts.price_per_1k_chars`, `image.price_per_image`, `scene_video.price_per_second`) cho mỗi lượt gọi provider thật, trần `production.media_budget_usd` chặn trước lượt gọi sẽ vượt.
 - **Độ tin cậy:** retry media có giới hạn/backoff, hàng lệnh SQLite, lease một worker, policy có chữ ký riêng và thế hệ gate; kiểm tra file/checksum, thời lượng, nguồn, mô tả CC-BY và QC trước tự xuất bản. Web research có cache TTL và allowlist tên miền vẫn kiểm redirect/SSRF.
 
 Tư liệu local: đặt file của bạn dưới `output/uploads`, điền [examples/library.yaml](examples/library.yaml), rồi ánh xạ video/cảnh bằng [examples/production-selections.yaml](examples/production-selections.yaml). Chỉ khai quyền sử dụng mà bạn thực sự có. Credit CC-BY được thêm vào mô tả trước preflight. File thay thế qua cut-list chưa có hồ sơ quyền sử dụng được đánh dấu `unknown` để review chặn.
@@ -117,7 +118,7 @@ Console nhận mục tiêu **0–720 phút** (lớn hơn 0). [YouTube](https://s
 - Bounded giảm độ lớn graph, không làm mất chi phí theo thời lượng. Bộ nhớ phụ thuộc một cảnh; cache âm thanh lossless và video trung gian vẫn cần ổ đĩa. Đã stress fixture tổng hợp 30 phút 24 giây ở 640×360, chưa đo 12 giờ hoặc phần trăm tiết kiệm trên máy chuẩn. Có thể đặt `render.segment_cache_max_bytes` để dọn segment cũ không dùng; `render.min_free_disk_bytes` mặc định 256 MiB. Đây là kiểm tra giữa các bước, không phải quota ổ đĩa; không dọn cache TTS/ảnh trả phí.
 - Burn-in phụ đề cần thêm lượt encode cuối. Muốn tiết kiệm CPU, tắt burn-in, dùng SRT riêng. Subtitle timing theo tỷ lệ lời đọc trong cảnh, chưa phải forced alignment/karaoke từng từ.
 - Với video nhiều giờ, điều chỉnh `render.timeout_s` và `STUDIO_QC_TIMEOUT_S` theo máy; mặc định QC 300 giây. Ví dụ đặt `STUDIO_QC_TIMEOUT_S=86400` trước khi khởi động worker. Không tắt timeout hoàn toàn.
-- Ngân sách token là token model text, không phải trần tiền cho TTS/ảnh. Dừng trước chương tiếp theo khi đã hết; một request đang chạy có thể vượt phần còn lại. Chất lượng sáng tạo, tính đúng đắn nội dung và thời lượng thực phụ thuộc model/provider; QC giữ lại sản phẩm lệch mục tiêu quá 20% mặc định.
+- Ngân sách token là token model text. Tiền TTS/ảnh/clip đi qua sổ chi phí media riêng (ADR-0016): ước tính theo bảng giá bạn khai, không phải hóa đơn provider; không khai giá thì không có trần tiền. Ngân sách token dừng trước chương tiếp theo khi đã hết; một request đang chạy có thể vượt phần còn lại. Chất lượng sáng tạo, tính đúng đắn nội dung và thời lượng thực phụ thuộc model/provider; QC giữ lại sản phẩm lệch mục tiêu quá 20% mặc định.
 - Video diffusion chạy qua workflow ComfyUI cấu hình riêng; chưa cài/benchmark model GPU. Chưa tích hợp stock search tự tải, tracking người nói, editor timeline kéo thả hoặc render cluster. Xem [đối chiếu nguồn và quyết định tích hợp](docs/RESEARCH-VIDEO-FACTORIES.md).
 
 ## Phát triển và xác minh
@@ -133,8 +134,8 @@ CI Linux cài FFmpeg/font, khóa phiên bản GitHub Actions và chạy cùng l�
 - `src/studio/web/`: HTML/CSS/JavaScript native, đóng gói cùng Python.
 - `agents/`, `skills/`, `topics/`: 14 vai, 24 skill và schema sự kiện; giữ prompt hiện có.
 - `gateway/`, `xagents-core/`: thành viên uv workspace có test/coverage riêng.
-- `tests/`: pytest 1030 ca / 65 file.
-- Test: 1030 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
-- `docs/adr/`: ADR 0001–0015; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình.
+- `tests/`: pytest 1051 ca / 67 file.
+- Test: 1051 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
+- `docs/adr/`: ADR 0001–0016; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình.
 
 Tham khảo thêm: [kiến trúc nền](docs/architecture.md), [CLI chi tiết](docs/CLI-REFERENCE.md), [CLAUDE.md](CLAUDE.md). Các hướng dẫn cũ về gate được bổ sung bởi policy ủy quyền ở ADR-0010.

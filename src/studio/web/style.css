@@ -2480,6 +2480,22 @@ dialog > form > p.muted {
   border-radius: 11px;
   margin: 17px 0;
 }
+.contact-sheet {
+  margin: 12px 0 16px;
+}
+.contact-sheet img {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #19212d;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.contact-sheet figcaption {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
 .scene-list {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

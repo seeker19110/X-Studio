@@ -34,6 +34,9 @@ DURATION_TOLERANCE = 0.10   # lệch > 10% so với manifest = dựng hỏng, kh
 LUFS_TOLERANCE = 1.5
 BLACK_MIN_S = 0.5           # đoạn hình đen liên tục từng này giây trở lên là cảnh hỏng
 SILENCE_MIN_S = 1.5         # khoảng lặng dài hơn đệm chuyển cảnh: khán giả tưởng video đứng
+# Hình đứng yên hoàn toàn lâu hơn ngưỡng này = "slideshow" (docs/standards.md "không cảnh tĩnh > 8 s"; học từ
+# "slideshow-risk check" của OpenMontage, ADR-0016). 0 = tắt. Ken Burns/footage luôn có thay đổi nên không bị bắt.
+MAX_STATIC_S = max(0.0, float(os.environ.get("STUDIO_QC_MAX_STATIC_S", "8")))
 QC_MAX_OUTPUT = 1_000_000
 TIMEOUT_S = max(30, float(os.environ.get("STUDIO_QC_TIMEOUT_S", "300")))
 
@@ -116,13 +119,27 @@ def probe(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def measure(path: Path) -> dict[str, Any]:
-    """Một lượt ffmpeg đo âm lượng (ebur128), hình đen (blackdetect) và khoảng lặng (silencedetect)."""
+def _freeze_spans(log: str, duration_s: float) -> list[float]:
+    """Các đoạn hình đứng yên theo log `freezedetect`. Đứng yên tới hết file thì ffmpeg chỉ in `freeze_start` —
+    đoạn đó kéo tới `duration_s` (thời lượng ffprobe), không bị bỏ qua."""
+    spans: list[float] = []; start: float | None = None
+    for key, value in re.findall(r"lavfi\.freezedetect\.freeze_(start|duration):\s*(\d+(?:\.\d+)?)", log):
+        if key == "start": start = float(value)
+        elif start is not None: spans.append(round(float(value), 2)); start = None
+    if start is not None and duration_s > start: spans.append(round(duration_s - start, 2))
+    return spans
+
+
+def measure(path: Path, duration_s: float = 0.0) -> dict[str, Any]:
+    """Một lượt ffmpeg đo âm lượng (ebur128), hình đen (blackdetect), hình đứng yên (freezedetect) và khoảng lặng
+    (silencedetect). `duration_s` (ffprobe) để khép đoạn đứng yên kéo tới cuối file."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg: return {"scan_complete": False, "scan_error": "thiếu ffmpeg"}
+    vf = f"blackdetect=d={BLACK_MIN_S}:pic_th=0.98"
+    if MAX_STATIC_S > 0: vf += f",freezedetect=n=-60dB:d={MAX_STATIC_S:g}"
     code, _, err = _run([ffmpeg, "-hide_banner", "-nostats", "-loglevel", "info", "-xerror",
                         "-threads", "1", "-filter_threads", "1", "-i", str(path),
-                      "-vf", f"blackdetect=d={BLACK_MIN_S}:pic_th=0.98",
+                      "-vf", vf,
                       "-af", f"ebur128=peak=true:framelog=verbose,silencedetect=n=-50dB:d={SILENCE_MIN_S}",
                       "-threads", "1", "-f", "null", "-"])
     if code != 0:
@@ -139,6 +156,7 @@ def measure(path: Path) -> dict[str, Any]:
         out["scan_error"] = "thiếu tổng kết âm lượng/đỉnh âm thanh"
     out["black_spans"] = [round(float(x), 2) for x in re.findall(r"black_duration:(\d+(?:\.\d+)?)", err)]
     out["silence_spans"] = [round(float(x), 2) for x in re.findall(r"silence_duration:\s*(\d+(?:\.\d+)?)", err)]
+    if MAX_STATIC_S > 0: out["freeze_spans"] = _freeze_spans(err, duration_s)
     return out
 
 
@@ -150,7 +168,7 @@ def qc_video(path: Path, expected_duration_s: float = 0.0, expected_resolution: 
         return QCReport(available=False, metrics={"file": str(path)})
     m: dict[str, Any] = dict(info)
     m["resolution"] = f"{info['width']}x{info['height']}"
-    m.update(measure(Path(path)))
+    m.update(measure(Path(path), info["duration_s"]))
     f: list[Finding] = []
     if info["width"] <= 0 or info["height"] <= 0 or info["duration_s"] <= 0:
         f.append(Finding(level="block", text="video cuối thiếu hình hoặc thời lượng dương", location="final_video"))
@@ -179,6 +197,10 @@ def qc_video(path: Path, expected_duration_s: float = 0.0, expected_resolution: 
     if m.get("black_spans"):
         f.append(Finding(level="warn", text=f"{len(m['black_spans'])} đoạn hình đen ≥ {BLACK_MIN_S}s "
                                             f"(dài nhất {max(m['black_spans'])}s)", location="final_video"))
+    if m.get("freeze_spans"):
+        f.append(Finding(level="warn", text=f"{len(m['freeze_spans'])} đoạn hình đứng yên ≥ {MAX_STATIC_S:g}s "
+                                            f"(dài nhất {max(m['freeze_spans'])}s): nguy cơ slideshow, thêm chuyển "
+                                            f"động/footage hoặc chia cảnh", location="motion"))
     if m.get("silence_spans"):
         f.append(Finding(level="warn", text=f"{len(m['silence_spans'])} khoảng lặng ≥ {SILENCE_MIN_S}s "
                                             f"(dài nhất {max(m['silence_spans'])}s)", location="audio"))
