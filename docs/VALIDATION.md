@@ -468,7 +468,7 @@ Dependabot/SECURITY đã có trên main; không thực hiện lại đề xuất
 
 `make verify` đạt **1.136 Studio + 273 Gateway + 478 core = 1.887 tests**, không skip,
 coverage 100% từng package (core cả nhánh); Studio 6.400 dòng thực thi/69 file test.
-Ruff/mypy cả ba package, 28/28 replay, Node syntax/diff-check đạt. Review độc lập
+Ruff/mypy cả ba package, 29/29 replay, Node syntax/diff-check đạt. Review độc lập
 và 101 test graphics/motion/budget/orchestrator đạt. Log `/tmp/pr7-pr13-verify.log`.
 Gateway còn warning runpy cũ. Không đổi prompt và không nhận các bản ghi eval
 của main là lần chạy model live của đợt này.
