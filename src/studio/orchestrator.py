@@ -59,6 +59,7 @@ from .gates import GateRequest, gate_approvers
 from .llm import LLMError, ModelClient, TransientError
 from .media import MediaError, MediaSuite, frame_size
 from .media_cost import MediaBudgetError
+from .motion import verify_graphics
 from .platform import Platform, PlatformError, UploadResult, YouTubePlatform, make_platform
 from .preflight import PreflightReport, preflight
 from .qc import QCReport, qc_scenes, qc_video
@@ -645,6 +646,10 @@ class Orchestrator:
                             if r.topic_out == "metadata-packages": p["language"] = language
                             else: p["voice"] = {**p.get("voice", {}), "language": language}
                 if r.topic_out == "scene-manifests":
+                    # ADR-0017: số trên biểu đồ của model phải nằm trong claim có nguồn của kịch bản đã qua fact-check.
+                    p, dropped = verify_graphics(p, data.get("script"))
+                    for d in dropped:
+                        self._audit("graphic.unverified", d, video_id=p.get("video_id"))
                     previous = max((e.payload.get("version", 1) for e in self.bus.replay("scene-manifests", p["video_id"])), default=0)
                     p = {**p, "version": max(p.get("version", 1), previous + 1)}
                 output_key = key_for(r.topic_out, p, env.key)

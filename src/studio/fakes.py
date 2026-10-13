@@ -55,9 +55,13 @@ def scripted(agent: str, inp: dict[str, Any], extra: dict[str, Any], opts: dict[
                 "findings": [] if verdict == "pass" else [{"level": "block", "text": "C1 không có nguồn kiểm chứng được", "location": "C1"}],
                 "metrics": {"claims_checked": 1}}
     if agent == "production-manager":
+        scenes: list[dict[str, Any]] = [
+            {"scene_id": "S1", "order": 0, "narration": "Hầu hết người mới mất nhiều giờ dựng video.", "visual_prompt": "bàn làm việc bừa bộn, ánh sáng ấm", "duration_s": 5},
+            {"scene_id": "S2", "order": 1, "narration": "Một pipeline tự động rút xuống còn 30 phút.", "visual_prompt": "sơ đồ pipeline tối giản", "duration_s": 5}]
+        for scene in scenes:  # opts scene_graphics: graphic do "model" chọn cho từng cảnh (ADR-0017)
+            if scene["scene_id"] in opts.get("scene_graphics", {}): scene["graphic"] = opts["scene_graphics"][scene["scene_id"]]
         return {"payload": {"video_id": vid, "version": 1, "script_version": 1, "aspect": "16:9", "voice": {"voice_id": "alloy", "pace": "medium", "language": "vi"},
-                            "scenes": [{"scene_id": "S1", "order": 0, "narration": "Hầu hết người mới mất nhiều giờ dựng video.", "visual_prompt": "bàn làm việc bừa bộn, ánh sáng ấm", "duration_s": 5},
-                                       {"scene_id": "S2", "order": 1, "narration": "Một pipeline tự động rút xuống còn 30 phút.", "visual_prompt": "sơ đồ pipeline tối giản", "duration_s": 5}]},
+                            "scenes": scenes},
                 "context_writes": [{"namespace": "production", "content_ref": f"{vid}/manifest.json", "summary": "2 cảnh"}]}
     if agent == "editor":
         rounds = int(extra.get("repair_rounds_used", 0)); want = opts.get("repairs", 0)

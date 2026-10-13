@@ -35,6 +35,8 @@ production:
   library: library.yaml
   scenes: {}
   music: {}
+  # Ghi đè graphic production-manager chọn (ADR-0017): {video_id: {scene_id: {template: title|quote|bars|list|stat,
+  # title, subtitle, labels, values, unit, source}}}. Graphic của model đã có sẵn; chỉ khai khi muốn đổi tay một cảnh.
   graphics: {}
 platform:
   provider: fake  # chọn youtube sau khi kết nối tài khoản của bạn

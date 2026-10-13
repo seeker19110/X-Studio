@@ -71,7 +71,7 @@ Location cần đối soát thủ công; không có lệnh tự reset hay đoán
 published sai từ lịch sử cũ cũng cần đối soát, vì thiếu trạng thái để tự sửa chắc
 chắn. SHA-256 đọc file theo block 1 MiB, upload giữ chunk tối đa 8 MiB như PR #6;
 file đầu vào cần bất biến trong lúc gửi. Kiểm tra size/mtime hỗ trợ phát hiện thay
-đổi, không thay snapshot filesystem. Xem [ADR-0016](adr/0017-durable-youtube-upload-reconciliation.md).
+đổi, không thay snapshot filesystem. Xem [ADR-0016](adr/0018-durable-youtube-upload-reconciliation.md).
 
 ## Website → Video và hai video Đồng Hành 4K (2026-10-11)
 
@@ -425,7 +425,7 @@ các giới hạn đã ghi ở ADR-0011/0012.
 
 Tích hợp main `13ab96abe9709dcd52876cae2b95a59c677f0625` vào nhánh upload recovery,
 giữ Website → Video, live-export, ExitStack cleanup và thumbnail staging của main.
-ADR upload chuyển sang [0016](adr/0017-durable-youtube-upload-reconciliation.md)
+ADR upload chuyển sang [0016](adr/0018-durable-youtube-upload-reconciliation.md)
 để giữ nguyên ADR 0014/0015 của PR #11. PR #9 về storage vẫn là thay đổi độc lập.
 
 `UV_CACHE_DIR=/tmp/xstudio-uv-cache make verify` trên Linux/Python 3.12.14 đạt:
@@ -446,7 +446,7 @@ Các giới hạn upload recovery, render 12 giờ và Windows native vẫn còn
 
 Tích hợp main `d7cb00d507a4e5c3f1208c906ad1195a2e67b8c8`, giữ ledger media,
 budget pause, contact sheet từ MP4 cuối và freeze/slideshow QC. Upload ADR chuyển
-sang [0017](adr/0017-durable-youtube-upload-reconciliation.md); ADR 0016 của main giữ nguyên.
+sang [0017](adr/0018-durable-youtube-upload-reconciliation.md); ADR 0016 của main giữ nguyên.
 `UV_CACHE_DIR=/tmp/xstudio-uv-cache make verify` đạt **1.092 Studio + 273 Gateway
 + 478 core = 1.843 tests**, không skip; coverage 100% cả ba package (core cả nhánh),
 Studio 6.224 dòng thực thi/68 file test. Ruff/mypy và 28/28 strict eval replay đạt.
@@ -456,3 +456,23 @@ và git diff-check đạt. Log local `/tmp/pr7-pr12-verify.log`; warning runpy G
 Không kiểm chi phí/hóa đơn provider thật, paid calls, upload, deployment hoặc render
 12 giờ/Windows native. Ledger vẫn là ước tính theo giá cấu hình, không phải hóa đơn.
 PR #9 storage độc lập; Website jobs/export riêng vẫn ngoài storage admission.
+
+
+## Hòa giải PR #7 với graphics PR #13 và docs #18 — 2026-10-13
+
+Main `5f5afae4362d3ff82bd90c8745b7c105bda5637f` được tích hợp; giữ graphics
+model chọn dạng dữ liệu, đối chiếu số claim, safe layout/fallback và cache identity.
+Upload ADR hiện là [0018](adr/0018-durable-youtube-upload-reconciliation.md), giữ ADR
+0017 graphics của main; số ADR trong lịch sử bên trên là số tại thời điểm đó.
+Dependabot/SECURITY đã có trên main; không thực hiện lại đề xuất cũ của docs #18.
+
+`make verify` đạt **1.136 Studio + 273 Gateway + 478 core = 1.887 tests**, không skip,
+coverage 100% từng package (core cả nhánh); Studio 6.400 dòng thực thi/69 file test.
+Ruff/mypy cả ba package, 28/28 replay, Node syntax/diff-check đạt. Review độc lập
+và 101 test graphics/motion/budget/orchestrator đạt. Log `/tmp/pr7-pr13-verify.log`.
+Gateway còn warning runpy cũ. Không đổi prompt và không nhận các bản ghi eval
+của main là lần chạy model live của đợt này.
+
+Kiểm số graphics chỉ đối chiếu số trong claim có nguồn, chưa kiểm quan hệ ngữ nghĩa
+nhãn–giá trị–nguồn. Chưa xác minh paid/live spend, upload thật, render 12 giờ hoặc
+Windows native. Website jobs/export riêng vẫn ngoài storage admission của PR #9.
