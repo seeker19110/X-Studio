@@ -136,7 +136,7 @@
     ],
     "timeout_minutes": 45,
     "tools": [],
-    "version": 1,
+    "version": 2,
     "writes": [
       "scene-manifests"
     ]

@@ -1,5 +1,27 @@
 # Xác minh bản nâng cấp factory
 
+## PR #9 hòa giải với scene graphics và rà soát docs trên main (2026-10-13)
+
+Đã tích hợp main `5f5afae4362d3ff82bd90c8745b7c105bda5637f` (PR #13 và #18)
+trong worktree/venv/cache riêng. Giữ nguyên model-data graphics, kiểm tra số claim,
+layout, fallback/cache, ledger/budget pause, contact sheet/freeze QC và các
+workflow đã có; không nhận các tính năng main là triển khai mới của PR #9.
+ADR mới nhất **0017**. Ghi chú rà soát ngày 2026-10-13 đã đánh dấu
+`SECURITY.md` và Dependabot là có sẵn, không đề xuất tạo lại.
+
+`UV_CACHE_DIR=/tmp/xstudio-pr9-uv-cache make verify` đạt **1.127 Studio + 273
+Gateway + 478 core = 1.878 test**, không skip; coverage **100%** từng package
+(Studio **6.410** dòng thực thi, **69** file Python trong tests gồm conftest;
+core cả dòng/nhánh 100%). Ruff/mypy cả ba package, **29/29** strict eval replay,
+Node syntax và diff-check đạt. Gateway giữ warning runpy cũ. Log kiểm chứng:
+`/tmp/pr9-graphics-verify.log`.
+
+Chỉ chạy offline, không website/model CLI/provider/upload live, không merge PR
+hoặc deploy. Chi phí trả tiền thực chưa được đối soát. Kiểm tra số trong graphic
+chỉ xác nhận số có trong claim nguồn; không chứng minh nhãn–giá trị–nguồn đúng
+ngữ nghĩa. Website jobs/export ngoài roots vẫn ngoài storage admission như
+[STORAGE.md](STORAGE.md); PR #7 upload recovery vẫn riêng.
+
 ## PR #9 hòa giải với ledger/budget/QC của PR #12 (2026-10-13)
 
 Đã tích hợp main `d7cb00d507a4e5c3f1208c906ad1195a2e67b8c8` trong worktree

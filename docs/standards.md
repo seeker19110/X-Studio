@@ -20,7 +20,8 @@ Hook–Promise–Payoff, ngôn ngữ nói ≤ 20 từ/câu, 150 wpm, sổ claim;
 Scene manifest bền vững, shot list, repair-not-rebuild ≤ 3 vòng; chuẩn hoá văn bản TTS, -14 LUFS; prompt ảnh có cấu trúc,
 không chữ/logo/người thật; thumbnail ≤ 4 từ, đọc được ở 120px, mỗi biến thể một giả thuyết. Không đoạn hình đứng yên
 ≥ 8 s (QC `freezedetect`, finding `motion`); contact sheet bản cuối cho người duyệt; chi phí media theo bảng giá khai trong
-`media.yaml`, trần mỗi video chặn trước lượt gọi (ADR-0016).
+`media.yaml`, trần mỗi video chặn trước lượt gọi (ADR-0016). Cảnh số liệu/so sánh/liệt kê là đồ họa template do code vẽ,
+số chép nguyên từ claim có nguồn; chữ đồ họa nằm trên vùng phụ đề (16:9) và ngoài giao diện Shorts (9:16) (ADR-0017).
 
 ## Khối 4 – Phân phối
 Giới hạn nền tảng (tiêu đề ≤ 100, mô tả ≤ 5000, tag ≤ 500 ký tự, chapter 00:00/≥3/≥10s), GEO/AIO/AEO, preflight có version

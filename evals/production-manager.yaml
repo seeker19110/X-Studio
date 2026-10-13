@@ -28,3 +28,18 @@ cases:
       equals: {video_id: CH1-V3}
       min_len: {scenes: 1}
       max_len: {scenes: 8}
+
+  - name: claim-co-so-lieu-phai-thanh-graphic-dung-so
+    topic_out: scene-manifests
+    extra:
+      script: {video_id: CH1-V4, version: 1, working_title: t, hook: "Vì sao người mới bỏ cuộc?", sections: [{heading: "Con số", narration: "Theo báo cáo ngành, 42% người mới bỏ cuộc sau 3 video đầu tiên.", visual_notes: "con số lớn", claim_ids: [C1]}, {heading: "Cách tránh", narration: "Có ba việc giúp bạn đi tiếp: viết kịch bản ngắn, dựng bằng pipeline, đăng đều mỗi tuần.", visual_notes: "ba bước"}], cta: "Đăng ký", claims: [{claim_id: C1, text: "42% người mới bỏ cuộc sau 3 video đầu tiên", source: "https://example.org/report-2026", needs_verification: true}]}
+      brief: {video_id: CH1-V4, format: long, target_minutes: 1}
+    input:
+      topic: review-results
+      key: CH1-V4
+      actor: fact-checker
+      payload: {video_id: CH1-V4, source: fact, verdict: pass}
+    expect:
+      equals: {video_id: CH1-V4}
+      contains: {scenes: "'values': [42"}
+      min_len: {scenes: 2}
