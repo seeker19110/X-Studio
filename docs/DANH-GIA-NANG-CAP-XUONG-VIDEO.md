@@ -157,7 +157,9 @@ trong claim đã fact-check, giải quyết việc skill cấm số trong ảnh 
 Đề xuất thư mục `music/` kèm `LICENSES.yaml` (tên, license, attribution) → renderer chọn theo `mood` → provenance
 `licensed | cc-by` → seo-optimizer ghi công trong mô tả (finding warn đã có đường đi).
 
-**D5. Chi phí media chưa tính tiền** (hệ quả ADR-0003). Thêm `pricing:` trong `media.yaml` (mỗi ảnh, mỗi 1k ký tự TTS, mỗi
+**D5. Chi phí media chưa tính tiền** (hệ quả ADR-0003). *ĐÃ LÀM 2026-10-12 (ADR-0016): `media_cost.py` — khoá
+`*.price_*` + `production.media_budget_usd`, sổ `media.cost` trong audit-log, trần chặn trước lượt gọi, console và
+checklist publish hiển thị; chưa có cảnh báo 80%.* Đề xuất gốc: Thêm `pricing:` trong `media.yaml` (mỗi ảnh, mỗi 1k ký tự TTS, mỗi
 giây video) → audit `render.*` ghi USD → supervisor áp ngưỡng 80/100 cho media như token → console hiển thị.
 
 ## 7. Vận hành (P2–P3)
@@ -178,7 +180,7 @@ giây video) → audit `render.*` ghi USD → supervisor áp ngưỡng 80/100 ch
 | Khung hình | 1920x1080 30 fps (long) · 1080x1920 (short); không dải đen |
 | Âm thanh | 48 kHz, −14 LUFS ± 1, true peak ≤ −1 dBTP; không khoảng im lặng > 1,5 s; không click |
 | Đồng bộ | thời lượng cảnh = thời lượng audio thật + đệm; tổng khớp Σ duration_s ± 1 % |
-| Chuyển động | không cảnh tĩnh hoàn toàn > 8 s; hook có hình mới ≤ 3 s |
+| Chuyển động | không cảnh tĩnh hoàn toàn > 8 s (**đo từ 2026-10-12**: `qc.py` `freezedetect`, ADR-0016); hook có hình mới ≤ 3 s |
 | Phụ đề | phủ 100 % narration, lệch ≤ 300 ms |
 | Chapter | mốc khớp cảnh đầu của mục ± 1 s |
 | Ảnh cảnh | OCR không thấy chữ; không khuôn mặt thật; không gần đen/gần trắng |

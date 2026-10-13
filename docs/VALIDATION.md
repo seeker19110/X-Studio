@@ -71,7 +71,7 @@ Location cần đối soát thủ công; không có lệnh tự reset hay đoán
 published sai từ lịch sử cũ cũng cần đối soát, vì thiếu trạng thái để tự sửa chắc
 chắn. SHA-256 đọc file theo block 1 MiB, upload giữ chunk tối đa 8 MiB như PR #6;
 file đầu vào cần bất biến trong lúc gửi. Kiểm tra size/mtime hỗ trợ phát hiện thay
-đổi, không thay snapshot filesystem. Xem [ADR-0016](adr/0016-durable-youtube-upload-reconciliation.md).
+đổi, không thay snapshot filesystem. Xem [ADR-0016](adr/0017-durable-youtube-upload-reconciliation.md).
 
 ## Website → Video và hai video Đồng Hành 4K (2026-10-11)
 
@@ -425,7 +425,7 @@ các giới hạn đã ghi ở ADR-0011/0012.
 
 Tích hợp main `13ab96abe9709dcd52876cae2b95a59c677f0625` vào nhánh upload recovery,
 giữ Website → Video, live-export, ExitStack cleanup và thumbnail staging của main.
-ADR upload chuyển sang [0016](adr/0016-durable-youtube-upload-reconciliation.md)
+ADR upload chuyển sang [0016](adr/0017-durable-youtube-upload-reconciliation.md)
 để giữ nguyên ADR 0014/0015 của PR #11. PR #9 về storage vẫn là thay đổi độc lập.
 
 `UV_CACHE_DIR=/tmp/xstudio-uv-cache make verify` trên Linux/Python 3.12.14 đạt:
@@ -440,3 +440,19 @@ Các báo cáo video thật và Windows/WSL được giữ từ PR #11 là bằn
 thực hiện cung cấp, không phải lần xác minh live trong đợt hòa giải này. Không chạy
 provider trả phí, upload YouTube, website capture live hoặc xuất lại video 4K.
 Các giới hạn upload recovery, render 12 giờ và Windows native vẫn còn hiệu lực.
+
+
+## Hòa giải PR #7 với PR #12 — 2026-10-13
+
+Tích hợp main `d7cb00d507a4e5c3f1208c906ad1195a2e67b8c8`, giữ ledger media,
+budget pause, contact sheet từ MP4 cuối và freeze/slideshow QC. Upload ADR chuyển
+sang [0017](adr/0017-durable-youtube-upload-reconciliation.md); ADR 0016 của main giữ nguyên.
+`UV_CACHE_DIR=/tmp/xstudio-uv-cache make verify` đạt **1.092 Studio + 273 Gateway
++ 478 core = 1.843 tests**, không skip; coverage 100% cả ba package (core cả nhánh),
+Studio 6.224 dòng thực thi/68 file test. Ruff/mypy và 28/28 strict eval replay đạt.
+Review độc lập thêm 89 test budget/contact-sheet/recovery/factory đạt. Node syntax
+và git diff-check đạt. Log local `/tmp/pr7-pr12-verify.log`; warning runpy Gateway cũ còn.
+
+Không kiểm chi phí/hóa đơn provider thật, paid calls, upload, deployment hoặc render
+12 giờ/Windows native. Ledger vẫn là ước tính theo giá cấu hình, không phải hóa đơn.
+PR #9 storage độc lập; Website jobs/export riêng vẫn ngoài storage admission.

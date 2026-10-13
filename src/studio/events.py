@@ -21,7 +21,8 @@ Topic = Literal[
 ]
 Namespace = Literal["strategy", "research", "voice", "production", "brand", "seo", "rights", "insights", "community", "knowledge"]
 ReviewSource = Literal["fact", "rights", "quality"]
-AssetKind = Literal["scene_audio", "scene_image", "scene_video", "music", "draft_video", "final_video", "thumbnail", "captions"]
+AssetKind = Literal["scene_audio", "scene_image", "scene_video", "music", "draft_video", "final_video", "thumbnail", "captions",
+                    "contact_sheet"]  # contact_sheet: lưới khung hình từ bản cuối cho người duyệt (ADR-0016), không đăng lên nền tảng
 VideoFormat = Literal["long", "short"]
 # `SupervisorActionKind` giống hệt bản company (đo được), nên nó lên core ở K3.5a; re-export giữ tên cũ.
 from xagents_core.events import SupervisorActionKind as SupervisorActionKind  # noqa: E402

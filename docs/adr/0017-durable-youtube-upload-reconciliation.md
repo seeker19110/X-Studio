@@ -1,4 +1,4 @@
-# ADR-0016: Phiên upload YouTube bền vững và đối soát khi kết quả không rõ
+# ADR-0017: Phiên upload YouTube bền vững và đối soát khi kết quả không rõ
 
 Trạng thái: Accepted · Ngày: 2026-10-11
 

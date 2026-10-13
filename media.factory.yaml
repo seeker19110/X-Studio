@@ -29,6 +29,7 @@ production:
   chapter_minutes: 8
   duration_tolerance: 0.20
   allow_qc_warnings: false
+  media_budget_usd: 0  # trần chi phí media MỖI video (USD ước tính theo tts/image/scene_video.price_*); 0 = không trần
   style: "Cinematic documentary, natural light, coherent color palette, uncluttered composition."
   music_volume: 0.12
   library: library.yaml

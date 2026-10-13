@@ -13,6 +13,8 @@ tts:
   base_url: https://api.openai.com/v1
   model: gpt-4o-mini-tts
   voice: alloy              # dùng khi manifest không có voice_id (hoặc id không có trong `voices`)
+  # price_per_1k_chars: 0.0   # sổ chi phí media (ADR-0016): USD / 1000 ký tự đọc, điền theo bảng giá hiện hành của
+  #                           # provider; chỉ lượt gọi thật (cache trượt) bị tính; bỏ trống = không tính, `fake` luôn 0
   # instructions: "Giọng kể chuyện tiếng Việt tự nhiên, ấm, không đọc như máy"   # model hỗ trợ (gpt-4o-mini-tts)
   # voices: {alloy: coral, nova: sage}        # dịch voice_id của manifest → giọng provider; id không có trong bảng → `voice`
   #
@@ -58,6 +60,7 @@ image:
   base_url: https://api.openai.com/v1
   model: gpt-image-1
   # size: 1536x1024
+  # price_per_image: 0.0      # USD mỗi ảnh (ảnh cảnh và nền thumbnail) — xem price_per_1k_chars ở trên
   #
   # --- gemini: `gemini-2.5-flash-image` (generateContent) hoặc `imagen-4.0-generate-001` (predict) theo tên model;
   #     `size` được đổi sang tỷ lệ gần nhất (16:9 / 9:16 / 1:1…). Key: GEMINI_API_KEY
@@ -131,6 +134,7 @@ output_dir: output
 # Cấu hình ComfyUI workflow/bindings và command: media.film.example.yaml.
 scene_video:
   provider: none
+  # price_per_second: 0.0     # USD mỗi giây clip được sinh (ComfyUI cục bộ: để trống; dịch vụ thuê GPU: tự quy đổi)
   duration_s: 5
   fps: 24
   resolution: 832x480
