@@ -22,10 +22,11 @@ from typing import Any
 from .bus import InMemoryBus
 from .events import AssetKind, AuditLog, CutList, Envelope, MediaAsset, Provenance, Scene, SceneManifest, ThumbnailSpec
 from .media import FakeVideo, FFmpegAssembler, MediaError, MediaResult, MediaSuite, frame_size, image_size, make_media
+from .media_cost import Ledger, without_prices
 from .motion import MotionSpec, render_motion
 from .production import copy_asset, finish, selections
 from .render_cache import RenderCache, digest, fingerprint
-from .timeline import caption_pages, srt, timeline
+from .timeline import caption_pages, chapter_time, srt, timeline
 from .video_gen import validate_video_inputs
 
 ACTOR = "renderer"
@@ -47,6 +48,8 @@ class Renderer:
         # `replacement_path` trong cut-list do model viết → chỉ chấp nhận file nằm TRONG thư mục upload này
         self.upload_dir = Path(upload_dir or self.media.cfg.upload_dir or self.out_dir / "uploads")
         self.cache = RenderCache(self.out_dir / ".cache" / "media")
+        # Sổ chi phí media (ADR-0016): chỉ lượt cache trượt — provider thật được gọi — mới bị tính và soát trần.
+        self.ledger = Ledger(bus, self.media.cfg, self._audit)
 
     # ---------- helpers ----------
 
@@ -154,10 +157,12 @@ class Renderer:
             fps = values["fps"]
             resolution = frame_size({"resolution": values["resolution"]}, m.aspect)
         if audio:
-            key: dict[str, Any] = {"kind": "tts", "config": self.media.cfg.tts, "voice": m.voice, "text": s.narration,
+            key: dict[str, Any] = {"kind": "tts", "config": without_prices(self.media.cfg.tts), "voice": m.voice, "text": s.narration,
                    "adapter": type(self.media.tts).__qualname__, "revision": revision}
             r, hits["audio"] = self.cache.produce(key, d / f"{s.scene_id}.wav",
-                lambda p: self.media.tts.synthesize(s.narration, m.voice, p), force=force)
+                lambda p: self.ledger.charge(m.video_id, "tts", len(s.narration),
+                                             lambda: self.media.tts.synthesize(s.narration, m.voice, p),
+                                             scene_id=s.scene_id), force=force)
             s.asset_refs["scene_audio"] = str(r.path); s.duration_s = r.duration_s or s.duration_s
             out.append(self._asset(m.video_id, "scene_audio", r, m.version, s.scene_id, prompt_ref=f"{s.scene_id}:narration"))
         if image:
@@ -187,23 +192,26 @@ class Renderer:
                 assert generator is not None
                 # Generate a short shot. The assembler loops footage to fit the narrator.
                 duration = min(clip_duration, s.duration_s + getattr(self.media.video, "tail_pad_s", 0.0))
-                identity = getattr(generator, "cache_identity", config)
+                identity = getattr(generator, "cache_identity", without_prices(config))
                 key = {"kind": "scene_video", "config": identity, "prompt": prompt, "negative_prompt": negative,
                        "duration": duration, "fps": fps, "resolution": resolution, "seed": seed,
                        "adapter": type(generator).__qualname__, "revision": revision}
                 r, hits["video"] = self.cache.produce(key, d / f"{s.scene_id}.mp4",
-                    lambda p: generator.generate(prompt, negative_prompt=negative, duration_s=duration,
-                                                  fps=fps, resolution=resolution, seed=seed, out=p), force=force)
+                    lambda p: self.ledger.charge(m.video_id, "scene_video", duration,
+                        lambda: generator.generate(prompt, negative_prompt=negative, duration_s=duration,
+                                                   fps=fps, resolution=resolution, seed=seed, out=p),
+                        scene_id=s.scene_id), force=force)
                 s.asset_refs.pop("scene_image", None); s.asset_refs["scene_video"] = str(r.path)
                 out.append(self._asset(m.video_id, "scene_video", r, m.version, s.scene_id,
                             prompt_ref=f"{s.scene_id}:visual_prompt:seed={seed}", license=str(config.get("license", "unknown"))))
             else:
                 style = str(self.media.cfg.production.get("style", "")).strip()
                 prompt, size = f"{m.cinema.prompt(s.visual_prompt, style)} {NO_TEXT}".strip(), image_size(self.media.cfg, m.aspect)
-                key = {"kind": "image", "config": self.media.cfg.image, "prompt": prompt, "size": size,
+                key = {"kind": "image", "config": without_prices(self.media.cfg.image), "prompt": prompt, "size": size,
                        "adapter": type(self.media.image).__qualname__, "revision": revision}
                 r, hits["image"] = self.cache.produce(key, d / f"{s.scene_id}.png",
-                    lambda p: self.media.image.generate(prompt, size, p), force=force)
+                    lambda p: self.ledger.charge(m.video_id, "image", 1, lambda: self.media.image.generate(prompt, size, p),
+                                                 scene_id=s.scene_id), force=force)
                 s.asset_refs.pop("scene_video", None)
                 s.asset_refs["scene_image"] = str(r.path)
                 out.append(self._asset(m.video_id, "scene_image", r, m.version, s.scene_id, prompt_ref=f"{s.scene_id}:visual_prompt"))
@@ -359,6 +367,9 @@ class Renderer:
                 finish(self.media.video, r.path, directory / burn.name if burn and fake else burn,
                        directory / music_path.name if music_path and fake else music_path,
                        music.attribution if music else "", float(self.media.cfg.production.get("music_volume", 0.12)))
+                sheet = self._contact_sheet(m, order, r.path, stage)
+                if sheet is not None:
+                    assets.append(sheet); moves.append((sheet, directory / Path(sheet.path).name))
                 for asset, destination in moves:
                     Path(asset.path).replace(destination); asset.path = str(destination)
                 r.path.replace(target); r.path = target
@@ -368,6 +379,18 @@ class Renderer:
                 return a
             finally:
                 pending_video.unlink(missing_ok=True)
+
+    def _contact_sheet(self, m: SceneManifest, order: list[str] | None, video: Path, stage: Path) -> MediaAsset | None:
+        """Lưới một khung/cảnh trích từ bản cuối thật cho người duyệt (ADR-0016). Chỉ khi có ffmpeg thật (bản giả là
+        JSON, không có khung hình để trích); hỏng thì ghi audit và bỏ qua — công cụ soát không được làm mất bản dựng."""
+        if not isinstance(self.media.video, FFmpegAssembler): return None
+        marks = [((c.start + c.end) / 2, f"{c.scene_id} · {chapter_time(c.start)}") for c in self.cues(m, order)]
+        try:
+            r = self.media.video.contact_sheet(video, marks, stage / f"contact_sheet_v{m.version}.jpg")
+        except MediaError as e:
+            self._audit("render.contact_sheet_failed", m.video_id, {"error": str(e)[:300]})
+            return None
+        return self._asset(m.video_id, "contact_sheet", r, m.version, prompt_ref=f"manifest:v{m.version}")
 
     def thumbnails(self, spec: ThumbnailSpec) -> list[MediaAsset]:
         """Ảnh nền không chữ (model ảnh) → CODE phủ `overlay_text`, thu về 1280x720, nén ≤ 2 MB. Asset publish là bản
@@ -380,9 +403,10 @@ class Renderer:
         with tempfile.TemporaryDirectory(prefix=".thumbnails-", dir=d) as temp:
             for var in spec.variants:
                 prompt, size = f"{var.prompt} {NO_TEXT}", image_size(self.media.cfg, "16:9")
-                def generate_base(p: Path, prompt: str = prompt, size: str = size) -> MediaResult:
-                    return self.media.image.generate(prompt, size, p)
-                base, _ = self.cache.produce({"kind": "thumbnail", "config": self.media.cfg.image, "prompt": prompt, "size": size},
+                def generate_base(p: Path, prompt: str = prompt, size: str = size, variant: str = var.variant_id) -> MediaResult:
+                    return self.ledger.charge(spec.video_id, "image", 1, lambda: self.media.image.generate(prompt, size, p),
+                                              variant_id=variant)
+                base, _ = self.cache.produce({"kind": "thumbnail", "config": without_prices(self.media.cfg.image), "prompt": prompt, "size": size},
                                              d / f"{var.variant_id}_base.png",
                                              generate_base)
                 fin = self.media.video.finish_thumbnail(base.path, Path(temp) / f"{var.variant_id}.jpg", text=var.overlay_text)

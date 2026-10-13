@@ -81,6 +81,10 @@ THUMBNAIL_MAX_BYTES = 2_000_000
 MOTIONS = ("zoom_in", "pan_right", "zoom_out", "pan_left")
 MOTION_ZOOM = 1.12               # biên độ zoom/pan: đủ thấy là có chuyển động, không đủ để thấy méo
 TARGET_LUFS = -14.0              # mức âm lượng nền tảng phát lại (YouTube/Spotify chuẩn hoá về đây)
+# Contact sheet (ADR-0016): một trang duyệt đọc được trong một màn hình; video nhiều cảnh hơn thì lấy mẫu đều.
+CONTACT_SHEET_MAX = 24
+CONTACT_SHEET_COLUMNS = 4
+CONTACT_SHEET_TILE = 384         # cạnh dài tối đa của một ô (px); khung nhỏ hơn giữ nguyên, không phóng to
 TRUE_PEAK_DB = -1.0
 # Font đậm có dấu tiếng Việt để phủ chữ thumbnail; `video.font` trong media.yaml thắng danh sách này.
 FONT_CANDIDATES = (
@@ -268,6 +272,14 @@ def wrap_overlay(text: str, max_chars: int = 16) -> list[str]:
         else: cur = f"{cur} {w}".strip()
     if cur: lines.append(cur)
     return lines
+
+
+def sample_marks(marks: list[tuple[float, str]], limit: int) -> list[tuple[float, str]]:
+    """Giữ mọi mốc khi chưa quá `limit`; quá thì lấy đều, luôn giữ cảnh đầu và cảnh cuối (hook và kết)."""
+    if len(marks) <= limit: return list(marks)
+    if limit <= 1: return marks[:1]
+    picks = sorted({round(i * (len(marks) - 1) / (limit - 1)) for i in range(limit)})
+    return [marks[i] for i in picks]
 
 
 def estimate_duration(text: str) -> float:
@@ -938,6 +950,38 @@ class FFmpegAssembler:
         loud = f" {self.loudness_lufs} LUFS" if self.loudness_lufs is not None else ""
         return MediaResult(out, "ffmpeg", "libx264", total,
                            notes=f"fit={self.fit} pad={self.tail_pad_s}s chuyển cảnh={t}s chuyển động={self.motion}{loud}")
+
+    def contact_sheet(self, video: Path, marks: list[tuple[float, str]], out: Path) -> MediaResult:
+        """Một khung hình giữa mỗi cảnh, trích từ CHÍNH bản dựng cuối (đã ghép nhạc/phụ đề), ghép thành lưới có nhãn
+        cảnh + mốc giờ (`marks`: [(giây, nhãn)]). Người duyệt gate publish soi cả video trong một ảnh — contact sheet
+        của claude-motion/animate, "không báo xong khi chưa soi" (ADR-0016). Trích bằng `-ss` trước `-i` (tua theo
+        keyframe, không giải mã cả video) nên video 12 giờ vẫn chỉ tốn ≤ `CONTACT_SHEET_MAX` lượt đọc ngắn."""
+        if not marks: raise MediaError("contact sheet cần ít nhất một mốc cảnh")
+        picked = sample_marks(marks, CONTACT_SHEET_MAX)
+        last = max(0.0, (probe_duration(video) or max(t for t, _ in picked)) - 0.05)
+        font = self.font if self.font and self.font.is_file() else find_font()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(prefix=".sheet-", dir=out.parent))
+        try:
+            if font is not None: shutil.copyfile(font, tmp / "f.ttf")
+            for i, (t, label) in enumerate(picked):
+                vf = (f"scale='min({CONTACT_SHEET_TILE},iw)':'min({CONTACT_SHEET_TILE},ih)'"
+                      ":force_original_aspect_ratio=decrease")
+                if font is not None:
+                    # nhãn qua `textfile=` như thumbnail: không phải escape `:`/`'` của tên cảnh hay chữ tiếng Việt
+                    (tmp / f"l{i:03d}.txt").write_text(label, encoding="utf-8")
+                    vf += (f",drawtext=textfile=l{i:03d}.txt:fontfile=f.ttf:fontsize=18:fontcolor=white"
+                           ":box=1:boxcolor=black@0.6:boxborderw=4:x=8:y=8")  # góc trên: đáy là chỗ phụ đề
+                self._run(["-ss", f"{min(max(0.0, t), last):.3f}", "-threads", str(self.threads),
+                           "-i", str(video.resolve()), "-frames:v", "1", "-vf", vf, "-q:v", "3", f"p{i:03d}.jpg"], cwd=tmp)
+            cols = min(CONTACT_SHEET_COLUMNS, len(picked)); rows = math.ceil(len(picked) / cols)
+            self._run(["-framerate", "1", "-i", "p%03d.jpg", "-vf", f"tile={cols}x{rows}:padding=6:margin=6:color=0x202020",
+                       "-frames:v", "1", "-q:v", "3", "sheet.jpg"], cwd=tmp)
+            (tmp / "sheet.jpg").replace(out)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        note = f"{len(picked)}/{len(marks)} cảnh, lưới {cols}x{rows}" + ("" if font else ", không nhãn: thiếu font")
+        return MediaResult(out, "ffmpeg", "contact-sheet", notes=note)
 
     def finish_thumbnail(self, src: Path, out: Path, text: str = "", size: str = THUMBNAIL_SIZE,
                          max_bytes: int = THUMBNAIL_MAX_BYTES) -> MediaResult:
