@@ -25,6 +25,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from .media import ROOT, MediaConfig, MediaError, MediaResult
+from .media_cost import without_prices
 from .sandbox import RunSpec, Sandbox, SandboxError, clean_env, sandbox_from_config
 
 
@@ -228,7 +229,8 @@ class ComfyUIVideo:
         self.sandbox = sandbox_from_config(cfg)
         self.jobs_dir = cfg.output_dir / ".cache" / "video-jobs"
         self.cache_identity = hashlib.sha256(json.dumps({"workflow": self.workflow,
-            "settings": {k: v for k, v in section.items() if k != "api_key"}}, sort_keys=True).encode()).hexdigest()
+            "settings": {k: v for k, v in without_prices(section).items() if k != "api_key"}},
+            sort_keys=True).encode()).hexdigest()
 
     def _remaining(self, deadline: float) -> float:
         remaining = deadline - time.monotonic()

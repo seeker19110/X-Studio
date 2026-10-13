@@ -15,6 +15,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from xagents_core.sqlite_bus import Lease
 
+from . import media_cost
 from .autopilot import Autopilot
 from .events import Envelope, MetadataPackage, PerformanceSnapshot, PublishEvent, Script
 from .fakes import make_scripted_client
@@ -204,10 +205,13 @@ class Factory:
         assets = list(self.bus.replay("media-assets"))
         publications = {e.key: e for e in self.bus.replay("publish-events") if e.payload.get("kind", "video") == "video"}
         projects = []
+        cfg = o.renderer.media.cfg
+        spend = media_cost.totals(self.bus.replay("audit-log", media_cost.ACTOR))
         for vid, brief in o.desk.briefs.items():
             media = [{"id": e.event_id, "kind": e.payload["kind"], "scene_id": e.payload.get("scene_id"),
                       "url": "/media/" + e.event_id, "provider": e.payload["provider"],
-                      "provenance": e.payload["provenance"], "duration_s": e.payload.get("duration_s")}
+                      "provenance": e.payload["provenance"], "duration_s": e.payload.get("duration_s"),
+                      "manifest_version": e.payload.get("manifest_version")}
                      for e in assets if e.key == vid]
             manifest = o.manifest(vid)
             scenes = [{"id": s.scene_id, "narration": s.narration, "duration_s": s.duration_s, "locked": s.locked,
@@ -235,6 +239,8 @@ class Factory:
                              "minutes": brief.target_minutes, "format": brief.format, "scenes": scenes,
                              "media": media, "reviews": reviews, "retry": brief.retry,
                              "qc": o.qcs[vid].as_dict() if vid in o.qcs else None,
+                             "media_cost": {"usd": spend.get(vid, 0.0), "budget_usd": media_cost.budget(cfg),
+                                            "priced": media_cost.priced(cfg)},
                              "brief": brief.model_dump(exclude={"hint"}), "request": request, "research": research,
                              "cinema": CinemaSpec.model_validate(brief.model_dump()).model_dump(),
                              "script": Script.model_validate(script_event.payload).model_dump() if script_event else None,

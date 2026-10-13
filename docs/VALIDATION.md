@@ -1,5 +1,28 @@
 # Xác minh bản nâng cấp factory
 
+## PR #9 hòa giải với ledger/budget/QC của PR #12 (2026-10-13)
+
+Đã tích hợp main `d7cb00d507a4e5c3f1208c906ad1195a2e67b8c8` trong worktree
+`/tmp/xstudio-pr9-reconcile`, dùng `.venv` và cache uv riêng; đường dẫn import
+`studio` được xác nhận thuộc worktree. Chỉ README có xung đột; giữ ledger chi
+phí bền, budget pause, contact sheet, freeze QC, Website → Video và cleanup của
+main. Các tính năng từ PR #12 không phải triển khai mới của PR #9. ADR mới nhất
+trên bản tích hợp là **0016**, không thêm số ADR trùng.
+
+`UV_CACHE_DIR=/tmp/xstudio-pr9-uv-cache make verify` đạt **1.083 Studio + 273
+Gateway + 478 core = 1.834 test**, không skip; coverage **100%** từng package
+(Studio **6.234** dòng thực thi, **68** file Python trong tests gồm conftest;
+core cả dòng/nhánh 100%). Ruff/mypy cả ba package, **28/28** eval replay strict,
+`node --check src/studio/web/app.js` và diff-check đạt. Gateway vẫn có warning
+runpy đã tồn tại. Log: `/tmp/pr9-oct13-verify.log`.
+
+Lần hòa giải này chỉ xác minh offline: **chưa kiểm chứng chi phí trả tiền thực
+hoặc đối soát hóa đơn provider**; không gọi website/model CLI/TTS/provider/upload
+live, không deploy hoặc merge PR. Website jobs (`website`) và thư mục xuất riêng
+ngoài output/upload roots vẫn ngoài admission storage của `create`, như ghi tại
+[STORAGE.md](STORAGE.md). Không mở rộng phạm vi hoặc thay đổi job đã có. PR #7
+upload recovery vẫn là nhánh riêng.
+
 ## PR #9 hòa giải với Website → Video và cleanup trên main (2026-10-11)
 
 Đã tích hợp main `13ab96abe9709dcd52876cae2b95a59c677f0625` vào nhánh storage

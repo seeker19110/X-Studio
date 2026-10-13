@@ -15,7 +15,7 @@ import pytest
 from studio import qc
 from studio.bus import InMemoryBus
 from studio.events import Chapter, Scene, SceneManifest
-from studio.media import MediaConfig, make_media
+from studio.media import MediaConfig, MediaResult, make_media
 from studio.qc import qc_video
 from studio.renderer import Renderer
 from studio.sandbox import SubprocessSandbox
@@ -342,3 +342,73 @@ def test_qc_scan_uses_bounded_threads_and_quiet_loudness_logging(monkeypatch):
     assert "framelog=verbose" in command[command.index("-af") + 1]
     assert command[command.index("-filter_threads") + 1] == "1"
     assert "-xerror" in command
+
+
+# ---------- nguy cơ "slideshow": khung hình đứng yên quá lâu (docs/standards.md, ADR-0016) ----------
+
+def test_qc_warns_when_the_picture_freezes_longer_than_the_static_limit(tmp_path, monkeypatch):
+    f = tmp_path / "final.mp4"; f.write_bytes(b"x")
+    cap = tmp_path / "c.srt"; cap.write_text("1\n", encoding="utf-8")
+    log = ("  I:         -14.1 LUFS\n  Peak:       -1.2 dBFS\n"
+           "[freezedetect @ 0x1] lavfi.freezedetect.freeze_start: 2.5\n"
+           "[freezedetect @ 0x1] lavfi.freezedetect.freeze_duration: 9.25\n"
+           "[freezedetect @ 0x1] lavfi.freezedetect.freeze_end: 11.75\n")
+    _fake_tools(monkeypatch, _OK_PROBE, log)
+    rep = qc_video(f, expected_duration_s=20.0, expected_resolution="1920x1080", expected_fps=30, captions=cap)
+    assert rep.metrics["freeze_spans"] == [9.25]
+    assert [(x.level, x.location) for x in rep.findings] == [("warn", "motion")]
+    assert "đứng yên" in rep.findings[0].text and "9.25s" in rep.findings[0].text and not rep.blocked
+
+
+def test_qc_closes_a_freeze_that_runs_to_the_end_of_the_video(tmp_path, monkeypatch):
+    """ffmpeg chỉ in `freeze_start` khi hình đứng yên tới hết file — đoạn cuối phải được tính đến hết thời lượng,
+    nếu không đúng loại slideshow tệ nhất (cảnh cuối đứng im) lại lọt."""
+    f = tmp_path / "final.mp4"; f.write_bytes(b"x")
+    _fake_tools(monkeypatch, _OK_PROBE, "  I: -14.0 LUFS\n  Peak: -1.0 dBFS\n"
+                                        "[freezedetect @ 0x1] lavfi.freezedetect.freeze_start: 8\n")
+    rep = qc_video(f, expected_duration_s=20.0)
+    assert rep.metrics["freeze_spans"] == [12.0]
+    assert any(x.location == "motion" and x.level == "warn" for x in rep.findings)
+
+
+def test_qc_freeze_check_can_be_turned_off_and_is_bounded_by_the_limit(monkeypatch):
+    commands: list[list[str]] = []
+    monkeypatch.setattr(qc.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+
+    def run(args):
+        commands.append(args)
+        return 0, "", "  I: -14.0 LUFS\n  Peak: -1.0 dBFS\n"
+
+    monkeypatch.setattr(qc, "_run", run)
+    assert qc.measure(Path("video.mp4"), duration_s=30.0)["freeze_spans"] == []
+    assert f"freezedetect=n=-60dB:d={qc.MAX_STATIC_S:g}" in commands[0][commands[0].index("-vf") + 1]
+    monkeypatch.setattr(qc, "MAX_STATIC_S", 0.0)
+    out = qc.measure(Path("video.mp4"))
+    assert "freezedetect" not in commands[1][commands[1].index("-vf") + 1] and "freeze_spans" not in out
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="cần ffmpeg + ffprobe")
+def test_qc_catches_a_real_still_image_slideshow_but_not_ken_burns(tmp_path, monkeypatch):
+    """Dựng thật một cảnh dài: ảnh đứng im (`motion: none`) bị bắt, ảnh có chuyển động Ken Burns thì không.
+    Ảnh của provider `fake` là một màu (Ken Burns trên nền phẳng đúng là không thấy chuyển động) nên cảnh dùng ảnh
+    có họa tiết thật từ `testsrc`."""
+    class Textured:
+        def generate(self, prompt: str, size: str, out: Path) -> MediaResult:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=s=320x180",
+                            "-frames:v", "1", str(out)], check=True)
+            return MediaResult(out, "test", "testsrc")
+
+    monkeypatch.setattr(qc, "MAX_STATIC_S", 3.0)
+    for motion, frozen in (("none", True), ("auto", False)):
+        out = tmp_path / motion
+        cfg = MediaConfig(output_dir=out, video={"provider": "ffmpeg", "fps": 12, "resolution": "320x180",
+                                                 "motion": motion})
+        suite = make_media(cfg); suite.image = Textured()
+        bus = InMemoryBus(); r = Renderer(bus, suite, out)
+        m = SceneManifest(video_id="VS", scenes=[Scene(
+            scene_id="S1", order=0, narration=" ".join(["chữ"] * 12), visual_prompt="p", duration_s=4.8)])
+        r.render(m); final = r.finalize(m)
+        rep = qc_video(Path(final.path), expected_duration_s=final.duration_s or 0.0)
+        assert bool(rep.metrics["freeze_spans"]) is frozen, (motion, rep.metrics)
+        assert any(x.location == "motion" for x in rep.findings) is frozen

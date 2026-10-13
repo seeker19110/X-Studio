@@ -34,6 +34,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from . import media_cost
 from .analytics import judge_experiment, retention_drops
 from .blackboard import Blackboard
 from .bus import InMemoryBus
@@ -57,6 +58,7 @@ from .gate_cli import PersistentGate, rollback_target, trusted_decision
 from .gates import GateRequest, gate_approvers
 from .llm import LLMError, ModelClient, TransientError
 from .media import MediaError, MediaSuite, frame_size
+from .media_cost import MediaBudgetError
 from .platform import Platform, PlatformError, UploadResult, make_platform
 from .preflight import PreflightReport, preflight
 from .qc import QCReport, qc_scenes, qc_video
@@ -184,8 +186,9 @@ def _with_package(e: Envelope, o: Orchestrator) -> dict[str, Any]:
 def _with_provenance(e: Envelope, o: Orchestrator) -> dict[str, Any]:
     vid = e.payload["video_id"]
     s = _latest_payload(o, "scripts", vid) or {}
+    # contact_sheet (ADR-0016) là công cụ soát nội bộ, không lên nền tảng: không đưa vào đầu vào model xét quyền.
     return {"assets": [{"kind": a["kind"], "scene_id": a.get("scene_id"), "path": a["path"], "provenance": a["provenance"]}
-                       for a in _assets_of(o, vid)], "claims": s.get("claims", []), "brief": (o.desk.briefs[vid].model_dump() if vid in o.desk.briefs else {})}
+                       for a in _assets_of(o, vid) if a["kind"] != "contact_sheet"], "claims": s.get("claims", []), "brief": (o.desk.briefs[vid].model_dump() if vid in o.desk.briefs else {})}
 
 
 def _with_retention(e: Envelope, o: Orchestrator) -> dict[str, Any]:
@@ -668,12 +671,16 @@ class Orchestrator:
         self._audit("render_failed", {"error": str(error)[:300], "event_id": env.event_id, "attempt": attempts}, video_id=vid)
         res.actions.append("render!failed")
         limit = int(self.renderer.media.cfg.render.get("max_retries", 3))
-        if isinstance(error, MediaError) and attempts <= limit:
+        # Vượt ngân sách media (ADR-0016): thử lại không làm rẻ đi — cắt ngay như ngân sách token (`budget_cut`), để
+        # người quyết tăng trần hay đổi provider; media đã tạo nằm trong cache nên không trả tiền lại.
+        over = isinstance(error, MediaBudgetError)
+        if isinstance(error, MediaError) and not over and attempts <= limit:
             wait = min(300, 5 * 2 ** (attempts - 1))
             self._transient("media", TransientError(f"media unavailable; thử lại sau {wait}s"), res)
         elif vid in self.desk.briefs:
+            reason = f"media budget: {error}"[:300] if over else f"media failed after {attempts} attempts: {str(error)[:200]}"
             self.bus.publish(Envelope(topic="supervisor-actions", key=vid, actor="supervisor", payload={
-                "target": vid, "action": "pause", "reason": f"media failed after {attempts} attempts: {str(error)[:200]}"}))
+                "target": vid, "action": "budget_cut" if over else "pause", "reason": reason}))
             self._defer(env, res, f"paused:{vid}")
 
     def _render(self, env: Envelope, res: StepResult) -> None:
@@ -870,9 +877,18 @@ class Orchestrator:
         meta = _latest_payload(self, "metadata-packages", vid) or {}
         thumb = self._chosen_thumbnail(vid)
         cap = self._captions_of(vid)
+        cfg = self.renderer.media.cfg
         facts = [f"final_video:{final['path']}" if final else "final_video:(chưa có)",
                  f"thumbnail:{thumb}" if thumb else "thumbnail:(chưa có)", f"title:{meta.get('title', '(chưa có)')}",
                  f"captions:{cap}" if cap else "captions:(chưa có)"]
+        # Contact sheet (ADR-0016) chỉ đứng tên cho đúng phiên bản bản cuối; bản giả không có sheet nên không có dòng.
+        sheet = next((a["path"] for a in reversed(_assets_of(self, vid)) if a["kind"] == "contact_sheet" and final
+                      and a["manifest_version"] == final["manifest_version"]), None)
+        if sheet: facts.append(f"contact_sheet:{sheet}")
+        if media_cost.priced(cfg):  # chưa khai giá thì không có dòng: 0 USD bịa còn tệ hơn không nói gì
+            cap_usd = media_cost.budget(cfg)
+            facts.append(f"media_cost:{media_cost.spent(self.bus, vid):.4f} USD ước tính"
+                         + (f" / trần {cap_usd:g} USD" if cap_usd else ""))
         qc = self.qcs[vid].checklist() if vid in self.qcs else []
         return [f"review:{s}:{r.verdict}" for s, r in sorted(self.desk.reviews[vid].items())] + rep.checklist() + qc + facts
 
