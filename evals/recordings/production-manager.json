@@ -1,7 +1,7 @@
 {
  "agent": "production-manager",
- "prompt_version": 1,
- "recorded_at": "2026-09-02T14:29:36.119721+00:00",
+ "prompt_version": 2,
+ "recorded_at": "2026-10-13T00:30:52.686163+00:00",
  "models": [
   "claude-haiku-4-5-20251001"
  ],
@@ -17,6 +17,30 @@
    "model": "claude-haiku-4-5-20251001",
    "input_tokens": 5683,
    "output_tokens": 918
+  },
+  "b6a261f7357e65dc97220aee": {
+   "text": "{\"payload\": {\"video_id\": \"CH1-V1\", \"version\": 1, \"script_version\": 1, \"aspect\": \"16:9\", \"voice\": {}, \"cinema\": {\"production_type\": \"explainer\"}, \"scenes\": [{\"scene_id\": \"S0\", \"order\": 0, \"narration\": \"Bạn mất 6 giờ cho một video?\", \"visual_prompt\": \"Time lapse from sunrise to sunset showing frustrated creator sitting at desk throughout the day. Clock emphasis with hours passing visually. Warm lighting from window changing across the day. Workspace gradually becoming more cluttered. Cinematic smooth transitions between time periods.\", \"duration_s\": 12, \"graphic\": null, \"asset_refs\": {}, \"locked\": false}, {\"scene_id\": \"S1\", \"order\": 1, \"narration\": \"Hầu hết người mới mất nhiều giờ dựng video. Họ bỏ cuộc sau vài lần.\", \"visual_prompt\": \"Detailed montage of cluttered desk workspace with video editing software on multiple monitors. Papers scattered, coffee cups, sticky notes. Fast-paced quick cuts showing multiple failed editing attempts. Creator's facial expressions showing increasing frustration and exhaustion. Final sequence: standing up, closing laptop with defeated gesture, walking away with slouched posture.\", \"duration_s\": 18, \"graphic\": {\"template\": \"title\", \"title\": \"Vấn đề\"}, \"asset_refs\": {}, \"locked\": false}, {\"scene_id\": \"S2\", \"order\": 2, \"narration\": \"Một pipeline tự động rút xuống còn 30 phút.\", \"visual_prompt\": \"Animated workflow diagram showing transformation from complex to simple. Left side displays chaotic interconnected manual process. Right side reveals streamlined automated workflow. Visual elements: workflow boxes, smooth connecting arrows, automation icons like gears and circuit patterns, progress indicators. Prominent display of 30 minutes result. Modern professional color palette with greens and teals. Flowing animations showing process simplification.\", \"duration_s\": 24, \"graphic\": {\"template\": \"title\", \"title\": \"Giải pháp\"}, \"asset_refs\": {}, \"locked\": false}, {\"scene_id\": \"S3\", \"order\": 3, \"narration\": \"Đăng ký.\", \"visual_prompt\": \"Prominent centered button element in modern interface with clean white background. Subtle pulse or glow animation in accent color suggesting interactivity. Professional spacing and visual hierarchy. Minimalist design with ample white space. Teal or blue accent color for call-to-action element.\", \"duration_s\": 6, \"graphic\": null, \"asset_refs\": {}, \"locked\": false}]}, \"context_writes\": [{\"namespace\": \"production\", \"content_ref\": \"CH1-V1\", \"summary\": \"Scene manifest v1 for CH1-V1: 4 scenes (S0–S3), 60-second explainer, 16:9. Hook → Problem (title graphic) → Solution (title graphic) → CTA. Total narration 33 words; TTS 2.8–6.4s each scene matched with visual padding. Ready for renderer.\"}]}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 40360,
+   "output_tokens": 20072,
+   "score": 1.0,
+   "runs": 1
+  },
+  "44e7d6b6adc3d16d6d681fb3": {
+   "text": "{\"payload\": {\"video_id\": \"CH1-V3\", \"version\": 1, \"script_version\": 1, \"aspect\": \"9:16\", \"voice\": {}, \"scenes\": [{\"scene_id\": \"S0\", \"order\": 0, \"narration\": \"Ba mẹo trong ba mươi giây.\", \"visual_prompt\": \"Tiêu đề mở chương với ba icon biểu tượng khác nhau, phông chữ lớn, phong cách minh hoạ phẳng màu sáng, không chữ, không logo, tỷ lệ khung 9:16.\", \"duration_s\": 4, \"graphic\": {\"template\": \"title\", \"title\": \"Ba mẹo\"}}, {\"scene_id\": \"S1\", \"order\": 1, \"narration\": \"Mẹo một. Mẹo hai. Mẹo ba.\", \"visual_prompt\": \"Ba icon phẳng rõ, mỗi cái đặc trưng cho một mẹo, bố cục dọc, phong cách thống nhất, không chữ, không logo, tỷ lệ khung 9:16.\", \"duration_s\": 26, \"graphic\": {\"template\": \"list\", \"title\": \"Ba mẹo\", \"labels\": [\"Mẹo một\", \"Mẹo hai\", \"Mẹo ba\"]}}]}, \"context_writes\": [{\"namespace\": \"production\", \"content_ref\": \"CH1-V3:manifest:v1\", \"summary\": \"Scene manifest CH1-V3 (short 30s): 2 cảnh, hook + liệt kê ba mẹo với graphic list\"}]}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 26515,
+   "output_tokens": 6065,
+   "score": 1.0,
+   "runs": 1
+  },
+  "10ea391bdb4abce03a53a52f": {
+   "text": "{\"payload\": {\"video_id\": \"CH1-V4\", \"version\": 1, \"script_version\": 1, \"aspect\": \"16:9\", \"voice\": {}, \"cinema\": {\"production_type\": \"explainer\", \"visual_mode\": \"images\"}, \"scenes\": [{\"scene_id\": \"S1\", \"order\": 0, \"narration\": \"Vì sao người mới bỏ cuộc?\", \"visual_prompt\": \"Young creator sitting discouraged at desk facing computer screen with low view counts visible, dark moody blue and warm orange tones, flat illustration style, no text in image, safe composition for 16:9\", \"duration_s\": 2.4, \"graphic\": null, \"locked\": false, \"asset_refs\": {}}, {\"scene_id\": \"S2\", \"order\": 1, \"narration\": \"Theo báo cáo ngành, bốn mươi hai phần trăm người mới bỏ cuộc sau ba video đầu tiên.\", \"visual_prompt\": \"Three YouTube video thumbnails arranged horizontally with declining engagement icons below each, third thumbnail shows creator turning away sadly, analytical dashboard aesthetic with light blue and teal accents, clean minimal style\", \"duration_s\": 7.2, \"graphic\": {\"template\": \"stat\", \"title\": \"Bỏ cuộc sau ba video\", \"values\": [42], \"unit\": \"%\", \"source\": \"https://example.org/report-2026\"}, \"locked\": false, \"asset_refs\": {}}, {\"scene_id\": \"S3\", \"order\": 2, \"narration\": \"Có ba việc giúp bạn đi tiếp.\", \"visual_prompt\": \"Same creator from S1 now brightening with lightbulb moment above head, checkmark, gear, and calendar icons appearing around desk, warm bright optimistic lighting, transition from dark to light tones, encouraging mood\", \"duration_s\": 3.2, \"graphic\": null, \"locked\": false, \"asset_refs\": {}}, {\"scene_id\": \"S4\", \"order\": 3, \"narration\": \"Viết kịch bản ngắn, dựng bằng pipeline, đăng đều mỗi tuần.\", \"visual_prompt\": \"Triptych layout with three equal panels: left panel shows creator handwriting script on paper at desk; center panel displays editing dashboard with automation timeline and drag-drop UI elements; right panel shows calendar with weekly checkmarks and recurring posts, consistent warm professional palette, clean organized workspace aesthetic\", \"duration_s\": 4.4, \"graphic\": {\"template\": \"list\", \"title\": \"Ba chiến lược\", \"labels\": [\"Viết kịch bản ngắn\", \"Dựng bằng pipeline\", \"Đăng đều mỗi tuần\"], \"accent\": \"55DDB0\", \"background\": \"101F29\"}, \"locked\": false, \"asset_refs\": {}}, {\"scene_id\": \"S5\", \"order\": 4, \"narration\": \"Đăng ký.\", \"visual_prompt\": \"Minimalist end screen with prominent red subscribe button centered, channel avatar or thumbnail above button, subtle upward growth arrow with positive motion, warm welcoming orange and teal color palette, isolated clean design suitable for 16:9 YouTube end screen\", \"duration_s\": 1, \"graphic\": null, \"locked\": false, \"asset_refs\": {}}]}, \"context_writes\": [{\"namespace\": \"production\", \"content_ref\": \"CH1-V4-scene-manifest\", \"summary\": \"Scene manifest for CH1-V4 (fact-check pass): 5 scenes, 60s long-form explainer, 16:9 aspect, flat illustration style. Narration normalized for TTS (số/đơn vị đọc được). S2 has stat graphic (42%, claim C1). S4 has list graphic (ba chiến lược). Total narration duration ~18s with visual filling ~42s.\"}]}",
+   "model": "claude-haiku-4-5-20251001",
+   "input_tokens": 36654,
+   "output_tokens": 16337,
+   "score": 1.0,
+   "runs": 1
   }
  }
 }

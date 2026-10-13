@@ -22,6 +22,7 @@ Kết quả: approve (desk dispatch) / request_changes / reject
 - [ ] Phụ đề `captions:` có và đúng ngôn ngữ kênh (thiếu thì chỉ là warn, nhưng mất tiếp cận và SEO)
 - [ ] Đã soi `contact_sheet:` (một khung giữa mỗi cảnh của chính bản cuối): không cảnh đen/sai khung/chữ đè; `qc:warn:motion`
       (hình đứng yên ≥ 8 s) có lý do giữ hoặc yêu cầu sửa
+- [ ] Cảnh đồ họa (`stat`/`bars`) trên contact sheet: nhãn đi đúng con số (code chỉ kiểm con số có trong claim có nguồn, không kiểm nghĩa nhãn — ADR-0017); audit `graphic.unverified` cho biết graphic nào đã bị bỏ
 - [ ] Nếu có dòng `media_cost:`: chi phí media ước tính hợp lý so với kế hoạch (ADR-0016)
 - [ ] Không vi phạm `boundaries` và content-policy (YMYL có miễn trừ)
 - [ ] Lịch đăng theo chiến lược (`strategy`) hoặc nêu trong reason

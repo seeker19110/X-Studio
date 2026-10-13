@@ -89,6 +89,9 @@ zoom bằng `zoompan`), nối bằng `xfade`/`acrossfade`. Mẹo giữ đồng b
 chồng lấn luôn nằm trong đoạn đệm im lặng — không câu nào chồng lên câu nào, và hình với tiếng cùng ngắn đi đúng
 `transition_s` mỗi mối nối. Tắt bằng `video.motion: none` / `transition_s: 0`.
 *Còn thiếu:* nhạc nền có license và ducking dưới giọng đọc (cần thư viện nhạc, mục D4).
+*Bổ sung 2026-10-13 (ADR-0017):* cảnh số liệu/so sánh/liệt kê không còn là ảnh — production-manager chọn đồ họa
+template (`stat` số đếm lên, `bars`, `list` hiện lần lượt, `quote`, `title`), code kiểm số với claim có nguồn và xếp
+chữ trong vùng an toàn trước khi FFmpeg dựng.
 
 **B2. Không chuẩn hoá âm lượng.** *Đã làm:* `loudnorm=I=-14:TP=-1:LRA=11` ở lượt ghép cuối, AAC 192 kb/s 48 kHz.
 Kiểm chứng: hai đoạn tiếng vào ở -52,7 và -24,6 LUFS đều ra đúng -14,0 LUFS, đỉnh -1,2 dBFS.

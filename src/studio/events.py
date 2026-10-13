@@ -11,6 +11,7 @@ from xagents_core.events import SupervisorAction as CoreSupervisorAction
 from xagents_core.events import can_transition as _can_transition
 
 from .film import CinemaSpec
+from .scene_graphic import MotionSpec
 
 Topic = Literal[
     "channel-briefs", "trend-reports", "video-briefs", "research-dossiers", "scripts",
@@ -111,6 +112,8 @@ class Scene(BaseModel):
     duration_s: float = 6.0
     locked: bool = False  # cảnh đã đạt: editor/renderer không được sinh lại
     asset_refs: dict[str, str] = {}  # kind → path (renderer điền)
+    # ADR-0017: cảnh là đồ họa dữ liệu (title/quote/bars/list/stat) thay vì ảnh; model chọn, code kiểm số và dựng.
+    graphic: MotionSpec | None = None
 
 
 class SceneManifest(BaseModel):

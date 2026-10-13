@@ -23,7 +23,7 @@ from .bus import InMemoryBus
 from .events import AssetKind, AuditLog, CutList, Envelope, MediaAsset, Provenance, Scene, SceneManifest, ThumbnailSpec
 from .media import FakeVideo, FFmpegAssembler, MediaError, MediaResult, MediaSuite, frame_size, image_size, make_media
 from .media_cost import Ledger, without_prices
-from .motion import MotionSpec, render_motion
+from .motion import LAYOUT_VERSION, MotionSpec, render_motion, safe_bottom
 from .production import copy_asset, finish, selections
 from .render_cache import RenderCache, digest, fingerprint
 from .timeline import caption_pages, chapter_time, srt, timeline
@@ -141,8 +141,18 @@ class Renderer:
         d = self._dir(m.video_id) / f"v{m.version}"; out: list[MediaAsset] = []
         hits: dict[str, bool] = {}
         local, _ = selections(self.media.cfg, self.upload_dir, m)
+        # ADR-0017: người vận hành (`production.graphics`) ghi đè graphic production-manager chọn cho cảnh.
         graphic = self.media.cfg.production.get("graphics", {}).get(m.video_id, {}).get(s.scene_id)
-        motion = MotionSpec.model_validate(graphic) if graphic else None
+        motion = MotionSpec.model_validate(graphic) if graphic else s.graphic
+        if motion and not graphic and image:
+            # Graphic của model là phần tăng cường: asset thư viện người vận hành chọn cho cảnh thắng nó, và thiếu
+            # FFmpeg thì cảnh dùng ảnh như cũ — không làm hỏng video.
+            reason = ("người vận hành đã chọn asset thư viện" if s.scene_id in local
+                      else "" if isinstance(self.media.video, FFmpegAssembler) else "video.provider không phải ffmpeg")
+            if reason:
+                self._audit("render.graphic_skipped", m.video_id,
+                            {"scene_id": s.scene_id, "template": motion.template, "reason": reason})
+                motion = None
         generated = image and not motion and s.scene_id not in local and m.cinema.visual_mode == "generated_video"
         if generated:
             if self.media.scene_video is None:
@@ -171,10 +181,13 @@ class Renderer:
                     raise MediaError("motion graphics require video.provider=ffmpeg")
                 fps, resolution = self._video_opts(m.aspect)
                 duration = s.duration_s + self.media.video.tail_pad_s
-                key = {"motion": motion.model_dump(), "duration": duration, "fps": fps, "resolution": resolution, "revision": revision}
-                engine = self.media.video
+                w, h = map(int, resolution.split("x"))
+                bottom = safe_bottom(w, h, bool(self.media.cfg.video.get("burn_captions")))
+                key = {"motion": motion.model_dump(), "duration": duration, "fps": fps, "resolution": resolution,
+                       "revision": revision, "layout": LAYOUT_VERSION, "bottom": bottom}
+                engine, spec = self.media.video, motion
                 r, hits["motion"] = self.cache.produce(key, d / f"{s.scene_id}_motion.mp4",
-                    lambda p: render_motion(motion, p, engine, duration, fps, resolution), force=force)
+                    lambda p: render_motion(spec, p, engine, duration, fps, resolution, bottom=bottom), force=force)
                 s.asset_refs.pop("scene_image", None); s.asset_refs["scene_video"] = str(r.path)
                 out.append(self._asset(m.video_id, "scene_video", r, m.version, s.scene_id, prompt_ref=f"motion:{s.scene_id}"))
             elif s.scene_id in local:

@@ -8,7 +8,7 @@
 # Đo ngày 2026-09-09 bằng `uv run python -m studio.evals all --replay` trên bản ghi đã commit — cả 14 agent
 # 2/2 = 1.00. Sàn làm tròn xuống 0.05 theo quy ước (CONTRIBUTING §3): điểm chấm dao động, đặt sàn bằng đúng
 # điểm đo là một lần đỏ ngẫu nhiên cũng chặn merge. `cases` = số ca đo được hôm đó, chống thu nhỏ bộ ca.
-# Studio chỉ có 2 ca/agent nên một ca hỏng là 0.50 → đỏ; đó là chủ ý.
+# Studio có 2 ca/agent (production-manager 3 từ ADR-0017) nên một ca hỏng là ≤ 0.67 → đỏ; đó là chủ ý.
 #
 # Ghi lại eval bằng model thật mà điểm tụt dưới sàn thì phải nâng chất lượng prompt/skill trước khi commit bản
 # ghi mới — KHÔNG hạ số trong file này để né đỏ (cùng nguyên tắc `fail_under = 100` ở AGENTS.md).
@@ -29,7 +29,7 @@ fact-checker:
   cases: 2
 production-manager:
   min_pass_ratio: 0.95
-  cases: 2
+  cases: 3
 publisher:
   min_pass_ratio: 0.95
   cases: 2
