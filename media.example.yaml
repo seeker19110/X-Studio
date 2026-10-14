@@ -115,6 +115,8 @@ video:
   loudness_lufs: -14        # chuẩn hoá âm lượng về mức nền tảng phát lại (đỉnh ≤ -1 dBTP); `null` = giữ nguyên tiếng gốc
   # font: /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf   # font phủ chữ thumbnail (mặc định: tìm font đậm có sẵn trên máy;
   #                          không có font thì thumbnail vẫn ra 1280x720 nhưng KHÔNG có chữ, và audit `thumbnail.finish` nói rõ)
+  # burn_captions: true      # đốt cứng phụ đề vào hình (thêm một lượt encode); SRT vẫn đăng riêng lên YouTube
+  # karaoke: true            # khi đốt cứng VÀ TTS có mốc từng từ (edge, ElevenLabs timestamps): từ đổi màu đúng lúc đọc
   # binary: ffmpeg
 
 # Lệnh con của lượt render (ffmpeg, TTS cục bộ `provider: command`) chạy qua lớp `sandbox` — xem

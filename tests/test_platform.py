@@ -618,3 +618,38 @@ def test_comments_with_an_image_are_flagged_but_the_image_never_reaches_the_bus(
     env = sync_comments(bus, p, "V1", ref="yt1")
     assert env.payload["comments"][0]["has_image"] is True and "has_image" not in env.payload["comments"][1]
     assert "ggpht" not in json.dumps(env.payload)
+
+
+def test_youtube_snapshot_reads_duration_from_batch_get_stats_and_keeps_lifetime_counts_apart(tmp_path):
+    """videos:batchGetStats (6/2026): 1 đơn vị ở rổ riêng, thời lượng tới mili-giây. Số đếm công khai TRỌN ĐỜI chỉ vào
+    evidence — không trộn vào views/likes theo cửa sổ ngày của Analytics. Lệnh mới lỗi thì quay về videos.list."""
+    def reports(method, url, headers, body):
+        m = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["metrics"][0]
+        if m.startswith("views"):
+            return 200, {}, {"columnHeaders": [{"name": n} for n in m.split(",")], "rows": [[120, 95.5, 7.3, 4, 1]]}
+        if m.startswith("impressions"):
+            return 403, {}, {"error": {"message": "no"}}
+        return 200, {}, {"columnHeaders": [{"name": "elapsedVideoTimeRatio"}, {"name": "audienceWatchRatio"}], "rows": [[1.0, 0.5]]}
+    batch = {"kind": "youtube#batchGetStatsResponse", "items": [{"id": "yt1", "contentDetails": {"duration": "PT1M40S", "durationMillis": "100500"},
+             "statistics": {"viewCount": "5000", "likeCount": "300", "commentCount": "12"}}],
+             "summary": {"requestedVideoCount": "1", "succeededVideoCount": "1", "failedVideoCount": "0"}}
+    http = FakeHTTP().on("GET", ANALYTICS_URL, reports).on("GET", f"{API_URL}/videos:batchGetStats", (200, {}, batch))
+    r = YouTubePlatform(_store(tmp_path), http, lambda: NOW).snapshot("yt1", 7, channel_id="CH1")
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(next(u for u in http.urls() if "batchGetStats" in u)).query)
+    assert q == {"part": ["contentDetails,statistics"], "id": ["yt1"]}
+    assert not any(u.startswith(f"{API_URL}/videos?") for u in http.urls())
+    assert (r.snapshot.views, r.snapshot.likes, r.snapshot.comments) == (120, 4, 1)   # cửa sổ 7 ngày, không phải 5000
+    assert [(p.t, p.pct) for p in r.snapshot.retention_curve] == [(100.5, 50.0)]
+    ev = json.loads(r.evidence)
+    assert ev["duration_s"] == 100.5 and ev["duration_source"] == "videos.batchGetStats"
+    assert ev["public_lifetime"] == {"views": 5000, "likes": 300, "comments": 12}
+    # lệnh mới lỗi (chưa bật / video riêng tư bị từ chối) → videos.list như trước, evidence ghi lý do
+    http2 = FakeHTTP().on("GET", ANALYTICS_URL, reports).on("GET", f"{API_URL}/videos:batchGetStats", (404, {}, {"error": {"message": "x"}}))
+    http2.on("GET", f"{API_URL}/videos?", (200, {}, {"items": [{"contentDetails": {"duration": "PT1M40S"}}]}))
+    ev2 = json.loads(YouTubePlatform(_store(tmp_path), http2, lambda: NOW).snapshot("yt1").evidence)
+    assert ev2["duration_s"] == 100.0 and ev2["duration_source"] == "videos.list" and ev2["batch_stats"]["status"] == 404
+    assert "public_lifetime" not in ev2
+    # video không có trong kết quả batch (failedVideoIds) → cũng quay về videos.list
+    http3 = FakeHTTP().on("GET", ANALYTICS_URL, reports).on("GET", f"{API_URL}/videos:batchGetStats", (200, {}, {"items": []}))
+    http3.on("GET", f"{API_URL}/videos?", (200, {}, {"items": [{"contentDetails": {"duration": "PT10S"}}]}))
+    assert json.loads(YouTubePlatform(_store(tmp_path), http3, lambda: NOW).snapshot("yt1").evidence)["duration_s"] == 10.0

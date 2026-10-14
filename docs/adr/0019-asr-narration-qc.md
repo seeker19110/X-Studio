@@ -38,8 +38,12 @@ Phụ đề trước đây chia trang theo tỷ lệ độ dài chữ trong kho�
 `edge-tts` đã có, `WordBoundary`). Renderer ghi `<cảnh>.words.json` cạnh audio cảnh (cache trúng vẫn có mốc vì
 metadata cache lưu cả `words`; provider không còn mốc thì xoá file cũ). `caption_pages` dùng mốc thật khi dãy từ
 khớp đúng lời đọc của manifest — lệch (provider chuẩn hoá số, đổi chữ) thì quay về chia tỷ lệ, không gán sai từ.
-Phụ đề sinh từ mốc thật ghi `studio:srt-word-times` trong provenance. Chưa làm: tô sáng từng từ (ASS `\k`) — SRT
-không biểu diễn được, YouTube cũng không nhận.
+Phụ đề sinh từ mốc thật ghi `studio:srt-word-times` trong provenance. Chạy thật edge-tts (14/10/2026) cho thấy
+`WordBoundary` bỏ dấu câu ("bạn" cho "bạn,"): so khớp nay bỏ dấu câu và hoa thường, chữ hiển thị vẫn là lời đọc gốc.
+
+Karaoke: `video.karaoke: true` cùng `burn_captions` và có mốc → `timeline.karaoke_ass` ghi `captions_v<n>.ass`
+(một Dialogue mỗi trang, thẻ `\k` theo mốc từng từ, cỡ chữ theo khung) và `finish` đốt bằng filter `ass` của
+libass. Cảnh không có mốc vẫn có trang thường. YouTube không nhận ASS nên SRT vẫn là phụ đề đăng lên nền tảng.
 
 ## Phương án bị loại
 

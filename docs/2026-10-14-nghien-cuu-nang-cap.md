@@ -198,10 +198,7 @@ AI với người nghe (khớp §3.3). Không cần đổi code; ví dụ có th
 `image_size`, ElevenLabs tiếng Việt, thumbnail 50 MB, edge-tts 7.3.1, gpt-image-2 kích thước tuỳ ý. B (ADR-0018):
 `synthetic_media`, `paid_product_placement`, provider `veo` và `omni`. C (ADR-0019): QC whisper, mốc từng từ
 (ElevenLabs `/with-timestamps`, provider `edge` gốc) cho phụ đề. D: AGENTS.md, cảnh báo 80 % (audit + gate + console),
-`tts.price_per_second`, cờ `has_image` cho bình luận kèm ảnh, quy tắc "inauthentic content" trong skill `channel-strategy`, `scriptwriting`, `quality-review` v2 (đặt ở khâu lập kế hoạch, viết và duyệt thay vì `content-policy`: skill chung đó nằm trong prompt của trend-researcher, mà ca nghiên cứu web của agent này đã sát trần 60 000 token) và `youtube-analytics` v2 (mốc đếm view 24/8/2026), eval bốn agent ghi lại bằng model thật; README nói rõ
-chưa có giấy phép mã nguồn mở (mọi quyền thuộc chủ repo). Không làm: chọn giấy phép mở (quyết định của chủ xưởng),
-`videos.batchGetStats` (sync-metrics vẫn cần Analytics API cho AVD/CTR), tô sáng từng từ kiểu karaoke (SRT không
-biểu diễn được), reviewer đa phương thức.
+`tts.price_per_second`, cờ `has_image` cho bình luận kèm ảnh, quy tắc "inauthentic content" trong skill `channel-strategy`, `scriptwriting`, `quality-review` v2 (đặt ở khâu lập kế hoạch, viết và duyệt thay vì `content-policy`: skill chung đó nằm trong prompt của trend-researcher, mà ca nghiên cứu web của agent này đã sát trần 60 000 token) và `youtube-analytics` v2 (mốc đếm view 24/8/2026), eval bốn agent ghi lại bằng model thật; LICENSE Apache-2.0 (cùng repo nguồn `X-Agents` của phần vendor), phụ đề karaoke đốt cứng, snapshot YouTube dùng `videos:batchGetStats` cho thời lượng (rổ quota riêng; số trọn đời chỉ vào evidence), edge-tts chạy thật có mốc từng từ khớp lời đọc.
 
 | Đợt | Nội dung | ADR | Khi nào |
 |---|---|---|---|

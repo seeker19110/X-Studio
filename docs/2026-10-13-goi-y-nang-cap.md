@@ -29,4 +29,4 @@
 - Ghim action theo SHA bằng [pinact](https://github.com/suzuki-shunsuke/pinact) hoặc [ratchet](https://github.com/sethvargo/ratchet), giữ comment tag (`# v7.0.1`), rồi để Dependabot `github-actions` tự nâng SHA. Đây là cách projects-template, xboss và Sales-Hunter đang làm.
 - Chuẩn tham chiếu là `seeker19110/projects-template`: 25/25 action ghim SHA, mọi workflow có `permissions:` cấp đầu, Dependabot cho npm, github-actions và pip.
 
-> Cập nhật 14/10/2026: #1 xong, #2 còn LICENSE, #3 còn mở — xem [nghiên cứu nâng cấp 14/10](2026-10-14-nghien-cuu-nang-cap.md) §4.
+> Cập nhật 14/10/2026: #1 xong, #2 xong (LICENSE Apache-2.0 theo repo nguồn `X-Agents`), #3 xong (`AGENTS.md`) — xem [nghiên cứu nâng cấp 14/10](2026-10-14-nghien-cuu-nang-cap.md) §4.

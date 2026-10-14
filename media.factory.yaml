@@ -15,6 +15,7 @@ video:
   tail_pad_s: 0.35
   loudness_lufs: -14
   burn_captions: true
+  karaoke: false  # true: từ đổi màu đúng lúc đọc (cần TTS có mốc từng từ: edge, ElevenLabs timestamps)
   caption_max_chars: 42
 render:
   mode: bounded

@@ -561,3 +561,34 @@ def test_word_time_sidecars_that_are_missing_or_corrupt_fall_back_to_proportiona
     (audio.parent / "S2.words.json").write_text('[[0, 1]]', encoding="utf-8")
     assert r._word_times(m) == {}
     assert r._word_times(_manifest()) == {}  # manifest chưa dựng: không có scene_audio
+
+
+def _timed_tts(r):
+    from unittest.mock import Mock
+
+    from studio.media import MediaResult
+    real = r.media.tts.synthesize
+
+    def timed(text, voice, out):
+        res = real(text, voice, out)
+        return MediaResult(res.path, "fake", "fake-tts", res.duration_s,
+                           words=[(0.2 * i, 0.2 * i + 0.15, w) for i, w in enumerate(text.split())])
+    r.media.tts.synthesize = Mock(side_effect=timed)
+
+
+def test_karaoke_ass_is_burned_when_enabled_and_srt_stays_for_the_platform(tmp_path):
+    """`video.karaoke: true` + `burn_captions` + mốc từng từ → đốt cứng ASS `\\k`; SRT vẫn là asset phụ đề đăng
+    YouTube. Không có mốc thì đốt SRT như cũ (karaoke không có gì để tô)."""
+    cfg = MediaConfig(output_dir=tmp_path, video={"burn_captions": True, "karaoke": True})
+    r = Renderer(InMemoryBus(), make_media(cfg)); _timed_tts(r)
+    m = _manifest(); r.render(m)
+    final = r.finalize(m)
+    burned = Path(json.loads(Path(final.path).read_text())["finishing"]["captions"])
+    assert burned.name == "captions_v1.ass" and burned.is_file() and r"{\k" in burned.read_text(encoding="utf-8")
+    kinds = [e.payload["kind"] for e in r.bus.replay("media-assets", "V1")]
+    assert "captions" in kinds and not any(e.payload["path"].endswith(".ass") for e in r.bus.replay("media-assets", "V1"))
+    plain = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path / "p",
+                                                           video={"burn_captions": True, "karaoke": True})))
+    m2 = _manifest(); plain.render(m2)
+    final2 = plain.finalize(m2)
+    assert json.loads(Path(final2.path).read_text())["finishing"]["captions"].endswith(".srt")

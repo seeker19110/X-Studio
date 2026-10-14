@@ -122,6 +122,7 @@ uv run python -m studio.youtube status                                          
 # Quota Data API (6/2026): rổ riêng ~100 videos.insert/ngày/project; commentThreads và lệnh khác dùng rổ 10 000 đơn vị.
 # sync-comments đánh dấu has_image cho bình luận kèm ảnh (ảnh/URL không vào bus).
 STUDIO_PLATFORM=youtube uv run python -m studio.youtube sync-comments CH1-V1 [--ref YT_ID] [--since 2026-09-01T00:00:00Z]  # → audience-comments
+# sync-metrics: Analytics cho số theo cửa sổ; thời lượng + số đếm công khai trọn đời (chỉ evidence) qua videos:batchGetStats.
 STUDIO_PLATFORM=youtube uv run python -m studio.youtube sync-metrics CH1-V1 --window 7 [--variant A] [--ref] [--channel]  # → performance-snapshots
 uv run python -m studio.orchestrator status              # hoặc: make status
 uv run python -m studio.orchestrator report

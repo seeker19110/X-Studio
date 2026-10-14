@@ -26,7 +26,7 @@ from .media_cost import Ledger, without_prices
 from .motion import LAYOUT_VERSION, MotionSpec, render_motion, safe_bottom
 from .production import copy_asset, finish, selections
 from .render_cache import RenderCache, digest, fingerprint
-from .timeline import caption_pages, chapter_time, srt, timeline
+from .timeline import caption_pages, chapter_time, karaoke_ass, srt, timeline
 from .video_gen import validate_video_inputs
 
 ACTOR = "renderer"
@@ -398,11 +398,21 @@ class Renderer:
                     ma.provenance = music.provenance()
                     assets.append(ma); moves.append((ma, directory / music_path.name))
                 burn = captions if self.media.cfg.video.get("burn_captions") else None
+                karaoke = None
+                if burn and words and self.media.cfg.video.get("karaoke"):
+                    # Đốt cứng ASS `\k` (từ đổi màu đúng lúc được đọc); SRT vẫn là phụ đề đăng nền tảng.
+                    karaoke = stage / f"captions_v{m.version}.ass"
+                    karaoke.write_text(karaoke_ass(self.cues(m, order), words, res,
+                                                   max_chars=int(self.media.cfg.video.get("caption_max_chars", 42))),
+                                       encoding="utf-8")
+                    burn = karaoke
                 # FakeVideo records references only; its JSON must point to durable filenames.
                 fake = isinstance(self.media.video, FakeVideo)
                 finish(self.media.video, r.path, directory / burn.name if burn and fake else burn,
                        directory / music_path.name if music_path and fake else music_path,
                        music.attribution if music else "", float(self.media.cfg.production.get("music_volume", 0.12)))
+                if karaoke:
+                    karaoke.replace(directory / karaoke.name)
                 sheet = self._contact_sheet(m, order, r.path, stage)
                 if sheet is not None:
                     assets.append(sheet); moves.append((sheet, directory / Path(sheet.path).name))

@@ -214,3 +214,33 @@ def test_bounded_disk_failure_keeps_previous_final_and_active_checkpoints(tmp_pa
     assert asm._run.call_count == 1  # cached segment; only concat
     assert out.read_bytes() == b'previous final'
     assert not list(tmp_path.glob('.concat-*'))
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="requires ffmpeg")
+def test_real_ffmpeg_burns_vietnamese_karaoke_ass(tmp_path):
+    """libass thật vẽ phụ đề karaoke tiếng Việt: bản cuối khác hẳn bản không đốt chữ ở khung có lời."""
+    from unittest.mock import Mock
+
+    from studio.media import MediaResult
+
+    def build(root, karaoke):
+        cfg = MediaConfig(output_dir=root, video={"provider": "ffmpeg", "resolution": "320x180", "fps": 10,
+                                                  "burn_captions": karaoke, "karaoke": karaoke, "motion": "none"})
+        r = Renderer(InMemoryBus(), make_media(cfg))
+        real = r.media.tts.synthesize
+        r.media.tts.synthesize = Mock(side_effect=lambda text, voice, out: MediaResult(
+            real(text, voice, out).path, "fake", "fake-tts", 2.0,
+            words=[(0.3 * i, 0.3 * i + 0.25, w) for i, w in enumerate(text.split())]))
+        m = SceneManifest(video_id="K", scenes=[Scene(scene_id="S1", order=0, narration="Đồng hành cùng bạn mỗi ngày.",
+                                                      visual_prompt="p")])
+        r.render(m)
+        return r.finalize(m)
+
+    burned, plain = build(tmp_path / "k", True), build(tmp_path / "p", False)
+    assert (tmp_path / "k" / "K" / "captions_v1.ass").is_file()
+
+    def frame(path):
+        return subprocess.check_output(["ffmpeg", "-v", "error", "-ss", "1.0", "-i", path, "-frames:v", "1",
+                                        "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+    a, b = frame(burned.path), frame(plain.path)
+    assert len(a) == len(b) == 320 * 180 and sum(x != y for x, y in zip(a, b, strict=True)) > 200

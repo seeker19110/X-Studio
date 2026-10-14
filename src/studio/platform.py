@@ -487,6 +487,35 @@ class YouTubePlatform:
         _, d = self._json("GET", f"{ANALYTICS_URL}?{urllib.parse.urlencode(q)}")
         return [h.get("name", "") for h in d.get("columnHeaders", [])], d.get("rows") or []
 
+    def _duration(self, platform_ref: str, ev: dict[str, Any]) -> float:
+        """Thời lượng video để đổi retention ra giây. `videos:batchGetStats` (6/2026) trước: 1 đơn vị ở rổ riêng, tới
+        mili-giây; kèm số đếm công khai TRỌN ĐỜI → chỉ ghi evidence (khác nghĩa với số theo cửa sổ của Analytics).
+        Lỗi hoặc không có video trong kết quả → `videos.list` như trước."""
+        try:
+            q = urllib.parse.urlencode({"part": "contentDetails,statistics", "id": platform_ref})
+            _, d = self._json("GET", f"{API_URL}/videos:batchGetStats?{q}")
+            item = next((i for i in d.get("items") or [] if i.get("id") == platform_ref), None)
+            if item:
+                cd, st = item.get("contentDetails") or {}, item.get("statistics") or {}
+                ms = cd.get("durationMillis")
+                dur = round(int(ms) / 1000, 3) if ms else parse_duration(cd.get("duration", ""))
+                ev.update(duration_s=dur, duration_source="videos.batchGetStats",
+                          public_lifetime={k: int(st.get(f, 0) or 0) for k, f in
+                                           (("views", "viewCount"), ("likes", "likeCount"), ("comments", "commentCount"))})
+                return dur
+            ev["batch_stats"] = {"status": 200, "note": "video không có trong kết quả"}
+        except PlatformError as x:
+            ev["batch_stats"] = {"error": str(x)[:160], "status": x.status}
+        try:
+            _, d = self._json("GET", f"{API_URL}/videos?{urllib.parse.urlencode({'part': 'contentDetails', 'id': platform_ref})}")
+            items = d.get("items") or []
+            dur = parse_duration(((items[0].get("contentDetails") or {}).get("duration", "")) if items else "")
+            ev.update(duration_s=dur, duration_source="videos.list")
+            return dur
+        except PlatformError as x:
+            ev["duration"] = {"error": str(x)[:160], "status": x.status}
+            return 0.0
+
     def snapshot(self, platform_ref: str, window_days: int = 7, channel_id: str = "") -> SnapshotResult:
         end = self.now().date(); start = end - timedelta(days=max(1, window_days) - 1)
         s, e = start.isoformat(), end.isoformat()
@@ -510,14 +539,7 @@ class YouTubePlatform:
         except PlatformError as x:
             ev["impressions"] = {"error": str(x)[:160], "status": x.status, "note": "không có quyền/metric → impressions=0, ctr=0 (không bịa)"}
         # 3) retention: audienceWatchRatio theo elapsedVideoTimeRatio, đổi ra giây theo duration
-        dur = 0.0
-        try:
-            _, d = self._json("GET", f"{API_URL}/videos?{urllib.parse.urlencode({'part': 'contentDetails', 'id': platform_ref})}")
-            items = d.get("items") or []
-            dur = parse_duration(((items[0].get("contentDetails") or {}).get("duration", "")) if items else "")
-            ev["duration_s"] = dur
-        except PlatformError as x:
-            ev["duration"] = {"error": str(x)[:160], "status": x.status}
+        dur = self._duration(platform_ref, ev)
         try:
             cols, rows = self._report(platform_ref, "audienceWatchRatio", s, e, dimensions="elapsedVideoTimeRatio")
             ci, cw = cols.index("elapsedVideoTimeRatio"), cols.index("audienceWatchRatio")
