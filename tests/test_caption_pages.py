@@ -29,3 +29,20 @@ def test_pages_handle_empty_tiny_and_unbroken_text_without_losing_content():
 
 def test_srt_numbers_are_contiguous_after_empty_cues():
     assert srt([Cue("S1", 0, 1, ""), Cue("S2", 1, 2, "visible")]).startswith("1\n")
+
+
+def test_pages_use_real_word_times_when_they_match_the_narration():
+    """Mốc từng từ từ TTS (ElevenLabs /with-timestamps, edge WordBoundary): trang phụ đề bắt đầu đúng lúc từ đầu
+    được đọc và hết đúng lúc từ cuối dứt, không chia theo độ dài chữ."""
+    text = "một hai ba bốn năm sáu"
+    words = [(0.1, 0.3, "một"), (0.4, 0.6, "hai"), (0.7, 0.9, "ba"), (2.0, 2.2, "bốn"), (2.3, 2.5, "năm"), (2.6, 3.4, "sáu")]
+    pages = caption_pages([Cue("S1", 10, 14, text)], max_chars=7, max_lines=1, words={"S1": words})
+    assert [p.text for p in pages] == ["một hai", "ba bốn", "năm sáu"]
+    assert [(p.start, p.end) for p in pages] == [(10.1, 10.6), (10.7, 12.2), (12.3, 13.4)]
+    # lời đọc khác mốc (provider chuẩn hoá chữ số) → quay về chia theo tỷ lệ, không gán sai từ
+    fallback = caption_pages([Cue("S1", 10, 14, text)], max_chars=7, max_lines=1, words={"S1": words[:-1]})
+    assert fallback == caption_pages([Cue("S1", 10, 14, text)], max_chars=7, max_lines=1)
+    # mốc vượt cuối cảnh thì kẹp lại; từ dài hơn một dòng vẫn đứng riêng
+    long = caption_pages([Cue("S2", 0, 1, "siêudàiquá ngắn")], max_chars=4, max_lines=1,
+                         words={"S2": [(0.0, 0.5, "siêudàiquá"), (0.6, 9.0, "ngắn")]})
+    assert [(p.text, p.start, p.end) for p in long] == [("siêudàiquá", 0.0, 0.5), ("ngắn", 0.6, 1.0)]

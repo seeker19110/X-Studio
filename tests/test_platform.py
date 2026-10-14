@@ -125,6 +125,22 @@ def test_youtube_upload_declares_synthetic_media_when_decided(tmp_path):
     assert fake.videos[up.platform_ref]["synthetic_media"] is False and "synthetic_media=False" in up.evidence
 
 
+def test_youtube_upload_declares_paid_product_placement_only_when_decided(tmp_path):
+    """Data API 7/2026: `paidProductPlacementDetails.hasPaidProductPlacement` — part riêng, chỉ gửi khi đã khai."""
+    f = tmp_path / "final.mp4"; f.write_bytes(b"v" * 10)
+    for value, part in ((True, True), (False, True), (None, False)):
+        http = FakeHTTP()
+        http.on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session/1"}, b""))
+        http.on("PUT", "https://upload.example/session/1", (200, {}, {"id": "yt9", "status": {"privacyStatus": "private"}}))
+        YouTubePlatform(_store(tmp_path), fetcher=http, now=lambda: NOW).upload_video(
+            f, META.model_copy(update={"paid_product_placement": value}))
+        body, url = json.loads(http.calls[0][3]), http.calls[0][1]
+        assert ("paidProductPlacementDetails" in url) is part
+        assert body.get("paidProductPlacementDetails") == ({"hasPaidProductPlacement": value} if part else None)
+    fake = FakePlatform(); up = fake.upload_video(f, META.model_copy(update={"paid_product_placement": True}))
+    assert fake.videos[up.platform_ref]["paid_product_placement"] is True and "paid_product_placement=True" in up.evidence
+
+
 def test_youtube_upload_missing_location_or_id_is_clear_error(tmp_path):
     f = tmp_path / "f.mp4"; f.write_bytes(b"v")
     http = FakeHTTP().on("POST", UPLOAD_URL, (200, {}, b""))
@@ -588,3 +604,17 @@ def test_youtube_captions_error_surfaces_as_platform_error(tmp_path):
     with pytest.raises(PlatformError) as e:
         yt.upload_captions("vid-9", srt)
     assert e.value.status == 403 and e.value.reason == "quotaExceeded"
+
+
+def test_comments_with_an_image_are_flagged_but_the_image_never_reaches_the_bus(tmp_path):
+    """YouTube 11/2026: bình luận có `snippet.imageUrl`. community-manager cần biết bình luận kèm ảnh (lời có thể chỉ
+    là "như hình"), nhưng ảnh/URL không bao giờ vào bus cho model (ADR-0007): chỉ cờ `has_image`."""
+    item = _thread("c9", "nhìn này", "2026-11-02T10:00:00Z")
+    item["snippet"]["topLevelComment"]["snippet"]["imageUrl"] = "https://yt3.ggpht.com/img.png"
+    http = FakeHTTP().on("GET", f"{API_URL}/commentThreads", (200, {}, {"items": [item, _thread("c8", "chữ", "2026-11-01T10:00:00Z")]}))
+    got = YouTubePlatform(_store(tmp_path), http, lambda: NOW).list_comments("yt1")
+    assert [c.has_image for c in got] == [True, False]
+    bus = InMemoryBus(); p = FakePlatform(); p.comments["yt1"] = got
+    env = sync_comments(bus, p, "V1", ref="yt1")
+    assert env.payload["comments"][0]["has_image"] is True and "has_image" not in env.payload["comments"][1]
+    assert "ggpht" not in json.dumps(env.payload)

@@ -180,3 +180,21 @@ def test_publish_checklist_shows_the_synthetic_media_decision(tmp_path):
     assert bus.latest("metadata-packages", vid).payload["synthetic_media"] is False
     assert "synthetic_media:False" in o._publish_checklist(vid)
     assert any(e.payload["action"] == "synthetic_media.decided" for e in bus.replay("audit-log"))
+
+
+def test_publish_checklist_shows_the_paid_product_placement_policy(tmp_path):
+    """Khai tài trợ (YouTube 7/2026) là chính sách kênh `production.paid_product_placement`; code ghi vào metadata sau
+    bản cuối và gate publish luôn có dòng `paid_product_placement:`."""
+    from studio.events import MediaAsset, SceneManifest
+    from studio.orchestrator import StepResult
+    from test_orchestrator import _to_publish_gate
+    bus, o = _to_publish_gate(tmp_path)
+    vid = "CH1-V1"
+    assert any(x.startswith("paid_product_placement:(chưa khai") for x in o._publish_checklist(vid))
+    o.renderer.media.cfg.production["paid_product_placement"] = True
+    m = SceneManifest.model_validate(bus.latest("scene-manifests", vid).payload)
+    final = next(a for a in reversed([e.payload for e in bus.replay("media-assets", vid)]) if a["kind"] == "final_video")
+    o._after_final(m, None, MediaAsset.model_validate(final), StepResult("e1", "media-assets", vid))
+    assert bus.latest("metadata-packages", vid).payload["paid_product_placement"] is True
+    assert "paid_product_placement:True" in o._publish_checklist(vid)
+    assert any(e.payload["action"] == "paid_product_placement.decided" for e in bus.replay("audit-log"))

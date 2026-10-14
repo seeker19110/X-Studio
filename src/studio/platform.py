@@ -85,6 +85,7 @@ class Comment:
     author: str = ""
     likes: int = 0
     published_at: str = ""
+    has_image: bool = False  # YouTube 11/2026 `snippet.imageUrl`; chỉ giữ cờ, ảnh/URL không vào bus (ADR-0007)
 
 
 def parse_ts(s: str | None) -> datetime | None:
@@ -157,9 +158,11 @@ class FakePlatform:
         if not Path(path).exists(): raise PlatformError(f"không có file {path}")
         ref = f"fake-{len(self.videos) + 1:04d}"
         self.videos[ref] = {"title": metadata.title, "privacy": privacy, "publish_at": publish_at, "thumbnail": None, "path": str(path),
-                            "synthetic_media": metadata.synthetic_media}
+                            "synthetic_media": metadata.synthetic_media,
+                            "paid_product_placement": metadata.paid_product_placement}
         return UploadResult(ref, f"https://fake.video/{ref}", "scheduled" if publish_at else privacy,
-                            evidence=f"fake upload {ref} bytes={Path(path).stat().st_size} synthetic_media={metadata.synthetic_media}")
+                            evidence=f"fake upload {ref} bytes={Path(path).stat().st_size} synthetic_media={metadata.synthetic_media} "
+                                     f"paid_product_placement={metadata.paid_product_placement}")
 
     def set_thumbnail(self, platform_ref: str, path: Path) -> str:
         self._check("set_thumbnail", platform_ref=platform_ref, path=str(path))
@@ -403,8 +406,12 @@ class YouTubePlatform:
             if publish_at: status["publishAt"] = publish_at
             # ADR-0018: chỉ gửi khi đã quyết (code/người); bỏ trống thì YouTube tự xét và gắn nhãn (5/2026).
             if metadata.synthetic_media is not None: status["containsSyntheticMedia"] = bool(metadata.synthetic_media)
-            st1, rh, _ = self._call("POST", f"{UPLOAD_URL}?uploadType=resumable&part=snippet,status",
-                                    json.dumps({"snippet": snippet, "status": status}).encode(),
+            body: dict[str, Any] = {"snippet": snippet, "status": status}
+            # Tài trợ trả tiền (7/2026) là part riêng; chỉ gửi khi kênh đã khai, bỏ trống = YouTube coi như không khai.
+            if metadata.paid_product_placement is not None:
+                body["paidProductPlacementDetails"] = {"hasPaidProductPlacement": bool(metadata.paid_product_placement)}
+            st1, rh, _ = self._call("POST", f"{UPLOAD_URL}?uploadType=resumable&part={','.join(body)}",
+                                    json.dumps(body).encode(),
                                     {"Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": "video/*",
                                      "X-Upload-Content-Length": str(size)})
             loc = rh.get("location")
@@ -458,7 +465,8 @@ class YouTubePlatform:
             for it in d.get("items", []):
                 top = (it.get("snippet") or {}).get("topLevelComment") or {}; sn = top.get("snippet") or {}
                 c = Comment(top.get("id") or it.get("id", ""), sn.get("textOriginal") or sn.get("textDisplay", ""),
-                            sn.get("authorDisplayName", ""), int(sn.get("likeCount", 0) or 0), sn.get("publishedAt", ""))
+                            sn.get("authorDisplayName", ""), int(sn.get("likeCount", 0) or 0), sn.get("publishedAt", ""),
+                            has_image=bool(sn.get("imageUrl")))
                 if _before(c.published_at, since): stop = True; continue
                 out.append(c)
             token = d.get("nextPageToken")

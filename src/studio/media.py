@@ -75,6 +75,16 @@ MODEL_SIZES: dict[str, dict[str, str]] = {
     "dall-e-2": {"16:9": "1024x1024", "9:16": "1024x1024", "1:1": "1024x1024"},
 }
 DEFAULT_SIZES = {"16:9": "1536x1024", "9:16": "1024x1536", "1:1": "1024x1024"}
+# gpt-image-2 trở lên nhận kích thước tuỳ ý (bội 16, tỷ lệ 1:3…3:1, cạnh ≤ 3840 — image guide 10/2026): 16:9 thật.
+FREE_SIZE_MODELS = ("gpt-image-2",)
+FREE_SIZES = {"16:9": "1920x1088", "9:16": "1088x1920", "1:1": "1024x1024"}
+
+
+def _free_size_ok(size: str) -> bool:
+    m = re.fullmatch(r"(\d+)x(\d+)", size)
+    if not m: return False
+    w, h = int(m.group(1)), int(m.group(2))
+    return w % 16 == 0 and h % 16 == 0 and 0 < w <= 3840 and 0 < h <= 3840 and max(w, h) <= 3 * min(w, h)
 THUMBNAIL_SIZE = "1280x720"      # YouTube: 1280x720 (hoặc 1080p/1440p/4K từ 9/2026), JPG/PNG
 THUMBNAIL_MAX_BYTES = 2_000_000  # MỤC TIÊU của renderer (tải nhanh, bản thu 120 px vẫn nét); vượt chỉ là QC warn
 PLATFORM_THUMBNAIL_MAX_BYTES = 50_000_000  # giới hạn API YouTube (2 MB → 50 MB ngày 14/9/2026, revision history)
@@ -108,6 +118,9 @@ class MediaResult:
     model: str
     duration_s: float | None = None
     notes: str = ""  # điều code đã làm/không làm được với file (phủ chữ, thu nhỏ, nén) → renderer ghi vào audit
+    # Mốc từng từ (start, end, từ) tính từ đầu audio, khi provider TTS trả (ElevenLabs /with-timestamps, edge
+    # WordBoundary). Renderer ghi `<cảnh>.words.json` để phụ đề theo lời đọc thật; None = không có, chia theo tỷ lệ.
+    words: list[tuple[float, float, str]] | None = None
 
 
 class TTS(Protocol):
@@ -237,6 +250,8 @@ def image_size(cfg: MediaConfig, aspect: str = "16:9") -> str:
     Provider nhận tỷ lệ thay vì pixel (gemini, stability, replicate) thì giữ nguyên cấu hình — `aspect_of` quy đổi sau."""
     want = str(cfg.image.get("size") or "")
     model = str(cfg.image.get("model") or "")
+    if model.startswith(FREE_SIZE_MODELS):
+        return want if _free_size_ok(want) else FREE_SIZES.get(aspect, FREE_SIZES["16:9"])
     table = next((v for k, v in MODEL_SIZES.items() if model.startswith(k)), None)
     if table is None: return want or DEFAULT_SIZES.get(aspect, DEFAULT_SIZES["16:9"])
     if want in table.values(): return want
@@ -611,10 +626,80 @@ class ElevenLabsTTS:
         if pace != "medium": settings["speed"] = {"slow": 0.9, "fast": 1.1}[pace]
         body = {"text": text, "model_id": self.model, "voice_settings": settings}
         fmt = str(s.get("output_format") or "mp3_44100_128")
-        raw = self.http.post_raw(f"/text-to-speech/{urllib.parse.quote(vid)}?output_format={urllib.parse.quote(fmt)}",
+        query = f"?output_format={urllib.parse.quote(fmt)}"
+        p = out.with_suffix(".mp3")
+        if s.get("timestamps"):
+            raw = self.http.post_raw(f"/text-to-speech/{urllib.parse.quote(vid)}/with-timestamps{query}",
+                                     json.dumps(body).encode("utf-8"),
+                                     {"Content-Type": "application/json", "Accept": "application/json"})
+            audio, words = _elevenlabs_timed(raw)
+            p.write_bytes(audio)
+            return MediaResult(p, "elevenlabs", self.model, audio_duration(p, text), words=words)
+        raw = self.http.post_raw(f"/text-to-speech/{urllib.parse.quote(vid)}{query}",
                                  json.dumps(body).encode("utf-8"), {"Content-Type": "application/json", "Accept": "audio/mpeg"})
-        p = out.with_suffix(".mp3"); p.write_bytes(raw)
+        p.write_bytes(raw)
         return MediaResult(p, "elevenlabs", self.model, audio_duration(p, text))
+
+
+def _elevenlabs_timed(raw: bytes) -> tuple[bytes, list[tuple[float, float, str]]]:
+    """Phản hồi /with-timestamps: `audio_base64` + `alignment` mức KÝ TỰ → (audio, mốc từng từ theo khoảng trắng)."""
+    try:
+        data = json.loads(raw)
+        audio = base64.b64decode(data["audio_base64"], validate=True)
+        align = data["alignment"]
+        chars, starts, ends = (align["characters"], align["character_start_times_seconds"],
+                               align["character_end_times_seconds"])
+    except (ValueError, KeyError, TypeError) as e:
+        raise MediaError(f"elevenlabs with-timestamps: phản hồi không hợp lệ ({type(e).__name__})") from e
+    if not audio:
+        raise MediaError("elevenlabs with-timestamps: không có audio")
+    words: list[tuple[float, float, str]] = []; current = ""; first = last = 0.0
+    for ch, start, end in zip(chars, starts, ends, strict=False):
+        if str(ch).isspace():
+            if current: words.append((float(first), float(last), current)); current = ""
+            continue
+        if not current: first = start
+        current += str(ch); last = end
+    if current: words.append((float(first), float(last), current))
+    return audio, words
+
+
+# ---------- TTS: Edge (edge-tts, không cần khoá) ----------
+
+class EdgeTTS:
+    """Giọng Microsoft Edge đọc online qua thư viện `edge-tts` (đã là dependency, dùng ở luồng Website → Video): miễn
+    phí, có tiếng Việt và mốc từng từ (`WordBoundary`). Không có SLA — Microsoft đổi token là vỡ (7.3 thêm Sec-MS-GEC
+    v2); coi là tiện ích, provider sản xuất nên có phương án dự phòng."""
+    def __init__(self, cfg: MediaConfig):
+        self.cfg = cfg
+
+    def synthesize(self, text: str, voice: dict[str, Any], out: Path) -> MediaResult:
+        import asyncio
+
+        import edge_tts
+        out.parent.mkdir(parents=True, exist_ok=True)
+        name = pick_voice(self.cfg.tts, voice, "vi-VN-HoaiMyNeural", trust_manifest=False)
+        rate = AZURE_RATE.get(pace_of(voice), "+0%")
+        p = out.with_suffix(".mp3")
+        words: list[tuple[float, float, str]] = []
+
+        async def run() -> None:
+            communicate = edge_tts.Communicate(text, name, rate=rate, boundary="WordBoundary",
+                                               connect_timeout=15, receive_timeout=60)
+            with p.open("wb") as audio:
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        audio.write(chunk["data"])
+                    elif chunk["type"] == "WordBoundary":
+                        start = chunk["offset"] / 10_000_000
+                        words.append((round(start, 3), round(start + chunk["duration"] / 10_000_000, 3), chunk["text"]))
+        try:
+            asyncio.run(run())
+        except Exception as e:  # edge-tts ném nhiều loại lỗi mạng/giao thức riêng
+            raise MediaError(f"edge-tts: {type(e).__name__}: {str(e)[:200]}") from e
+        if not p.stat().st_size:
+            raise MediaError("edge-tts: dịch vụ không trả audio (token Sec-MS-GEC đổi? nâng edge-tts)")
+        return MediaResult(p, "edge", name, audio_duration(p, text), words=words or None)
 
 
 # ---------- TTS: Azure Speech ----------
@@ -869,7 +954,7 @@ class ReplicateImage:
 
 TTS_PROVIDERS: dict[str, Callable[[MediaConfig], Any]] = {
     "openai": OpenAITTS, "gemini": GeminiTTS, "elevenlabs": ElevenLabsTTS, "azure": AzureTTS, "google": GoogleTTS,
-    "command": CommandTTS,
+    "command": CommandTTS, "edge": EdgeTTS,
 }
 IMAGE_PROVIDERS: dict[str, Callable[[MediaConfig], Any]] = {
     "command": CommandImage,

@@ -38,7 +38,20 @@ xưởng:
    operation và SynthID. Giá đi qua sổ chi phí (ADR-0016) bằng `price_per_second` do chủ xưởng khai.
    `ComfyUIVideo` và `VeoVideo` dùng chung lớp `_HttpJob` (submit → checkpoint → poll → download); thông điệp lỗi
    giữ nguyên tên dịch vụ.
-4. Checklist gate `publish` sửa ghi chú quota theo rổ.
+4. **Provider `scene_video: omni`** (`video_gen.OmniVideo`, Gemini Omni 1.1 Flash): `POST /interactions` với
+   `response_format {type: video, aspect_ratio, resolution 360p/720p/1080p/4k, delivery: uri}`, `store: false`; ảnh
+   tham chiếu thành phần `image` của `input` và `video_config.task: reference_to_video`. Gọi đồng bộ (tài liệu không
+   có luồng poll cho interaction), nên ngay khi có phản hồi code checkpoint `interaction` + `uri`, rồi poll
+   `GET files/{id}` tới `ACTIVE` và tải — timeout lúc chờ file không sinh lại clip đã trả tiền. Omni không nhận
+   thời lượng, seed hay negative prompt: thời lượng đo bằng ffprobe, seed chỉ nằm trong khoá cache. Video inline
+   (`data` base64) cũng nhận, có trần byte. Veo và Omni dùng chung `_GeminiJob` (HTTPS, `x-goog-api-key`, chỉ tải
+   từ `*.googleapis.com`, ảnh tham chiếu ≤ 3, khoá cache bỏ giá và khóa).
+5. Checklist gate `publish` sửa ghi chú quota theo rổ.
+6. **`MetadataPackage.paid_product_placement: bool | None`** (Data API 7/2026,
+   `paidProductPlacementDetails.hasPaidProductPlacement`). Xưởng không có khái niệm tài trợ trong brief, nên nguồn
+   duy nhất là chính sách kênh `production.paid_product_placement`; orchestrator ghi vào metadata sau bản cuối (audit
+   `paid_product_placement.decided`). Adapter chỉ thêm part `paidProductPlacementDetails` khi khác `None`. Gate
+   `publish` luôn có dòng `paid_product_placement:` để người duyệt chặn video có tài trợ mà chưa khai.
 
 ## Hệ quả
 
@@ -46,7 +59,7 @@ xưởng:
   quyết từng video. Không có số liệu bịa: cờ chỉ `True` khi có asset `generated` thật trong manifest.
 - Veo là provider thuê đầu tiên của `scene_video`: thêm `license: generated` vào cấu hình, `cinema.visual_mode:
   generated_video` sẽ kéo cờ `synthetic_media` lên `True` tự động.
-- Chưa làm: Gemini Omni (REST sinh video chưa ổn định để viết adapter không SDK), `personGeneration` (mặc định API),
+- Chưa làm: `personGeneration` (mặc định API),
   mở rộng clip 8 s → dài hơn (`extend`), Veo trên Vertex AI (khác xác thực).
 
 ## Phương án bị loại

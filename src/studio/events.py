@@ -199,6 +199,9 @@ class MetadataPackage(BaseModel):
     # provenance (`preflight.synthetic_media_of`) hoặc chính sách kênh `production.synthetic_media`; None = chưa quyết →
     # preflight warn, gate publish hiện "(chưa khai)". Model không đặt trường này.
     synthetic_media: bool | None = None
+    # ADR-0018: có quảng cáo/tài trợ trả tiền (YouTube `paidProductPlacementDetails.hasPaidProductPlacement`, 7/2026).
+    # CODE điền từ chính sách kênh `production.paid_product_placement`; None = chưa khai → adapter không gửi part.
+    paid_product_placement: bool | None = None
 
 
 class Finding(BaseModel):

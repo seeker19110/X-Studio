@@ -10,7 +10,7 @@ import shlex
 import sys
 import wave
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -18,6 +18,7 @@ from studio import media
 from studio.media import (
     AzureTTS,
     CommandTTS,
+    EdgeTTS,
     ElevenLabsTTS,
     GeminiImage,
     GeminiTTS,
@@ -246,6 +247,72 @@ def test_elevenlabs_tts_uses_provider_voice_id_and_speed(tmp_path, monkeypatch):
         default.synthesize("x", {"voice_id": "alloy"}, tmp_path / "b.wav")
 
 
+def test_elevenlabs_timestamps_return_word_times(tmp_path, monkeypatch):
+    """`tts.timestamps: true` → /with-timestamps: audio base64 + mốc từng KÝ TỰ → gộp thành mốc từng từ."""
+    chars = list("xin  chào")
+    starts = [0.0, 0.1, 0.2, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7]
+    ends = [0.1, 0.2, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7, 0.9]
+    payload = {"audio_base64": base64.b64encode(b"MP3").decode(),
+               "alignment": {"characters": chars, "character_start_times_seconds": starts, "character_end_times_seconds": ends}}
+    calls = _capture(monkeypatch, [json.dumps(payload).encode()])
+    cfg = MediaConfig(tts={"provider": "elevenlabs", "api_key": "xi", "voice": "abc123", "timestamps": True})
+    r = ElevenLabsTTS(cfg).synthesize("xin  chào", {"voice_id": "alloy"}, tmp_path / "a.wav")
+    assert calls[0]["url"] == "https://api.elevenlabs.io/v1/text-to-speech/abc123/with-timestamps?output_format=mp3_44100_128"
+    assert calls[0]["headers"]["accept"] == "application/json"
+    assert r.path.read_bytes() == b"MP3" and r.words == [(0.0, 0.3, "xin"), (0.4, 0.9, "chào")]
+    empty = {"characters": [], "character_start_times_seconds": [], "character_end_times_seconds": []}
+    for bad in ({"alignment": None}, {"audio_base64": "***"}, {"audio_base64": "", "alignment": empty}):
+        _capture(monkeypatch, [json.dumps(bad).encode()])
+        with pytest.raises(MediaError, match="with-timestamps"):
+            ElevenLabsTTS(cfg).synthesize("xin chào", {"voice_id": "alloy"}, tmp_path / "b.wav")
+    _capture(monkeypatch, [json.dumps({"audio_base64": base64.b64encode(b"MP3").decode(), "alignment": None}).encode()])
+    with pytest.raises(MediaError, match="with-timestamps"):
+        ElevenLabsTTS(cfg).synthesize("xin chào", {"voice_id": "alloy"}, tmp_path / "c.wav")
+
+
+class _Communicate:
+    """edge_tts.Communicate giả: không mạng; ghi lại tham số, phát audio + WordBoundary (đơn vị 100 ns)."""
+    seen: ClassVar[list[dict[str, Any]]] = []
+    chunks: ClassVar[list[dict[str, Any]]] = []
+
+    def __init__(self, text, voice, **kw):
+        type(self).seen.append({"text": text, "voice": voice, **kw})
+
+    async def stream(self):
+        for chunk in type(self).chunks:
+            yield chunk
+
+
+def test_edge_tts_native_returns_audio_and_word_times(tmp_path, monkeypatch):
+    import edge_tts
+    monkeypatch.setattr(edge_tts, "Communicate", _Communicate)
+    _Communicate.seen = []
+    _Communicate.chunks = [{"type": "audio", "data": b"ID3"}, {"type": "WordBoundary", "offset": 1_000_000, "duration": 2_000_000, "text": "Xin"},
+                           {"type": "audio", "data": b"MP3"}, {"type": "WordBoundary", "offset": 4_000_000, "duration": 3_000_000, "text": "chào"},
+                           {"type": "SentenceBoundary"}]
+    cfg = MediaConfig(tts={"provider": "edge", "voices": {"alloy": "vi-VN-NamMinhNeural"}})
+    tts = make_media(cfg).tts
+    assert isinstance(tts, EdgeTTS)
+    r = tts.synthesize("Xin chào", {"voice_id": "alloy", "pace": "slow"}, tmp_path / "a.wav")
+    assert r.path.suffix == ".mp3" and r.path.read_bytes() == b"ID3MP3" and r.provider == "edge"
+    assert r.words == [(0.1, 0.3, "Xin"), (0.4, 0.7, "chào")] and r.model == "vi-VN-NamMinhNeural"
+    assert _Communicate.seen[0] == {"text": "Xin chào", "voice": "vi-VN-NamMinhNeural", "rate": "-10%",
+                                    "boundary": "WordBoundary", "connect_timeout": 15, "receive_timeout": 60}
+    assert EdgeTTS(MediaConfig(tts={"provider": "edge"})).synthesize("x", {"voice_id": "alloy"}, tmp_path / "d.wav").model \
+        == "vi-VN-HoaiMyNeural"
+    _Communicate.chunks = [{"type": "WordBoundary", "offset": 0, "duration": 1, "text": "x"}]
+    with pytest.raises(MediaError, match="edge-tts"):
+        tts.synthesize("x", {"voice_id": "alloy"}, tmp_path / "b.wav")
+
+    class Broken(_Communicate):
+        async def stream(self):
+            raise OSError("403 Sec-MS-GEC")
+            yield  # pragma: no cover
+    monkeypatch.setattr(edge_tts, "Communicate", Broken)
+    with pytest.raises(MediaError, match=r"edge-tts.*403"):
+        tts.synthesize("x", {"voice_id": "alloy"}, tmp_path / "c.wav")
+
+
 def test_azure_tts_builds_ssml_with_voice_table_and_prosody(tmp_path, monkeypatch):
     calls = _capture(monkeypatch, [b"MP3", b"MP3"])
     cfg = MediaConfig(tts={"provider": "azure", "api_key": "az", "voices": {"alloy": "vi-VN-NamMinhNeural"}, "voice": "vi-VN-HoaiMyNeural"})
@@ -445,3 +512,16 @@ def test_command_image_requires_explicit_command():
     from studio.media import CommandImage
     with pytest.raises(MediaError, match=r"image\.command"):
         CommandImage(MediaConfig(image={"provider": "command"}))
+
+
+def test_gpt_image_2_accepts_custom_sizes_within_the_api_rules():
+    """gpt-image-2.x nhận WIDTHxHEIGHT tuỳ ý (bội 16, tỷ lệ 1:3…3:1, cạnh ≤ 3840): 16:9 thật thay vì cắt 1536x1024."""
+    from studio.media import image_size
+    cfg = MediaConfig(image={"provider": "openai", "model": "gpt-image-2.5-flare"})
+    assert image_size(cfg, "16:9") == "1920x1088" and image_size(cfg, "9:16") == "1088x1920"
+    assert image_size(cfg, "1:1") == "1024x1024"
+    cfg.image["size"] = "2560x1440"
+    assert image_size(cfg, "16:9") == "2560x1440"
+    for bad in ("1920x1080", "4096x2304", "3840x1024", "abc"):   # không bội 16 / quá 3840 / tỷ lệ > 3:1 / sai dạng
+        cfg.image["size"] = bad
+        assert image_size(cfg, "16:9") == "1920x1088"

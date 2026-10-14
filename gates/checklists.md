@@ -27,6 +27,8 @@ Kết quả: approve (desk dispatch) / request_changes / reject
 - [ ] Dòng `synthetic_media:` (ADR-0018): `True` khi cảnh người/nơi/sự kiện trông như thật nhưng do AI sinh (phim
       `generated_video`, Veo…) — code tự điền khi chắc; `(chưa khai)` thì người duyệt quyết, YouTube vẫn tự gắn nhãn
       khi phát hiện; không khai sai để né nhãn
+- [ ] Dòng `paid_product_placement:` (ADR-0018): video có quảng cáo/tài trợ trả tiền thì phải là `True`; `(chưa khai)` mà
+      có tài trợ → request_changes và đặt `production.paid_product_placement`
 - [ ] Không vi phạm `boundaries` và content-policy (YMYL có miễn trừ)
 - [ ] Lịch đăng theo chiến lược (`strategy`) hoặc nêu trong reason
 - [ ] Người duyệt ≠ người tạo (desk)

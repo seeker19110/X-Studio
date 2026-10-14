@@ -8,7 +8,8 @@ sau khi đã tiêu. Ngân sách token (`supervisor.py`) chỉ đếm model text;
 mãi. Không khai giá thì không có dòng sổ nào và `priced()` sai — nơi hiển thị nói "chưa khai giá" chứ không bịa 0 USD.
 Provider `fake` luôn miễn phí dù cấu hình có giá: nó không tiêu tiền thật.
 
-Khoá giá: `tts.price_per_1k_chars`, `image.price_per_image` (ảnh cảnh và nền thumbnail), `scene_video.price_per_second`.
+Khoá giá: `tts.price_per_1k_chars` và/hoặc `tts.price_per_second` (provider tính theo giây/token audio như Gemini),
+`image.price_per_image` (ảnh cảnh và nền thumbnail), `scene_video.price_per_second`.
 """
 from __future__ import annotations
 
@@ -22,7 +23,9 @@ from .events import Envelope
 from .media import MediaConfig, MediaError, MediaResult
 
 RATES = {"tts": "price_per_1k_chars", "image": "price_per_image", "scene_video": "price_per_second"}
-PRICE_KEYS = frozenset(RATES.values())
+TTS_PER_SECOND = "price_per_second"
+TTS_CHARS_PER_SECOND = 15.0   # ước lượng trước lượt gọi cho trần; sổ ghi theo thời lượng audio thật sau lượt gọi
+PRICE_KEYS = frozenset(RATES.values()) | {TTS_PER_SECOND}
 ACTION = "media.cost"
 WARNING_ACTION = "media.cost_warning"   # một lần khi video vượt WARN_RATIO trần; không chặn
 WARN_RATIO = 0.8
@@ -50,8 +53,12 @@ def rate(cfg: MediaConfig, channel: str) -> float:
     return _usd(getattr(cfg, channel).get(key) or 0, f"{channel}.{key}")
 
 
+def tts_second_rate(cfg: MediaConfig) -> float:
+    return _usd(cfg.tts.get(TTS_PER_SECOND) or 0, f"tts.{TTS_PER_SECOND}")
+
+
 def priced(cfg: MediaConfig) -> bool:
-    return any(rate(cfg, channel) > 0 for channel in RATES)
+    return any(rate(cfg, channel) > 0 for channel in RATES) or tts_second_rate(cfg) > 0
 
 
 def budget(cfg: MediaConfig) -> float:
@@ -59,11 +66,19 @@ def budget(cfg: MediaConfig) -> float:
     return _usd(cfg.production.get("media_budget_usd") or 0, "production.media_budget_usd")
 
 
-def quote(cfg: MediaConfig, channel: str, units: float) -> float:
-    """Giá niêm yết của một lượt: `units` là ký tự (tts), số ảnh (image) hoặc giây (scene_video)."""
+def quote(cfg: MediaConfig, channel: str, units: float, seconds: float | None = None) -> float:
+    """Giá niêm yết của một lượt: `units` là ký tự (tts), số ảnh (image) hoặc giây (scene_video). TTS có thêm giá theo
+    giây audio: `seconds` thật khi đã có, chưa có thì ước lượng từ số ký tự."""
     if str(getattr(cfg, channel).get("provider") or "fake") == "fake": return 0.0
     per = rate(cfg, channel)
-    return round(per * (units / 1000 if channel == "tts" else units), 6)
+    if channel != "tts": return round(per * units, 6)
+    audio = seconds if seconds is not None else units / TTS_CHARS_PER_SECOND
+    return round(per * units / 1000 + tts_second_rate(cfg) * audio, 6)
+
+
+def near_cap(spent_usd: float, cap: float) -> bool:
+    """Đã dùng ≥ WARN_RATIO trần (cùng ngưỡng với dòng audit `media.cost_warning`); không trần thì không cảnh báo."""
+    return bool(cap) and spent_usd >= WARN_RATIO * cap - 1e-9
 
 
 def totals(events: Iterable[Envelope]) -> dict[str, float]:
@@ -105,10 +120,13 @@ class Ledger:
                                    f"{' '.join(ref.values())} cần {usd:.4f} — tăng production.media_budget_usd "
                                    "hoặc dùng provider rẻ hơn")
         result = call()
+        extra: dict[str, Any] = {}
+        if channel == "tts" and tts_second_rate(self.cfg) > 0 and result.duration_s:
+            usd = quote(self.cfg, channel, units, seconds=result.duration_s); extra["seconds"] = result.duration_s
         self._spent[video_id] = total = round(used + usd, 6)
         self._audit(ACTION, video_id, {"channel": channel, "units": units, "usd": usd,
                                        "provider": str(getattr(self.cfg, channel).get("provider")),
-                                       "model": result.model, **ref})
+                                       "model": result.model, **extra, **ref})
         if cap and used < WARN_RATIO * cap <= total:
             self._audit(WARNING_ACTION, video_id, {"spent_usd": total, "cap_usd": cap, "pct": round(100 * total / cap),
                                                    "channel": channel, **ref})

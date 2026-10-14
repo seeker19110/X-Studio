@@ -28,8 +28,18 @@ không cần Python package hay dịch vụ ngoài — vừa khít quy ước "Q
 
 - Người vận hành tải một model ggml (base/small đủ cho QC) và dùng bản ffmpeg ≥ 8 build `--enable-whisper`; mọi thứ
   khác giữ nguyên. Chi phí: một lượt ffmpeg nữa trên bản cuối, CPU.
-- Chưa làm (§3.5 nghiên cứu): timestamp từng từ từ TTS (ElevenLabs `/with-timestamps`, edge-tts `WordBoundary`) cho
-  phụ đề karaoke — việc của renderer/caption, không phải QC; và WER không phân biệt lỗi do TTS với lỗi do ASR.
+- WER không phân biệt lỗi do TTS với lỗi do ASR.
+
+## Bổ sung cùng ngày: mốc từng từ cho phụ đề (§3.5 nghiên cứu)
+
+Phụ đề trước đây chia trang theo tỷ lệ độ dài chữ trong khoảng cảnh — đúng tổng nhưng lệch từng trang. Nay
+`MediaResult.words` mang mốc (start, end, từ) khi provider có: ElevenLabs với `tts.timestamps: true` gọi
+`/with-timestamps` (mốc mức ký tự, code gộp theo khoảng trắng), provider mới `tts.provider: edge` (thư viện
+`edge-tts` đã có, `WordBoundary`). Renderer ghi `<cảnh>.words.json` cạnh audio cảnh (cache trúng vẫn có mốc vì
+metadata cache lưu cả `words`; provider không còn mốc thì xoá file cũ). `caption_pages` dùng mốc thật khi dãy từ
+khớp đúng lời đọc của manifest — lệch (provider chuẩn hoá số, đổi chữ) thì quay về chia tỷ lệ, không gán sai từ.
+Phụ đề sinh từ mốc thật ghi `studio:srt-word-times` trong provenance. Chưa làm: tô sáng từng từ (ASS `\k`) — SRT
+không biểu diễn được, YouTube cũng không nhận.
 
 ## Phương án bị loại
 

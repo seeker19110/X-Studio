@@ -18,6 +18,7 @@ from studio.video_gen import (
     ComfyUIVideo,
     CommandVideo,
     FakeSceneVideo,
+    OmniVideo,
     VeoVideo,
     _NoRedirect,
     _probe,
@@ -588,3 +589,131 @@ def test_veo_cache_identity_ignores_prices_and_key(tmp_path, monkeypatch):
     base = VeoVideo(veo(tmp_path, monkeypatch)).cache_identity
     assert VeoVideo(veo(tmp_path, monkeypatch, price_per_second=0.4, api_key="x")).cache_identity == base
     assert VeoVideo(veo(tmp_path, monkeypatch, model="veo-3.1-generate-001")).cache_identity != base
+
+
+# ---------- Gemini Omni (Interactions API, ADR-0018): unary → files/{id} ACTIVE → download ----------
+
+FILE_URI = "https://generativelanguage.googleapis.com/v1beta/files/f9:download?alt=media"
+
+
+def omni(tmp_path: Path, monkeypatch, **options: Any) -> MediaConfig:
+    monkeypatch.setenv("GEMINI_API_KEY", "omni-key")
+    return config(tmp_path, provider="omni", **options)
+
+
+def interaction(content: list[dict[str, Any]] | None = None, **overrides: Any) -> dict[str, Any]:
+    record: dict[str, Any] = {"id": "v1_abc", "status": "completed", "object": "interaction",
+                              "steps": [{"type": "model_output", "content": content if content is not None else
+                                         [{"type": "video", "mime_type": "video/mp4", "uri": FILE_URI}]}]}
+    record.update(overrides)
+    return record
+
+
+def test_omni_unary_waits_for_active_file_then_downloads_and_replays(tmp_path, monkeypatch):
+    cfg = omni(tmp_path, monkeypatch)
+    monkeypatch.setattr("studio.video_gen.time.sleep", lambda _: None)
+    calls = mock_http(monkeypatch, [interaction(), {"name": "files/f9", "state": "PROCESSING"},
+                                    {"name": "files/f9", "state": "ACTIVE"}, MP4])
+    provider = make_video_generator(cfg)
+    assert isinstance(provider, OmniVideo)
+    result = generate(provider, tmp_path)
+    assert result.path.read_bytes() == MP4 and result.duration_s == 2.5
+    assert result.provider == "omni" and result.model == "gemini-omni-1.1-flash"
+    assert "interaction=v1_abc" in result.notes and "SynthID" in result.notes
+    submit = calls[0][0]
+    assert submit.full_url == "https://generativelanguage.googleapis.com/v1beta/interactions"
+    assert submit.get_header("X-goog-api-key") == "omni-key"
+    assert json.loads(submit.data) == {
+        "model": "gemini-omni-1.1-flash", "input": "Mèo đi dưới mưa", "store": False,
+        "response_format": {"type": "video", "aspect_ratio": "16:9", "resolution": "360p", "delivery": "uri"}}
+    assert calls[1][0].full_url.endswith("/v1beta/files/f9") and calls[1][0].method == "GET"
+    assert calls[3][0].full_url == FILE_URI and calls[3][0].get_header("X-goog-api-key") == "omni-key"
+    cached = generate(OmniVideo(cfg), tmp_path, out=tmp_path / "again.mp4")
+    assert cached.path.read_bytes() == MP4 and len(calls) == 4
+
+
+def test_omni_inline_video_and_byte_cap(tmp_path, monkeypatch):
+    inline = [{"type": "text", "text": "ok"},
+              {"type": "video", "mime_type": "video/mp4", "data": base64.b64encode(MP4).decode()}]
+    cfg = omni(tmp_path, monkeypatch)
+    calls = mock_http(monkeypatch, [interaction(inline)])
+    assert generate(OmniVideo(cfg), tmp_path).path.read_bytes() == MP4 and len(calls) == 1
+    small = omni(tmp_path / "b", monkeypatch, max_download_bytes=16)
+    mock_http(monkeypatch, [interaction(inline)])
+    with pytest.raises(MediaError, match="byte limit"):
+        generate(OmniVideo(small), tmp_path)
+
+
+@pytest.mark.parametrize("resolution, aspect, tier", [
+    ("1080x1920", "9:16", "1080p"), ("640x360", "16:9", "360p"), ("3840x2160", "16:9", "4k"), ("832x480", "16:9", "720p")])
+def test_omni_resolution_tiers(tmp_path, monkeypatch, resolution, aspect, tier):
+    calls = mock_http(monkeypatch, [interaction(), {"state": "ACTIVE"}, MP4])
+    generate(OmniVideo(omni(tmp_path, monkeypatch)), tmp_path, resolution=resolution)
+    fmt = json.loads(calls[0][0].data)["response_format"]
+    assert (fmt["aspect_ratio"], fmt["resolution"]) == (aspect, tier)
+
+
+def test_omni_reference_images_become_input_parts(tmp_path, monkeypatch):
+    (tmp_path / "hero.jpg").write_bytes(b"\xff\xd8hero")
+    calls = mock_http(monkeypatch, [interaction(), {"state": "ACTIVE"}, MP4])
+    generate(OmniVideo(omni(tmp_path, monkeypatch, reference_images=[str(tmp_path / "hero.jpg")])), tmp_path)
+    body = json.loads(calls[0][0].data)
+    assert body["input"] == [{"type": "image", "data": base64.b64encode(b"\xff\xd8hero").decode(), "mime_type": "image/jpeg"},
+                             {"type": "text", "text": "Mèo đi dưới mưa"}]
+    assert body["generation_config"] == {"video_config": {"task": "reference_to_video"}}
+    with pytest.raises(MediaError, match="reference_images"):
+        OmniVideo(omni(tmp_path, monkeypatch, reference_images=["x.gif"]))
+
+
+@pytest.mark.parametrize("response, match", [
+    (interaction(status="failed", error={"message": "blocked by safety"}), "failed: blocked by safety"),
+    (interaction([{"type": "text", "text": "cannot"}]), "no video"),
+    (interaction([{"type": "video", "uri": "https://evil.example/files/f9:download"}]), "googleapis"),
+    (interaction([{"type": "video", "uri": "https://generativelanguage.googleapis.com/v1beta/other"}]), "googleapis"),
+    (interaction([{"type": "video", "data": "***"}]), "base64"),
+    (interaction(steps="nope"), "malformed"),
+    ({"status": "completed"}, "no interaction id"),
+])
+def test_omni_response_errors(tmp_path, monkeypatch, response, match):
+    mock_http(monkeypatch, [response])
+    with pytest.raises(MediaError, match=match):
+        generate(OmniVideo(omni(tmp_path, monkeypatch)), tmp_path)
+
+
+def test_omni_file_failed_and_resume_without_regenerating(tmp_path, monkeypatch):
+    now = [0.0]
+    monkeypatch.setattr("studio.video_gen.time.monotonic", lambda: now[0])
+    monkeypatch.setattr("studio.video_gen.time.sleep", lambda duration: now.__setitem__(0, now[0] + duration))
+    cfg = omni(tmp_path, monkeypatch, timeout_s=0.02, poll_interval_s=0.01)
+    items: list[Any] = [interaction(), {"state": "PROCESSING"}, {"state": "PROCESSING"}]
+    calls = mock_http(monkeypatch, items)
+    with pytest.raises(MediaError, match=r"Omni timeout.*retained"):
+        generate(OmniVideo(cfg), tmp_path)
+    checkpoint = json.loads(next((cfg.output_dir / ".cache" / "video-jobs").glob("*.json")).read_text())
+    assert checkpoint == {"interaction": "v1_abc", "uri": FILE_URI}
+    items.extend([{"state": "FAILED"}])
+    with pytest.raises(MediaError, match="file files/f9 failed"):
+        generate(OmniVideo(cfg), tmp_path)
+    items.extend([{"state": "ACTIVE"}, MP4])
+    generate(OmniVideo(cfg), tmp_path)
+    assert [req.method for req, _ in calls].count("POST") == 1
+
+
+@pytest.mark.parametrize("key, value, match", [
+    ("model", "veo-3.1-generate-001", "scene_video.model"),
+    ("base_url", "http://127.0.0.1:9", "HTTPS"),
+    ("output_format", "webm", "only mp4"),
+])
+def test_omni_config_invalid(tmp_path, monkeypatch, key, value, match):
+    with pytest.raises(MediaError, match=match):
+        OmniVideo(omni(tmp_path, monkeypatch, **{key: value}))
+
+
+def test_omni_requires_key_and_identity_ignores_price(tmp_path, monkeypatch):
+    for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "STUDIO_MEDIA_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(MediaError, match="GEMINI_API_KEY"):
+        OmniVideo(config(tmp_path, provider="omni"))
+    base = OmniVideo(omni(tmp_path, monkeypatch)).cache_identity
+    assert OmniVideo(omni(tmp_path, monkeypatch, price_per_second=0.1)).cache_identity == base
+    assert OmniVideo(omni(tmp_path, monkeypatch, model="gemini-omni-2-flash")).cache_identity != base

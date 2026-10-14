@@ -67,11 +67,35 @@ def timeline(m: SceneManifest, order: list[str] | None = None, pad: float = 0.0,
     return cues
 
 
-def caption_pages(cues: list[Cue], max_chars: int = 42, max_lines: int = 2) -> list[Cue]:
-    """Readable caption pages; timings are proportional estimates, NOT word alignment.
+Word = tuple[float, float, str]  # (start, end, từ) tính từ đầu audio của cảnh
+
+
+def _word_pages(cue: Cue, words: list[Word], max_chars: int, max_lines: int) -> list[Cue]:
+    """Trang phụ đề theo mốc từng từ: dòng gom từ tới `max_chars` (từ dài hơn đứng riêng), trang = `max_lines` dòng;
+    trang bắt đầu lúc từ đầu được đọc, kết thúc lúc từ cuối dứt, kẹp trong khoảng cảnh."""
+    lines: list[list[int]] = []
+    for i, (_, _, word) in enumerate(words):
+        if lines and len(" ".join(words[j][2] for j in lines[-1]) + " " + word) <= max_chars:
+            lines[-1].append(i)
+        else:
+            lines.append([i])
+    out: list[Cue] = []
+    for k in range(0, len(lines), max_lines):
+        page = lines[k:k + max_lines]
+        first, last = page[0][0], page[-1][-1]
+        start = min(cue.end, round(cue.start + float(words[first][0]), 3))
+        end = min(cue.end, round(cue.start + float(words[last][1]), 3))
+        out.append(Cue(cue.scene_id, start, max(end, start + 0.001),
+                       "\n".join(" ".join(words[j][2] for j in line) for line in page)))
+    return out
+
+
+def caption_pages(cues: list[Cue], max_chars: int = 42, max_lines: int = 2,
+                  words: dict[str, list[Word]] | None = None) -> list[Cue]:
+    """Readable caption pages. With provider word timestamps (`words[scene_id]`, same tokens as the narration) pages
+    follow the real speech; otherwise timings are proportional estimates, NOT word alignment.
 
     Keep every word inside its measured narration interval. No ASR/model/API call.
-    Use provider word timestamps for karaoke or phoneme-accurate highlighting.
     """
     if max_chars < 1 or max_lines < 1:
         raise ValueError("caption limits must be positive")
@@ -80,6 +104,10 @@ def caption_pages(cues: list[Cue], max_chars: int = 42, max_lines: int = 2) -> l
         text = " ".join(cue.text.split())
         duration = cue.end - cue.start
         if not text or duration <= 0:
+            continue
+        timed = (words or {}).get(cue.scene_id)
+        if timed and [str(w[2]) for w in timed] == text.split():
+            out += _word_pages(cue, timed, max_chars, max_lines)
             continue
         lines = textwrap.wrap(text, width=max_chars, break_on_hyphens=False)
         chunks = ["\n".join(lines[i:i + max_lines]) for i in range(0, len(lines), max_lines)]

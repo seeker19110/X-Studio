@@ -8,11 +8,12 @@
 # dịch voice_id sang giọng của provider đang dùng; `pace` tự map sang tham số tốc độ của từng provider.
 
 tts:
-  provider: openai          # openai | gemini | elevenlabs | azure | google | command | fake
+  provider: openai          # openai | gemini | elevenlabs | azure | google | edge | command | fake
   # --- openai: POST {base_url}/audio/speech — OpenAI hoặc mọi server tương thích
   base_url: https://api.openai.com/v1
   model: gpt-4o-mini-tts
-  voice: alloy              # dùng khi manifest không có voice_id (hoặc id không có trong `voices`)
+  voice: alloy              # dùng khi manifest không có voice_id (hoặc id không có trong `voices`); marin, cedar là
+                            # giọng OpenAI khuyên dùng (10/2026); OpenAI yêu cầu báo người nghe đây là giọng AI
   # price_per_1k_chars: 0.0   # sổ chi phí media (ADR-0016): USD / 1000 ký tự đọc, điền theo bảng giá hiện hành của
   #                           # provider; chỉ lượt gọi thật (cache trượt) bị tính; bỏ trống = không tính, `fake` luôn 0
   # instructions: "Giọng kể chuyện tiếng Việt tự nhiên, ấm, không đọc như máy"   # model hỗ trợ (gpt-4o-mini-tts)
@@ -25,7 +26,7 @@ tts:
   # voice: Kore                               # Kore, Puck, Charon, Zephyr, Aoede, Leda… hoặc id `voice_…` giọng tự thiết kế
   # style: "warm, natural Vietnamese storyteller"   # đi trong speech_metadata.style (3.8 đọc `text` NGUYÊN VĂN, không nối
   #                                           # câu dẫn vào text); pace slow/fast của manifest tự thêm vào style
-  # price_per_1k_chars: 0.0                   # Gemini tính theo token audio (25 token/giây): quy đổi theo tốc độ đọc của kênh
+  # price_per_second: 0.0                     # Gemini tính theo token audio (25 token/giây): khai USD/giây audio, sổ ghi theo thời lượng thật
   #
   # --- elevenlabs: id giọng riêng của ElevenLabs — bắt buộc `voice` hoặc bảng `voices`. Key: ELEVENLABS_API_KEY
   #     TIẾNG VIỆT: eleven_flash_v2_5 (mặc định, rẻ), eleven_v3, eleven_v4 có; eleven_multilingual_v2 KHÔNG có (docs 14/10/2026).
@@ -34,6 +35,12 @@ tts:
   # voice: <voice_id>
   # voice_settings: {stability: 0.5, similarity_boost: 0.75}
   # output_format: mp3_44100_128
+  # timestamps: true                         # /with-timestamps: mốc từng từ → phụ đề theo lời đọc thật (giá như thường)
+  #
+  # --- edge: giọng Microsoft Edge qua thư viện edge-tts (đã cài sẵn), miễn phí, không cần key, có tiếng Việt và mốc
+  #     từng từ cho phụ đề. Không có SLA: Microsoft xoay token là vỡ (giữ edge-tts ≥ 7.3) — dùng thử/dự phòng.
+  # provider: edge
+  # voice: vi-VN-HoaiMyNeural                # hoặc vi-VN-NamMinhNeural; bảng `voices` như các provider khác
   #
   # --- azure: Azure AI Speech, giọng tiếng Việt vi-VN-HoaiMyNeural (nữ) / vi-VN-NamMinhNeural (nam). Key: AZURE_SPEECH_KEY
   # provider: azure
@@ -139,9 +146,9 @@ output_dir: output
 # api key dùng chung cho tts/image khi cùng nhà cung cấp: STUDIO_MEDIA_API_KEY; khác nhà cung cấp → `api_key_env` từng kênh ở trên
 
 # Sinh clip cho phim/hoạt hình, độc lập video.provider (bộ ghép FFmpeg).
-# Cấu hình ComfyUI workflow/bindings, command và Veo (thuê, ADR-0018): media.film.example.yaml.
+# Cấu hình ComfyUI workflow/bindings, command, Veo và Omni (thuê, ADR-0018): media.film.example.yaml.
 scene_video:
-  provider: none              # none | fake | comfyui | command | veo
+  provider: none              # none | fake | comfyui | command | veo | omni
   # price_per_second: 0.0     # USD mỗi giây clip được sinh (ComfyUI cục bộ: để trống; dịch vụ thuê GPU: tự quy đổi)
   duration_s: 5
   fps: 24

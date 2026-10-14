@@ -769,8 +769,14 @@ class Orchestrator:
                 meta.synthetic_media = decided
                 self._audit("synthetic_media.decided", {"video_id": vid, "synthetic_media": decided,
                                                         "production_type": m.cinema.production_type, "visual_mode": m.cinema.visual_mode}, video_id=vid)
+            paid = self.renderer.media.cfg.production.get("paid_product_placement")
+            if paid is not None and bool(paid) != meta.paid_product_placement:
+                meta.paid_product_placement = bool(paid)
+                self._audit("paid_product_placement.decided", {"video_id": vid, "paid_product_placement": bool(paid)},
+                            video_id=vid)
             if ([c.model_dump() for c in fixed] != [c.model_dump() for c in meta.chapters] or meta.description != latest["description"]
-                    or meta.synthetic_media != latest.get("synthetic_media")):
+                    or meta.synthetic_media != latest.get("synthetic_media")
+                    or meta.paid_product_placement != latest.get("paid_product_placement")):
                 meta.chapters = fixed
                 self._audit("chapters.snapped", {"video_id": vid, "chapters": [c.model_dump() for c in fixed]}, video_id=vid)
                 self.bus.publish(Envelope(topic="metadata-packages", key=vid, actor="chapters", payload=meta.model_dump()))
@@ -896,15 +902,20 @@ class Orchestrator:
                  f"captions:{cap}" if cap else "captions:(chưa có)",
                  # ADR-0018: người duyệt thấy cờ sẽ gửi lên nền tảng; chưa quyết thì nói thẳng là nền tảng sẽ tự xét.
                  f"synthetic_media:{meta['synthetic_media']}" if meta.get("synthetic_media") is not None
-                 else "synthetic_media:(chưa khai — người duyệt quyết; YouTube tự gắn nhãn AI nếu bỏ trống)"]
+                 else "synthetic_media:(chưa khai — người duyệt quyết; YouTube tự gắn nhãn AI nếu bỏ trống)",
+                 f"paid_product_placement:{meta['paid_product_placement']}" if meta.get("paid_product_placement") is not None
+                 else "paid_product_placement:(chưa khai — coi như không tài trợ; có tài trợ thì request_changes và đặt "
+                      "production.paid_product_placement)"]
         # Contact sheet (ADR-0016) chỉ đứng tên cho đúng phiên bản bản cuối; bản giả không có sheet nên không có dòng.
         sheet = next((a["path"] for a in reversed(_assets_of(self, vid)) if a["kind"] == "contact_sheet" and final
                       and a["manifest_version"] == final["manifest_version"]), None)
         if sheet: facts.append(f"contact_sheet:{sheet}")
         if media_cost.priced(cfg):  # chưa khai giá thì không có dòng: 0 USD bịa còn tệ hơn không nói gì
-            cap_usd = media_cost.budget(cfg)
-            facts.append(f"media_cost:{media_cost.spent(self.bus, vid):.4f} USD ước tính"
-                         + (f" / trần {cap_usd:g} USD" if cap_usd else ""))
+            cap_usd, used_usd = media_cost.budget(cfg), media_cost.spent(self.bus, vid)
+            facts.append(f"media_cost:{used_usd:.4f} USD ước tính"
+                         + (f" / trần {cap_usd:g} USD" if cap_usd else "")
+                         + (f" — đã dùng ≥ {round(media_cost.WARN_RATIO * 100)} % trần"
+                            if media_cost.near_cap(used_usd, cap_usd) else ""))
         qc = self.qcs[vid].checklist() if vid in self.qcs else []
         return [f"review:{s}:{r.verdict}" for s, r in sorted(self.desk.reviews[vid].items())] + rep.checklist() + qc + facts
 

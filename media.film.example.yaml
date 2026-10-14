@@ -1,7 +1,7 @@
 # Merge scene_video into media.yaml. Keep your existing TTS/image/platform configuration.
 # This profile does not install models or start ComfyUI.
 scene_video:
-  provider: none                 # none | fake (JSON simulation) | comfyui | command | veo (hosted, ADR-0018)
+  provider: none                 # none | fake (JSON simulation) | comfyui | command | veo | omni (hosted, ADR-0018)
   duration_s: 5                  # short shot cap; footage loops to fit narration
   fps: 24                       # generation fps; independent of final output fps
   resolution: 832x480            # automatically swapped for a 9:16 project
@@ -40,6 +40,18 @@ scene_video:
   # timeout_s: 900
   # poll_interval_s: 5
   # max_download_bytes: 268435456
+
+  # Gemini Omni through the Interactions API (ADR-0018): one synchronous call, file downloaded when ACTIVE.
+  # Omni takes no duration/seed/negative prompt: clip length is whatever the model returns (renderer loops/trims).
+  # provider: omni
+  # model: gemini-omni-1.1-flash
+  # api_key_env: GEMINI_API_KEY
+  # price_per_second: 0.10             # fill from the current Gemini API price list
+  # license: generated
+  # reference_images: [assets/hero.png]   # up to 3 → task reference_to_video
+  # resolution: 1280x720               # short side ≤360 → 360p, ≤720 → 720p, <2160 → 1080p, else 4k
+  # request_timeout_s: 600             # the generating call itself; keep long
+  # poll_interval_s: 5
 
   # Local program: UTF-8 JSON on stdin; write playable MP4 to {output}. No shell.
   # provider: command

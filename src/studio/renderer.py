@@ -174,6 +174,13 @@ class Renderer:
                                              lambda: self.media.tts.synthesize(s.narration, m.voice, p),
                                              scene_id=s.scene_id), force=force)
             s.asset_refs["scene_audio"] = str(r.path); s.duration_s = r.duration_s or s.duration_s
+            # Mốc từng từ của provider (nếu có) nằm cạnh audio cảnh để finalize dựng phụ đề theo lời đọc thật;
+            # provider/giọng đổi mà không còn mốc thì xoá bản cũ, không để phụ đề bám nhầm audio trước.
+            sidecar = d / f"{s.scene_id}.words.json"
+            if r.words:
+                sidecar.write_text(json.dumps([list(w) for w in r.words], ensure_ascii=False), encoding="utf-8")
+            else:
+                sidecar.unlink(missing_ok=True)
             out.append(self._asset(m.video_id, "scene_audio", r, m.version, s.scene_id, prompt_ref=f"{s.scene_id}:narration"))
         if image:
             if motion:
@@ -342,6 +349,20 @@ class Renderer:
                         transition=getattr(self.media.video, "transition_s", 0.0),
                         frame_rate=self._video_opts(m.aspect)[0] if getattr(self.media.video, "bounded", False) else None)
 
+    def _word_times(self, m: SceneManifest) -> dict[str, list[Any]]:
+        """Mốc từng từ đã lưu cạnh audio từng cảnh (`<cảnh>.words.json`); file hỏng/thiếu = cảnh đó chia theo tỷ lệ."""
+        out: dict[str, list[Any]] = {}
+        for s in m.scenes:
+            audio = s.asset_refs.get("scene_audio")
+            if not audio:
+                continue
+            try:
+                data = json.loads((Path(audio).parent / f"{s.scene_id}.words.json").read_text(encoding="utf-8"))
+                out[s.scene_id] = [(float(a), float(b), str(w)) for a, b, w in data]
+            except (OSError, ValueError, TypeError):
+                continue
+        return out
+
     def finalize(self, m: SceneManifest, order: list[str] | None = None) -> MediaAsset:
         """Bản cuối + phụ đề. Phụ đề sinh thẳng từ narration của manifest (đó chính là văn bản đã đọc) nên không cần
         nhận dạng giọng nói, và mốc thời gian khớp bản dựng vì cùng một công thức."""
@@ -361,12 +382,14 @@ class Renderer:
                 r = self.media.video.assemble(self._segments(m, order), pending_video, fps, res)
                 assets: list[MediaAsset] = []; moves: list[tuple[MediaAsset, Path]] = []
                 captions = None; music_path = None
+                words = self._word_times(m)
                 text = srt(caption_pages(self.cues(m, order),
-                                        max_chars=int(self.media.cfg.video.get("caption_max_chars", 42))))
+                                        max_chars=int(self.media.cfg.video.get("caption_max_chars", 42)), words=words))
                 if text:
                     captions = stage / f"captions_v{m.version}.srt"
                     captions.write_text(text, encoding="utf-8")
-                    cap = self._asset(m.video_id, "captions", MediaResult(captions, "studio", "srt-from-manifest"),
+                    cap = self._asset(m.video_id, "captions", MediaResult(
+                        captions, "studio", "srt-word-times" if words else "srt-from-manifest"),
                                       m.version, prompt_ref=f"manifest:v{m.version}")
                     assets.append(cap); moves.append((cap, directory / captions.name))
                 if music:

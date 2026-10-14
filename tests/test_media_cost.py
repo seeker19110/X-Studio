@@ -132,6 +132,8 @@ def test_publish_checklist_and_console_show_the_estimated_media_spend(tmp_path, 
         "actor": "renderer", "action": "media.cost", "video_id": "CH1-V1",
         "evidence": json.dumps({"channel": "image", "usd": 0.12, "units": 3})}))
     assert "media_cost:0.1200 USD ước tính / trần 2 USD" in o._publish_checklist("CH1-V1")
+    o.renderer.media.cfg.production["media_budget_usd"] = 0.15   # 0.12 / 0.15 = 80 % → người duyệt thấy cảnh báo
+    assert "media_cost:0.1200 USD ước tính / trần 0.15 USD — đã dùng ≥ 80 % trần" in o._publish_checklist("CH1-V1")
 
     from studio.factory import Factory
     monkeypatch.setenv("STUDIO_POLICY_KEY_FILE", str(tmp_path / "policy.key"))
@@ -148,7 +150,12 @@ def test_publish_checklist_and_console_show_the_estimated_media_spend(tmp_path, 
             "evidence": json.dumps({"channel": "image", "usd": 0.5, "units": 1})}))
         factory.refresh()
         project = factory.snapshot()["projects"][0]
-        assert project["media_cost"] == {"usd": 0.5, "budget_usd": 5.0, "priced": True}
+        assert project["media_cost"] == {"usd": 0.5, "budget_usd": 5.0, "priced": True, "warning": False}
+        factory.bus.publish(Envelope(topic="audit-log", key="renderer", actor="renderer", payload={
+            "actor": "renderer", "action": "media.cost", "video_id": "V1",
+            "evidence": json.dumps({"channel": "image", "usd": 3.5, "units": 1})}))
+        factory.refresh()
+        assert factory.snapshot()["projects"][0]["media_cost"]["warning"] is True
     finally:
         factory.close()
 
@@ -190,3 +197,23 @@ def test_ledger_warns_once_when_a_video_passes_80_percent_of_its_budget(tmp_path
     # không trần → không có ngưỡng
     r2 = _paid(tmp_path / "b"); r2.render(_manifest())
     assert not [e for e in r2.bus.replay("audit-log") if e.payload["action"] == "media.cost_warning"]
+
+
+def test_tts_can_be_priced_per_second_of_audio(tmp_path):
+    """Gemini TTS tính theo token audio (25 token/giây) → `tts.price_per_second`: trần kiểm bằng ước lượng
+    (ký tự / 15 mỗi giây) TRƯỚC lượt gọi, sổ ghi theo thời lượng audio THẬT sau lượt gọi; cộng với giá theo ký tự nếu có."""
+    cfg = MediaConfig(output_dir=tmp_path, tts={"provider": "gemini", "price_per_second": 0.01})
+    assert media_cost.priced(cfg) and media_cost.quote(cfg, "tts", 300) == pytest.approx(0.2)   # 300 ký tự ≈ 20 s
+    assert media_cost.quote(cfg, "tts", 300, seconds=12.5) == pytest.approx(0.125)
+    cfg.tts["price_per_1k_chars"] = 0.02
+    assert media_cost.quote(cfg, "tts", 300, seconds=10) == pytest.approx(0.006 + 0.1)
+    assert "price_per_second" not in media_cost.without_prices(cfg.tts)
+    rows: list = []
+    ledger = media_cost.Ledger(InMemoryBus(), cfg, lambda action, vid, data: rows.append((action, data)))
+    ledger.charge("V", "tts", 300, lambda: MediaResult(tmp_path / "a.wav", "gemini", "m", 10.0), scene_id="S1")
+    assert rows[0][1]["usd"] == pytest.approx(0.106) and rows[0][1]["seconds"] == 10.0
+    cfg.production["media_budget_usd"] = 0.15
+    with pytest.raises(MediaBudgetError):   # ước lượng 0.006 + 0.2 vượt phần còn lại trước khi gọi
+        ledger.charge("V", "tts", 300, lambda: (_ for _ in ()).throw(AssertionError("không được gọi provider")))
+    with pytest.raises(MediaError, match=r"tts\.price_per_second"):
+        media_cost.quote(MediaConfig(tts={"provider": "gemini", "price_per_second": -1}), "tts", 10)

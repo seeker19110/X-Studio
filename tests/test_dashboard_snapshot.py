@@ -68,7 +68,8 @@ def test_dashboard_snapshot_shows_latest_work_and_strips_private_fields_after_re
             "claims": [{**script["claims"][0], "credentials": "private"}]})
     metadata = {"video_id": "V1", "title": "Một tiêu đề rõ ràng", "description": "Mô tả có nguồn",
                 "tags": ["học hỏi"], "chapters": [{"time": "00:00", "label": "Bắt đầu"}],
-                "primary_keyword": "học hỏi", "language": "vi", "category": "Education", "alt_titles": ["Một góc nhìn khác"], "synthetic_media": None}
+                "primary_keyword": "học hỏi", "language": "vi", "category": "Education", "alt_titles": ["Một góc nhìn khác"], "synthetic_media": None,
+                "paid_product_placement": None}
     publish("metadata-packages", "seo-optimizer", {**metadata, "output_path": "/private/metadata.json",
             "chapters": [{**metadata["chapters"][0], "credentials": "private"}]})
     publication = {"video_id": "V1", "kind": "video", "status": "failed", "scheduled_at": None,

@@ -517,3 +517,47 @@ def test_thumbnail_batch_failure_preserves_published_variants_and_reuses_cache(t
     completed = renderer.thumbnails(spec)
     assert len(completed) == 2 and all(Path(a.path).is_file() for a in completed)
     assert renderer.media.image.generate.call_count == 0
+
+
+def test_word_times_from_tts_reach_the_captions_and_survive_the_cache(tmp_path):
+    """Provider có mốc từng từ → renderer ghi `<cảnh>.words.json` cạnh audio → phụ đề dùng mốc thật. Cache trúng vẫn
+    mang mốc (metadata cache lưu cả `words`)."""
+    from unittest.mock import Mock
+
+    from studio.media import MediaResult
+    r = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path)))
+    real = r.media.tts.synthesize
+
+    def timed(text, voice, out):
+        res = real(text, voice, out)
+        n = len(text.split())
+        return MediaResult(res.path, "fake", "fake-tts", res.duration_s,
+                           words=[(0.2 * i, 0.2 * i + 0.15, w) for i, w in enumerate(text.split())] if n else None)
+    r.media.tts.synthesize = Mock(side_effect=timed)
+    m = _manifest(); r.render(m)
+    sidecar = Path(m.scenes[0].asset_refs["scene_audio"]).parent / "S1.words.json"
+    assert json.loads(sidecar.read_text())[0] == [0.0, 0.15, "Câu"]
+    final = r.finalize(m)
+    captions = next(e.payload for e in r.bus.replay("media-assets", "V1") if e.payload["kind"] == "captions")
+    assert captions["provenance"]["generated_by"] == "studio:srt-word-times"
+    assert Path(captions["path"]).read_text(encoding="utf-8").startswith("1\n00:00:00,000 --> 00:00:0")
+    assert final.kind == "final_video"
+    # lần dựng sau trúng cache: không gọi TTS, mốc vẫn còn
+    r2 = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path)))
+    r2.media.tts.synthesize = Mock(side_effect=AssertionError("cache phải trúng"))
+    sidecar.unlink(); r2.render(_manifest())
+    assert sidecar.exists()
+    # provider không còn mốc (đổi provider) → sidecar cũ bị xoá, phụ đề quay về chia theo tỷ lệ
+    r3 = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path, tts={"provider": "fake", "speed": 1})))
+    r3.render(_manifest())
+    assert not sidecar.exists()
+
+
+def test_word_time_sidecars_that_are_missing_or_corrupt_fall_back_to_proportional_captions(tmp_path):
+    r = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path)))
+    m = _manifest(); r.render(m)
+    audio = Path(m.scenes[0].asset_refs["scene_audio"])
+    (audio.parent / "S1.words.json").write_text("{không phải json", encoding="utf-8")
+    (audio.parent / "S2.words.json").write_text('[[0, 1]]', encoding="utf-8")
+    assert r._word_times(m) == {}
+    assert r._word_times(_manifest()) == {}  # manifest chưa dựng: không có scene_audio
