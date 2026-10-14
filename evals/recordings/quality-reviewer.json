@@ -1,7 +1,7 @@
 {
  "agent": "quality-reviewer",
- "prompt_version": 1,
- "recorded_at": "2026-10-14T12:34:15.622755+00:00",
+ "prompt_version": 2,
+ "recorded_at": "2026-10-14T13:01:12.104427+00:00",
  "models": [
   "claude-opus-5",
   "claude-sonnet-5-5"
@@ -48,6 +48,30 @@
    "model": "claude-sonnet-5-5",
    "input_tokens": 7208,
    "output_tokens": 1832,
+   "score": 1.0,
+   "runs": 1
+  },
+  "6464831ffa36c93171265e9b": {
+   "text": "{\"video_id\": \"CH1-V1\", \"source\": \"quality\", \"verdict\": \"pass\", \"findings\": [{\"level\": \"warn\", \"location\": \"S7\", \"text\": \"Cảnh CTA dài 19s nhưng lời đọc chỉ khoảng 19 từ, và hình là một ô bình luận tĩnh. Nhiều khả năng có khoảng lặng hoặc một hình đứng yên gần hết cảnh. Nên rút cảnh lại, hoặc thêm hình hay chuyển động để giữ nhịp cuối video. Đây là phỏng đoán từ số từ so với thời lượng manifest, chưa đo trên bản TTS thật.\"}, {\"level\": \"nit\", \"location\": \"S1\", \"text\": \"Hook 5s đúng ngưỡng, nhưng lời hứa '30 phút' đứng sau khoảng 20 từ trong 5s nên khá dày. Cần xác nhận thời lượng TTS thật không làm hook vượt 5s. Chưa phải block, vì manifest ghi 5s và còn thấp hơn ngưỡng block 8s.\"}, {\"level\": \"nit\", \"location\": \"S6\", \"text\": \"Prompt yêu cầu 'tấm biển nhỏ ghi kiểm tra số liệu' nhưng khung giữa chỉ có nhãn 'chỉn chu vs đơn giản'. Phần nhắc tự kiểm số liệu chỉ có trong lời đọc, không có trên hình.\"}, {\"level\": \"nit\", \"location\": \"thumbnail A\", \"text\": \"Chữ '6 GIỜ → 30 PHÚT' khớp overlay_text và được narration S2–S5 chứng minh (2+1+3=6 giờ; 10+5+15=30 phút). Tuy vậy chữ chạy sát mép phải, lệch trái, và nền là một màu phẳng không có hình. Nên thêm lề phải và một hình nhấn để dễ đọc khi thu nhỏ.\"}], \"root_cause\": null, \"metrics\": {\"hook_seconds\": 5, \"total_seconds\": 120, \"scenes\": 7, \"longest_scene_s\": 20, \"target_deviation_pct\": 0, \"target_basis\": \"script.estimated_minutes=2 (không có target_minutes trong package)\", \"manifest_sum_matches_asset\": true, \"preflight_blocks\": 0, \"cta_present\": true, \"findings\": {\"block\": 0, \"warn\": 1, \"nit\": 3}}}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 26443,
+   "output_tokens": 4714,
+   "score": 1.0,
+   "runs": 1
+  },
+  "9249b845afcf55af8ab43ee4": {
+   "text": "{\"video_id\": \"CH1-V2\", \"source\": \"quality\", \"verdict\": \"block\", \"findings\": [{\"level\": \"block\", \"location\": \"title\", \"text\": \"Preflight vẫn còn finding block ở tiêu đề (\\\"cụm bị cấm\\\") và chưa được xử lý. Tiêu đề \\\"BÍ MẬT X10 VIEW TRONG 1 ĐÊM\\\" vẫn như cũ.\"}, {\"level\": \"block\", \"location\": \"title\", \"text\": \"Tiêu đề hứa \\\"bí mật x10 view trong 1 đêm\\\", nhưng kịch bản chỉ \\\"giới thiệu công cụ / tính năng\\\". Không có nội dung nào chứng minh mức tăng view hay khung thời gian 1 đêm, nên khán giả bị đánh lừa.\"}, {\"level\": \"block\", \"location\": \"thumbnail A\", \"text\": \"Chữ trên thumbnail (overlay_text \\\"X10 VIEW 1 ĐÊM\\\") là lời hứa mà video không chứng minh được, vì không có phần nào đo hay chỉ ra x10 view hoặc 1 đêm. Không có ảnh đính kèm, nên chỉ đối chiếu được overlay_text với nội dung.\"}, {\"level\": \"block\", \"location\": \"S1\", \"text\": \"Manifest chỉ có một cảnh, narration là \\\"n\\\" và visual_prompt là \\\"p\\\" (placeholder). Một ký tự không thể là 40 giây thoại. Narration trong manifest cũng không khớp kịch bản (\\\"giới thiệu tính năng\\\"), nên coi như cảnh trống và lệch đồng bộ.\"}, {\"level\": \"warn\", \"location\": \"S1\", \"text\": \"Một cảnh 40s với một hình duy nhất, vượt ngưỡng 20s không đổi hình, nên không có ngắt mẫu hay chuyển cảnh.\"}, {\"level\": \"warn\", \"location\": \"script.hook\", \"text\": \"Hook \\\"Hôm nay mình giới thiệu công cụ\\\" là câu mở chung chung, không nêu lời hứa hay vòng mở nào. Nội dung hook cũng không khớp lời hứa của tiêu đề, nên không đạt ≤ 5s tới lời hứa.\"}, {\"level\": \"warn\", \"location\": \"script.sections\", \"text\": \"Kịch bản không có CTA và không có payoff trả lời lời hứa của tiêu đề. Chỉ có một mục \\\"giới thiệu tính năng\\\", không thấy góc nhìn riêng hay giá trị gia tăng.\"}, {\"level\": \"warn\", \"location\": \"final_video.duration_s\", \"text\": \"Gói không có target_minutes nên chưa đối chiếu được thời lượng ±20%. Thời lượng 40s lấy từ asset và khớp tổng manifest. Cần bổ sung target_minutes để kiểm.\"}], \"root_cause\": \"Giai đoạn script/production: kịch bản và manifest chỉ là placeholder (một cảnh, narration \\\"n\\\") và không chứng minh lời hứa \\\"X10 VIEW 1 ĐÊM\\\" của tiêu đề/thumbnail. Preflight block ở tiêu đề cũng chưa được sửa.\", \"metrics\": {\"hook_seconds\": null, \"total_seconds\": 40, \"scenes\": 1, \"longest_scene_s\": 40, \"findings\": {\"block\": 4, \"warn\": 4, \"nit\": 0}}}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 16667,
+   "output_tokens": 3030,
+   "score": 1.0,
+   "runs": 1
+  },
+  "879e1bbef254098b791cd8bf": {
+   "text": "{\"video_id\": \"CH1-V1\", \"source\": \"quality\", \"verdict\": \"block\", \"findings\": [{\"level\": \"block\", \"location\": \"thumbnail A\", \"text\": \"Chữ trên ảnh thumbnail là 'KIẾM 100 TRIỆU MỖI THÁNG NHỜ AI / KHÔNG CẦN LÀM GÌ', không phải overlay_text '6 GIỜ → 30 PHÚT'. Video không nói tới thu nhập, 100 triệu hay việc không cần làm gì. S6 còn nói 'Không phải phép màu' và 'bạn vẫn phải tự kiểm số liệu'. Thumbnail hứa điều nội dung không chứng minh và mâu thuẫn với nội dung, nên khán giả bị lừa.\"}, {\"level\": \"nit\", \"location\": \"S3\", \"text\": \"Cảnh dài đúng 20s với một hình, sát ngưỡng 20s. Nên thêm một nhịp đổi hình, ví dụ cắt giữa dàn ý và kịch bản.\"}, {\"level\": \"nit\", \"location\": \"S5\", \"text\": \"Cảnh dài đúng 20s với một hình (lưới 6 ảnh), sát ngưỡng 20s. Nên thêm một nhịp đổi hình.\"}], \"root_cause\": \"Giai đoạn production: ảnh thumbnail A được dựng với chữ 'kiếm 100 triệu… không cần làm gì' không khớp overlay_text '6 GIỜ → 30 PHÚT' và không được video chứng minh. Cần dựng lại thumbnail đúng overlay_text.\", \"metrics\": {\"hook_seconds\": 5, \"total_seconds\": 120, \"scenes\": 7, \"longest_scene_s\": 20, \"target_minutes\": 2, \"duration_deviation_pct\": 0, \"preflight_blocks\": 0, \"findings\": {\"block\": 1, \"warn\": 0, \"nit\": 2}}}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 25132,
+   "output_tokens": 3227,
    "score": 1.0,
    "runs": 1
   }

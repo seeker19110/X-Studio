@@ -133,6 +133,9 @@ sinh ra. Đề xuất hai lớp, giữ nguyên tắc code hành động:
   block, OpenAI `image_url` base64); agent khai `inputs: [images]` trong front matter; runner gắn ảnh cảnh thu nhỏ (≤ 512 px)
   cho editor / quality-reviewer / rights-checker; provider `claude-code` đọc file ảnh qua tool. Eval ghi/phát lại lưu hash
   ảnh thay nội dung. Editor có thể lên tier `strong` khi có ảnh (chi phí thấp ở 512 px).
+  **ĐÃ LÀM 2026-10-14 (ADR-0020):** `attachments` trong `ModelClient` (Anthropic, OpenAI, `claude-code` qua
+  stream-json), `inputs` trong front matter, lưới ảnh cảnh có nhãn, contact sheet và thumbnail cho ba reviewer,
+  eval băm file nguồn; mỗi reviewer có một ca chỉ đúng khi nhìn ảnh, ghi bằng model thật.
 
 **C2. Người duyệt gate publish phải mở file tay.** `gates/checklists.md` yêu cầu "đã xem bản cuối `output/<video>/final_v<n>.mp4`";
 console không xem được bản nháp/final (README "chưa có giao diện web xem bản nháp"). Đề xuất: console phục vụ `output/`

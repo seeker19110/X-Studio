@@ -42,7 +42,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from .llm import Completion, LLMError, ModelClient, Refused, TransientError
+from .llm import Attachment, Completion, LLMError, ModelClient, Refused, TransientError
 from .tools import ToolSpec
 
 __all__ = [
@@ -117,6 +117,7 @@ class Backend:
     name: str
     client: ModelClient
     supports_tools: bool = True
+    supports_images: bool = True   # studio ADR-0020: codex không nhận ảnh đính kèm
     tiers: frozenset[str] = frozenset()
     cooldown_until: float = 0.0
     cooldown_reason: str = ""
@@ -159,10 +160,10 @@ class RoutingClient:
                 raise LLMError(f"routing.prefer[{tier}] = `{name}` không có trong backends {names}")
 
     # ---- thứ tự thử ----
-    def order(self, tier: str, needs_tools: bool) -> list[Backend]:
+    def order(self, tier: str, needs_tools: bool, needs_images: bool = False) -> list[Backend]:
         first = self.prefer.get(tier)
         ordered = sorted(self.backends, key=lambda b: 0 if b.name == first else 1)   # sort ổn định: giữ thứ tự khai báo
-        return [b for b in ordered if b.supports_tools or not needs_tools]
+        return [b for b in ordered if (b.supports_tools or not needs_tools) and (b.supports_images or not needs_images)]
 
     # ---- trạng thái cho CLI/report ----
     def status(self) -> list[dict[str, Any]]:
@@ -204,9 +205,12 @@ class RoutingClient:
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
-        candidates = self.order(model_tier, bool(tools))
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None,
+                 attachments: list[Attachment] | None = None) -> Completion:
+        candidates = self.order(model_tier, bool(tools), bool(attachments))
         if not candidates:
+            if attachments and self.order(model_tier, bool(tools)):
+                raise LLMError("routing: yêu cầu có ảnh đính kèm nhưng không backend nào nhận ảnh")
             raise LLMError("routing: yêu cầu có tool nhưng không backend nào hỗ trợ tool-use")
         tried = 0
         for b in candidates:
@@ -216,7 +220,8 @@ class RoutingClient:
             b.calls += 1
             try:
                 c = b.client.complete(system=system, user=user, schema=schema, model_tier=model_tier,
-                                      cache_key=cache_key, tools=tools, messages=messages, workdir=workdir)
+                                      cache_key=cache_key, tools=tools, messages=messages, workdir=workdir,
+                                      **({"attachments": attachments} if attachments else {}))
             except Refused:
                 raise
             except TransientError as e:

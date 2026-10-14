@@ -178,6 +178,9 @@ def _with_package(e: Envelope, o: Orchestrator) -> dict[str, Any]:
                            "thumbnails": [a for a in _assets_of(o, vid) if a["kind"] == "thumbnail"],
                            "final_video": next((a for a in reversed(_assets_of(o, vid)) if a["kind"] == "final_video"), None),
                            "captions": next((a for a in reversed(_assets_of(o, vid)) if a["kind"] == "captions"), None),
+                           # ADR-0020: một khung giữa mỗi cảnh của BẢN CUỐI — quality-reviewer khai `inputs: [contact_sheet]`
+                           # nên runner gửi ảnh này cho model nhìn (sau phụ đề/nhạc/ghép, thứ JSON không cho thấy)
+                           "contact_sheet": next((a for a in reversed(_assets_of(o, vid)) if a["kind"] == "contact_sheet"), None),
                            "preflight": [f.model_dump() for f in o.preflights.get(vid, PreflightReport()).findings],
                            # QC đo trên FILE thật: quality-reviewer chỉ đọc JSON nên đây là mắt và tai của nó
                            "qc": o.qcs[vid].as_dict() if vid in o.qcs else None}

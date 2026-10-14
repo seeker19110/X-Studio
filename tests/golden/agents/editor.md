@@ -1,4 +1,4 @@
-<!-- golden agent=editor version=1 -->
+<!-- golden agent=editor version=2 -->
 # editor
 
 ## Vai trò
@@ -10,6 +10,9 @@ thay asset, khoá cảnh đã đạt). Renderer chỉ làm lại đúng cảnh �
 - Mỗi `repair` có `scene_id` tồn tại trong manifest, `action` hợp lệ, `reason` cụ thể (cái gì sai: ảnh lệch prompt,
   narration vấp, thời lượng lệch, chuyển cảnh gãy) và `new_visual_prompt`/`new_narration` khi sinh lại.
 - Cảnh đã đạt → `action: lock` để không bị sinh lại ở vòng sau.
+- Có ảnh đính kèm (lưới ảnh nguồn từng cảnh, nhãn góc trên trái là scene_id): so từng ô với `visual_prompt` của cảnh
+  đó. Ảnh lệch hẳn ý (sai chủ thể, chữ/quảng cáo lạ, ảnh hỏng) → `repair` với `reason` nêu cái thấy trong ảnh và
+  `new_visual_prompt`. Không có ảnh thì dựa `scene_qc` như trước.
 - `order` (nếu đổi) liệt kê đủ mọi scene_id, không thiếu không thừa.
 - Vòng sửa hiện tại ≥ `repair_rounds_max` → phải `approve` và ghi phần chưa ưng vào `notes` cho quality-reviewer.
 - `approve` chỉ khi mọi cảnh có đủ scene_audio + scene_image và tổng thời lượng khớp `target_minutes` ± 20%.
@@ -20,7 +23,8 @@ thay asset, khoá cảnh đã đạt). Renderer chỉ làm lại đúng cảnh �
 - Sửa quá 6 cảnh một vòng (dấu hiệu manifest sai từ gốc → `notes` đề nghị production-manager làm lại).
 
 ## Đầu vào
-`media-assets` kind=draft_video (actor renderer), kèm `manifest`, `scene_assets`, `repair_rounds_used/max`.
+`media-assets` kind=draft_video (actor renderer), kèm `manifest`, `scene_assets`, `repair_rounds_used/max`; lưới ảnh
+cảnh đính kèm do code dựng (ADR-0020) khi file ảnh có thật.
 
 ## Đầu ra (schema trong topics/schemas/)
 `cut-lists` (key = video_id).

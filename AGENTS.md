@@ -32,4 +32,4 @@ Chi tiết đầy đủ ở `CLAUDE.md` (bắt buộc đọc). Tệp này là b�
 
 ## Đọc thêm
 
-`ARCHITECTURE.md`, `CODEMAP.md`, `TRAPS.md`, `docs/adr/` (0001–0019), `gates/checklists.md`.
+`ARCHITECTURE.md`, `CODEMAP.md`, `TRAPS.md`, `docs/adr/` (0001–0020), `gates/checklists.md`.

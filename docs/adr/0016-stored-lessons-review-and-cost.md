@@ -61,7 +61,7 @@ Làm đúng ba ô "chưa có" đo được bằng code. Không đổi prompt age
 - `freezedetect` tốn thêm CPU trong lượt QC vốn đã giải mã cả video; ảnh một màu (ví dụ provider `fake`) với Ken Burns
   vẫn bị coi là đứng yên — đúng, vì người xem không thấy chuyển động.
 - Contact sheet chưa được gửi cho reviewer model (reviewer vẫn chỉ đọc văn bản, xem `DANH-GIA` §5 C1); nó là đầu vào
-  sẵn cho reviewer đa phương thức sau này.
+  sẵn cho reviewer đa phương thức sau này. Cập nhật: ADR-0020 gửi nó cho quality-reviewer.
 - Chưa làm từ kho: storyboard gate trước render, beat sync nhạc, safe-area/collision cho chữ phủ, cảnh báo 80% cho
   ngân sách media.
 

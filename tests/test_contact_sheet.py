@@ -198,3 +198,18 @@ def test_publish_checklist_shows_the_paid_product_placement_policy(tmp_path):
     assert bus.latest("metadata-packages", vid).payload["paid_product_placement"] is True
     assert "paid_product_placement:True" in o._publish_checklist(vid)
     assert any(e.payload["action"] == "paid_product_placement.decided" for e in bus.replay("audit-log"))
+
+
+def test_quality_package_carries_the_latest_contact_sheet_for_the_reviewer_to_see(tmp_path):
+    """ADR-0020: quality-reviewer khai `inputs: [contact_sheet, thumbnails]`; gói của nó phải mang contact sheet của
+    bản cuối để runner gom ảnh (trước đây sheet chỉ cho người duyệt xem)."""
+    from studio.events import Envelope
+    from studio.orchestrator import _with_package
+    from test_orchestrator import _to_publish_gate
+    bus, o = _to_publish_gate(tmp_path)
+    vid = "CH1-V1"
+    final = next(e for e in reversed(list(bus.replay("media-assets", vid))) if e.payload["kind"] == "final_video")
+    assert "contact_sheet" not in _with_package(final, o)["package"]
+    sheet = {**final.payload, "kind": "contact_sheet", "path": str(tmp_path / "contact_v1.jpg")}
+    bus.publish(Envelope(topic="media-assets", key=vid, actor="renderer", payload=sheet))
+    assert _with_package(final, o)["package"]["contact_sheet"]["path"] == sheet["path"]

@@ -1,9 +1,10 @@
 {
  "agent": "rights-checker",
- "prompt_version": 1,
- "recorded_at": "2026-09-02T15:26:58.168733+00:00",
+ "prompt_version": 2,
+ "recorded_at": "2026-10-14T13:00:19.305605+00:00",
  "models": [
-  "claude-opus-5"
+  "claude-opus-5",
+  "claude-sonnet-5-5"
  ],
  "cases": {
   "304ccc3f1a07f63c129a1b11": {
@@ -17,6 +18,30 @@
    "model": "claude-opus-5",
    "input_tokens": 4008,
    "output_tokens": 618
+  },
+  "9b79a8852086472d63529218": {
+   "text": "{\"payload\": {\"video_id\": \"CH1-V1\", \"source\": \"rights\", \"verdict\": \"pass\", \"findings\": [{\"level\": \"nit\", \"text\": \"Ảnh S1 đã được soi: chỉ có bàn gỗ, màn hình xanh, hộp xanh lá và vật thể oval trắng trên nền be. Không thấy logo, chữ thương hiệu, khuôn mặt người thật hay nhân vật có bản quyền.\", \"location\": \"S1\"}, {\"level\": \"nit\", \"text\": \"Không có ảnh thumbnail nào được đính kèm nên chưa soi thumbnail. Nếu có thumbnail thì cần kiểm riêng trước gate publish.\", \"location\": \"thumbnail\"}], \"root_cause\": null, \"metrics\": {\"assets_checked\": 3, \"assets_blocked\": 0, \"license_breakdown\": {\"generated\": 3, \"cc-by\": 0, \"licensed\": 0, \"owned\": 0, \"unknown\": 0}, \"uploaded_assets\": 0, \"third_party_music_footage\": 0, \"risk_tags\": [], \"quotes_over_15_words\": 0, \"images_inspected\": [\"S1\"], \"notes\": \"Chỉ soi ảnh cảnh S1. Chưa soi thumbnail vì không có ảnh đính kèm. Prompt_ref của asset là tham chiếu (S1:visual_prompt, S1:narration, manifest:v1), nội dung prompt chưa được cung cấp nên chưa kiểm được tên riêng trong prompt. Claim C1 (42%) thuộc phạm vi fact-checker, không đánh giá ở đây.\"}}, \"context_writes\": [{\"namespace\": \"rights\", \"content_ref\": \"rights/CH1-V1/provenance\", \"summary\": \"Sổ provenance CH1-V1: 3 asset, đều license=generated. S1 scene_image: openai:gpt-image-1 (prompt_ref S1:visual_prompt). S1 scene_audio: openai:gpt-4o-mini-tts (prompt_ref S1:narration). final_video: ffmpeg:libx264 (prompt_ref manifest:v1). Không có asset tải lên, nhạc hay footage bên thứ ba. Ảnh S1 sạch logo, mặt người và nhân vật. Chưa soi thumbnail.\"}]}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 17227,
+   "output_tokens": 1745,
+   "score": 1.0,
+   "runs": 1
+  },
+  "4db1a03ad07a4228bfb2a7e3": {
+   "text": "{\"payload\": {\"video_id\": \"CH1-V2\", \"source\": \"rights\", \"verdict\": \"block\", \"findings\": [{\"level\": \"block\", \"text\": \"Asset tải lên (human-upload) có license=unknown và không có source_url. Theo quy tắc, license unknown hoặc thiếu nguồn thì block, không ngoại lệ. Cần cung cấp source_url và license hợp lệ (cc-by|licensed|owned) hoặc thay asset.\", \"location\": \"S2/scene_image\"}, {\"level\": \"block\", \"text\": \"Prompt sinh ảnh chứa tên tác phẩm/nhân vật có bản quyền ('Totoro', 'phong cách Ghibli' – Studio Ghibli). Dù license ghi 'generated', không chấp nhận 'AI tạo nên không có bản quyền'. Rights chưa có license ghi nhận. Cần viết lại prompt không có tên riêng và sinh lại ảnh.\", \"location\": \"S3/scene_image\"}, {\"level\": \"block\", \"text\": \"Brief có risk_tags 'footage' nhưng không có provenance/license cho footage bên thứ ba nào, và asset final_video chỉ ghi generated_by 'ffmpeg:libx264' (công cụ ghép, không có license). Cần liệt kê rõ mọi footage dùng trong video cùng license. Nếu không có footage bên thứ ba, xác nhận lại trong brief/assets.\", \"location\": \"final_video\"}, {\"level\": \"warn\", \"text\": \"Danh sách assets không có asset nào cho giọng đọc, nhạc nền hay thumbnail và cũng không có cảnh S1. Chưa xác minh được provenance của các phần này. Cần bổ sung nếu video có dùng.\", \"location\": \"final_video\"}, {\"level\": \"nit\", \"text\": \"Chưa có ảnh đính kèm (lưới ảnh cảnh, thumbnail) nên chưa soi logo, chữ thương hiệu, khuôn mặt hay nhân vật trong ảnh. Kết luận chỉ dựa trên provenance và prompt.\"}], \"root_cause\": \"S2: ảnh tải lên license unknown, không có source_url. S3: prompt chứa tên tác phẩm/nhân vật có bản quyền (Totoro, Ghibli). Brief có risk_tag footage nhưng không có provenance footage.\", \"metrics\": {\"assets_checked\": 3, \"assets_passed\": 0, \"assets_blocked\": 3, \"images_inspected\": false, \"notes\": \"Chưa soi ảnh vì không có ảnh đính kèm; chỉ dựa trên provenance.\"}}, \"context_writes\": [{\"namespace\": \"rights\", \"content_ref\": \"rights/CH1-V2/provenance-ledger\", \"summary\": \"Sổ provenance CH1-V2 (3 asset): final_video ffmpeg:libx264 (không có license, chỉ là công cụ ghép); S2 human-upload license=unknown, không source_url → BLOCK; S3 openai:gpt-image-1 license=generated nhưng prompt chứa 'Totoro'/'Ghibli' → BLOCK. Brief risk_tag footage chưa có provenance footage. Chưa soi ảnh.\"}]}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 7440,
+   "output_tokens": 1148,
+   "score": 1.0,
+   "runs": 1
+  },
+  "1ccaf20f5b79905059808926": {
+   "text": "{\"payload\": {\"video_id\": \"CH1-V3\", \"source\": \"rights\", \"verdict\": \"block\", \"findings\": [{\"level\": \"block\", \"text\": \"Ảnh cảnh S2 hiển thị rõ logo/chữ thương hiệu \\\"Coca-Cola\\\" (kèm dòng \\\"Original Taste\\\") trên lon nước màu đỏ. Prompt_ref chỉ ghi \\\"lon nước ngọt mát lạnh trên bàn\\\" và provenance ghi generated, nhưng thương hiệu có chủ sở hữu xuất hiện trong ảnh. Trong sổ `rights` chưa có license cho thương hiệu này. Cần sinh lại cảnh với lon nước không nhãn/không thương hiệu (hoặc nhãn hư cấu), hoặc bổ sung license ghi nhận trong `rights`.\", \"location\": \"S2\"}, {\"level\": \"warn\", \"text\": \"Provenance S2 ghi \\\"generated\\\" nhưng ảnh chứa thương hiệu thật, trong khi prompt_ref không nhắc đến thương hiệu. Có thể prompt thật khác prompt_ref hoặc provider vẽ ra thương hiệu. Cần đối chiếu prompt gốc.\", \"location\": \"S2\"}, {\"level\": \"nit\", \"text\": \"Lưới ảnh chỉ có S1 và S2. Ô thứ ba trống/đen, nên không có ảnh nào khác để soi. S1 (bàn làm việc, màn hình, đồ vật) không thấy logo, chữ thương hiệu, khuôn mặt hay nhân vật có bản quyền.\", \"location\": \"S1\"}], \"root_cause\": \"Ảnh cảnh S2 do model sinh ra có logo \\\"Coca-Cola\\\" dù prompt không nêu tên thương hiệu. Provenance trông hợp lệ nhưng nội dung ảnh vi phạm quyền thương hiệu, và chưa có license trong `rights`.\", \"metrics\": {\"assets_checked\": 3, \"assets_blocked\": 1, \"assets_unknown_license\": 0, \"images_inspected\": true, \"notes\": \"Đã soi lưới ảnh S1–S2; không có ảnh thumbnail đính kèm nên chưa soi thumbnail. Không có risk_tags và không có claims/trích dẫn để kiểm. Cả 3 asset đều có generated_by và license=generated hợp lệ. Cảnh S2 bị block do thương hiệu trong ảnh. Ghi sổ provenance S2 ở trạng thái blocked.\"}}, \"context_writes\": [{\"namespace\": \"rights\", \"content_ref\": \"rights/CH1-V3/provenance-ledger\", \"summary\": \"Sổ provenance CH1-V3: 3 asset. S1 openai:gpt-image-1 (generated) sạch. S2 openai:gpt-image-1 (generated) BLOCK vì ảnh có logo Coca-Cola, chưa có license thương hiệu. final_video ffmpeg:libx264 (generated), prompt_ref manifest:v1. Chưa soi thumbnail.\"}]}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 8136,
+   "output_tokens": 1119,
+   "score": 1.0,
+   "runs": 1
   }
  }
 }
