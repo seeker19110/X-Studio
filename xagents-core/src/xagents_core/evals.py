@@ -46,7 +46,7 @@ from typing import Any, Protocol
 
 import yaml
 
-from .llm import Completion, LLMError, ModelClient
+from .llm import Attachment, Completion, LLMError, ModelClient
 from .tools import ToolSpec
 
 __all__ = ["CaseResult", "EvalSuite", "RecordingClient", "ReplayClient", "ScoredOutcome", "Threshold",
@@ -55,8 +55,12 @@ __all__ = ["CaseResult", "EvalSuite", "RecordingClient", "ReplayClient", "Scored
 REQUIRED_NAME = "REQUIRED.txt"  # agent BẮT BUỘC có bản ghi tươi; thiếu hoặc lệch phiên bản prompt → CI đỏ
 
 
-def prompt_key(system: str, user: str) -> str:
-    return hashlib.sha256(json.dumps([system, user], ensure_ascii=False).encode("utf-8")).hexdigest()[:24]
+def prompt_key(system: str, user: str, attachments: list[Attachment] | None = None) -> str:
+    """Khoá của một lượt. Có ảnh (studio ADR-0020) thì thêm `sha256` FILE NGUỒN của từng ảnh, theo thứ tự; không ảnh
+    thì khoá y hệt trước — mọi bản ghi cũ vẫn khớp."""
+    parts: list[Any] = [system, user]
+    if attachments: parts.append([a.sha256 for a in attachments])
+    return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode("utf-8")).hexdigest()[:24]
 
 
 def _get(d: Any, dotted: str) -> Any:
@@ -124,8 +128,9 @@ class _Probe:
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
-        self.key = prompt_key(system, user)
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None,
+                 attachments: list[Attachment] | None = None) -> Completion:
+        self.key = prompt_key(system, user, attachments)
         raise LLMError("probe")
 
 
@@ -150,11 +155,13 @@ class RecordingClient:
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None,
+                 attachments: list[Attachment] | None = None) -> Completion:
         c = self.inner.complete(system=system, user=user, schema=schema, model_tier=model_tier, cache_key=cache_key,
-                                tools=tools, messages=messages, workdir=workdir)
+                                tools=tools, messages=messages, workdir=workdir,
+                                **({"attachments": attachments} if attachments else {}))
         if not c.tool_calls:  # chỉ lưu câu trả lời cuối; lượt gọi tool không ghi (phát lại bỏ qua tool)
-            k = prompt_key(system, user)
+            k = prompt_key(system, user, attachments)
             self.entries[k] = {"text": c.text, "model": c.model, "input_tokens": c.input_tokens,
                                "output_tokens": c.output_tokens}
             self._case_keys.add(k)
@@ -213,8 +220,9 @@ class ReplayClient:
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
-        e = self.data["cases"].get(prompt_key(system, user))
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None,
+                 attachments: list[Attachment] | None = None) -> Completion:
+        e = self.data["cases"].get(prompt_key(system, user, attachments))
         if e is None:
             raise LLMError(f"bản ghi eval của {self.agent_id} lệch prompt hiện tại (prompt/skill/ca eval đã đổi): "
                            f"chạy `make eval-record AGENT={self.agent_id}` với model thật rồi commit bản ghi")

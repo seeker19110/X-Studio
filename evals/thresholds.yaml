@@ -23,7 +23,7 @@ community-manager:
   cases: 2
 editor:
   min_pass_ratio: 0.95
-  cases: 2
+  cases: 3
 fact-checker:
   min_pass_ratio: 0.95
   cases: 2
@@ -35,10 +35,10 @@ publisher:
   cases: 2
 quality-reviewer:
   min_pass_ratio: 0.95
-  cases: 2
+  cases: 3
 rights-checker:
   min_pass_ratio: 0.95
-  cases: 2
+  cases: 3
 script-writer:
   min_pass_ratio: 0.95
   cases: 2

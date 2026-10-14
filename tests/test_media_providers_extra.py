@@ -4,12 +4,13 @@ tỷ lệ khung, khóa API theo kênh, đo thời lượng audio từ file."""
 from __future__ import annotations
 
 import base64
+import io
 import json
 import shlex
 import sys
 import wave
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -17,6 +18,7 @@ from studio import media
 from studio.media import (
     AzureTTS,
     CommandTTS,
+    EdgeTTS,
     ElevenLabsTTS,
     GeminiImage,
     GeminiTTS,
@@ -164,7 +166,7 @@ def test_gemini_tts_pcm_to_wav_measures_duration(tmp_path, monkeypatch):
     resp = {"candidates": [{"content": {"parts": [{"inlineData": {"mimeType": "audio/L16;codec=pcm;rate=24000",
                                                                   "data": base64.b64encode(pcm).decode()}}]}}]}
     calls = _capture(monkeypatch, [json.dumps(resp).encode()])
-    cfg = MediaConfig(tts={"provider": "gemini", "api_key": "gk", "style": "Giọng kể chuyện ấm"})
+    cfg = MediaConfig(tts={"provider": "gemini", "api_key": "gk", "style": "Giọng kể chuyện ấm", "model": "gemini-2.5-flash-preview-tts"})
     r = GeminiTTS(cfg).synthesize("Xin chào Việt Nam", {"voice_id": "Puck", "pace": "slow"}, tmp_path / "S1.wav")
     assert r.provider == "gemini" and r.model == "gemini-2.5-flash-preview-tts" and r.duration_s == 1.0
     with wave.open(str(r.path), "rb") as w:
@@ -180,10 +182,52 @@ def test_gemini_tts_pcm_to_wav_measures_duration(tmp_path, monkeypatch):
 def test_gemini_tts_non_pcm_mime_and_missing_inline(tmp_path, monkeypatch):
     ok = {"candidates": [{"content": {"parts": [{"text": "…"}, {"inlineData": {"mimeType": "audio/mp3", "data": base64.b64encode(b"MP3").decode()}}]}}]}
     _capture(monkeypatch, [json.dumps(ok).encode(), json.dumps({"promptFeedback": {"blockReason": "SAFETY"}}).encode()])
-    tts = GeminiTTS(MediaConfig(tts={"provider": "gemini", "api_key": "gk"}))
+    tts = GeminiTTS(MediaConfig(tts={"provider": "gemini", "api_key": "gk", "model": "gemini-2.5-pro-preview-tts"}))
     r = tts.synthesize("một hai ba bốn năm", {}, tmp_path / "a.wav")
     assert r.path.suffix == ".mp3" and r.path.read_bytes() == b"MP3" and r.duration_s == 2.0
     with pytest.raises(MediaError, match=r"không có inlineData.*SAFETY"):
+        tts.synthesize("x", {}, tmp_path / "b.wav")
+
+
+def _wav_bytes(seconds: float, rate: int = 24000) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(b"\x01\x00" * int(seconds * rate))
+    return buf.getvalue()
+
+
+def test_gemini_tts_38_uses_interactions_api_and_keeps_text_verbatim(tmp_path, monkeypatch):
+    """Gemini 3.8 TTS (Interactions API): `text` là transcript đọc NGUYÊN VĂN — câu dẫn phong cách đi trong
+    speech_metadata, không bao giờ nối vào text (3.8 sẽ đọc nó thành tiếng). Unary trả WAV 24 kHz."""
+    resp = {"steps": [{"type": "model_output", "content": [{"type": "text", "text": "…"},
+                                                           {"type": "audio", "data": base64.b64encode(_wav_bytes(1.0)).decode()}]}]}
+    calls = _capture(monkeypatch, [json.dumps(resp).encode()])
+    cfg = MediaConfig(tts={"provider": "gemini", "api_key": "gk", "style": "warm storyteller"})
+    r = GeminiTTS(cfg).synthesize("Xin chào Việt Nam", {"voice_id": "Puck", "pace": "slow"}, tmp_path / "S1.wav")
+    assert r.provider == "gemini" and r.model == "gemini-3.8-flash-lite-tts" and r.duration_s == 1.0 and r.path.suffix == ".wav"
+    c = calls[0]
+    assert c["url"] == "https://generativelanguage.googleapis.com/v1beta/interactions" and c["headers"]["x-goog-api-key"] == "gk"
+    body = json.loads(c["body"])
+    assert body["model"] == "gemini-3.8-flash-lite-tts" and body["response_format"] == {"type": "audio"}
+    assert body["generation_config"] == {"speech_config": [{"voice": "Puck"}]}
+    block = body["input"][0]["content"][0]
+    assert body["input"][0]["type"] == "user_input" and block["type"] == "text" and block["text"] == "Xin chào Việt Nam"
+    assert block["annotations"] == [{"type": "speech_metadata", "style": "warm storyteller, speaking slowly and clearly"}]
+
+
+def test_gemini_tts_38_pcm_fallback_no_style_and_missing_audio(tmp_path, monkeypatch):
+    pcm = b"\x01\x00" * 12000  # 0,5 s PCM thô (streaming/l16) không có RIFF → bọc WAV
+    ok = {"steps": [{"type": "model_output", "content": [{"type": "audio", "data": base64.b64encode(pcm).decode()}]}]}
+    calls = _capture(monkeypatch, [json.dumps(ok).encode(), json.dumps({"steps": [{"type": "model_output", "content": []}],
+                                                                          "error": {"message": "SAFETY"}}).encode()])
+    tts = GeminiTTS(MediaConfig(tts={"provider": "gemini", "api_key": "gk", "model": "gemini-3.8-flash-tts"}))
+    r = tts.synthesize("một hai", {"pace": "medium"}, tmp_path / "a.wav")
+    assert r.duration_s == 0.5 and r.path.suffix == ".wav"
+    with wave.open(str(r.path), "rb") as w:
+        assert w.getframerate() == 24000 and w.getnframes() == 12000
+    block = json.loads(calls[0]["body"])["input"][0]["content"][0]
+    assert "annotations" not in block and json.loads(calls[0]["body"])["generation_config"] == {"speech_config": [{"voice": "Kore"}]}
+    with pytest.raises(MediaError, match=r"không có audio.*SAFETY"):
         tts.synthesize("x", {}, tmp_path / "b.wav")
 
 
@@ -197,8 +241,76 @@ def test_elevenlabs_tts_uses_provider_voice_id_and_speed(tmp_path, monkeypatch):
     body = json.loads(c["body"])
     assert body["model_id"] == "eleven_flash_v2_5" and body["voice_settings"]["speed"] == 1.1 and body["text"] == "xin chào"
     assert r.path.suffix == ".mp3" and r.provider == "elevenlabs"
+    default = ElevenLabsTTS(MediaConfig(tts={"provider": "elevenlabs", "api_key": "xi"}))
+    assert default.model == "eleven_flash_v2_5"  # eleven_multilingual_v2 KHÔNG có tiếng Việt (docs models, 14/10/2026)
     with pytest.raises(MediaError, match="cần voice_id"):
-        ElevenLabsTTS(MediaConfig(tts={"provider": "elevenlabs", "api_key": "xi"})).synthesize("x", {"voice_id": "alloy"}, tmp_path / "b.wav")
+        default.synthesize("x", {"voice_id": "alloy"}, tmp_path / "b.wav")
+
+
+def test_elevenlabs_timestamps_return_word_times(tmp_path, monkeypatch):
+    """`tts.timestamps: true` → /with-timestamps: audio base64 + mốc từng KÝ TỰ → gộp thành mốc từng từ."""
+    chars = list("xin  chào")
+    starts = [0.0, 0.1, 0.2, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7]
+    ends = [0.1, 0.2, 0.3, 0.35, 0.4, 0.5, 0.6, 0.7, 0.9]
+    payload = {"audio_base64": base64.b64encode(b"MP3").decode(),
+               "alignment": {"characters": chars, "character_start_times_seconds": starts, "character_end_times_seconds": ends}}
+    calls = _capture(monkeypatch, [json.dumps(payload).encode()])
+    cfg = MediaConfig(tts={"provider": "elevenlabs", "api_key": "xi", "voice": "abc123", "timestamps": True})
+    r = ElevenLabsTTS(cfg).synthesize("xin  chào", {"voice_id": "alloy"}, tmp_path / "a.wav")
+    assert calls[0]["url"] == "https://api.elevenlabs.io/v1/text-to-speech/abc123/with-timestamps?output_format=mp3_44100_128"
+    assert calls[0]["headers"]["accept"] == "application/json"
+    assert r.path.read_bytes() == b"MP3" and r.words == [(0.0, 0.3, "xin"), (0.4, 0.9, "chào")]
+    empty = {"characters": [], "character_start_times_seconds": [], "character_end_times_seconds": []}
+    for bad in ({"alignment": None}, {"audio_base64": "***"}, {"audio_base64": "", "alignment": empty}):
+        _capture(monkeypatch, [json.dumps(bad).encode()])
+        with pytest.raises(MediaError, match="with-timestamps"):
+            ElevenLabsTTS(cfg).synthesize("xin chào", {"voice_id": "alloy"}, tmp_path / "b.wav")
+    _capture(monkeypatch, [json.dumps({"audio_base64": base64.b64encode(b"MP3").decode(), "alignment": None}).encode()])
+    with pytest.raises(MediaError, match="with-timestamps"):
+        ElevenLabsTTS(cfg).synthesize("xin chào", {"voice_id": "alloy"}, tmp_path / "c.wav")
+
+
+class _Communicate:
+    """edge_tts.Communicate giả: không mạng; ghi lại tham số, phát audio + WordBoundary (đơn vị 100 ns)."""
+    seen: ClassVar[list[dict[str, Any]]] = []
+    chunks: ClassVar[list[dict[str, Any]]] = []
+
+    def __init__(self, text, voice, **kw):
+        type(self).seen.append({"text": text, "voice": voice, **kw})
+
+    async def stream(self):
+        for chunk in type(self).chunks:
+            yield chunk
+
+
+def test_edge_tts_native_returns_audio_and_word_times(tmp_path, monkeypatch):
+    import edge_tts
+    monkeypatch.setattr(edge_tts, "Communicate", _Communicate)
+    _Communicate.seen = []
+    _Communicate.chunks = [{"type": "audio", "data": b"ID3"}, {"type": "WordBoundary", "offset": 1_000_000, "duration": 2_000_000, "text": "Xin"},
+                           {"type": "audio", "data": b"MP3"}, {"type": "WordBoundary", "offset": 4_000_000, "duration": 3_000_000, "text": "chào"},
+                           {"type": "SentenceBoundary"}]
+    cfg = MediaConfig(tts={"provider": "edge", "voices": {"alloy": "vi-VN-NamMinhNeural"}})
+    tts = make_media(cfg).tts
+    assert isinstance(tts, EdgeTTS)
+    r = tts.synthesize("Xin chào", {"voice_id": "alloy", "pace": "slow"}, tmp_path / "a.wav")
+    assert r.path.suffix == ".mp3" and r.path.read_bytes() == b"ID3MP3" and r.provider == "edge"
+    assert r.words == [(0.1, 0.3, "Xin"), (0.4, 0.7, "chào")] and r.model == "vi-VN-NamMinhNeural"
+    assert _Communicate.seen[0] == {"text": "Xin chào", "voice": "vi-VN-NamMinhNeural", "rate": "-10%",
+                                    "boundary": "WordBoundary", "connect_timeout": 15, "receive_timeout": 60}
+    assert EdgeTTS(MediaConfig(tts={"provider": "edge"})).synthesize("x", {"voice_id": "alloy"}, tmp_path / "d.wav").model \
+        == "vi-VN-HoaiMyNeural"
+    _Communicate.chunks = [{"type": "WordBoundary", "offset": 0, "duration": 1, "text": "x"}]
+    with pytest.raises(MediaError, match="edge-tts"):
+        tts.synthesize("x", {"voice_id": "alloy"}, tmp_path / "b.wav")
+
+    class Broken(_Communicate):
+        async def stream(self):
+            raise OSError("403 Sec-MS-GEC")
+            yield  # pragma: no cover
+    monkeypatch.setattr(edge_tts, "Communicate", Broken)
+    with pytest.raises(MediaError, match=r"edge-tts.*403"):
+        tts.synthesize("x", {"voice_id": "alloy"}, tmp_path / "c.wav")
 
 
 def test_azure_tts_builds_ssml_with_voice_table_and_prosody(tmp_path, monkeypatch):
@@ -268,14 +380,17 @@ def test_gemini_image_generatecontent_png_and_jpeg(tmp_path, monkeypatch):
     calls = _capture(monkeypatch, [json.dumps(r1).encode(), json.dumps(r2).encode()])
     gen = GeminiImage(MediaConfig(image={"provider": "gemini", "api_key": "gk"}))
     a = gen.generate("bàn làm việc", "1792x1024", tmp_path / "S1.png")
-    assert a.path == tmp_path / "S1.png" and a.path.read_bytes() == png and a.model == "gemini-2.5-flash-image"
+    assert a.path == tmp_path / "S1.png" and a.path.read_bytes() == png and a.model == "gemini-3.1-flash-lite-image"
     body = json.loads(calls[0]["body"])
-    assert calls[0]["url"].endswith("/models/gemini-2.5-flash-image:generateContent") and calls[0]["headers"]["x-goog-api-key"] == "gk"
+    assert calls[0]["url"].endswith("/models/gemini-3.1-flash-lite-image:generateContent") and calls[0]["headers"]["x-goog-api-key"] == "gk"
     assert body["generationConfig"] == {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": "16:9"}}
     assert body["contents"][0]["parts"][0]["text"] == "bàn làm việc"
-    b = gen.generate("sơ đồ", "1024x1792", tmp_path / "S2.png")
-    assert b.path == tmp_path / "S2.jpg" and b.path.read_bytes() == jpg
-    assert json.loads(calls[1]["body"])["generationConfig"]["imageConfig"]["aspectRatio"] == "9:16"
+    gen2 = GeminiImage(MediaConfig(image={"provider": "gemini", "api_key": "gk", "model": "gemini-nano-banana-2.1", "image_size": "2k"}))
+    b = gen2.generate("sơ đồ", "1024x1792", tmp_path / "S2.png")
+    assert b.path == tmp_path / "S2.jpg" and b.path.read_bytes() == jpg and b.model == "gemini-nano-banana-2.1"
+    assert json.loads(calls[1]["body"])["generationConfig"]["imageConfig"] == {"aspectRatio": "9:16", "imageSize": "2K"}
+    with pytest.raises(MediaError, match="image_size"):
+        GeminiImage(MediaConfig(image={"provider": "gemini", "api_key": "gk", "image_size": "8K"}))
 
 
 def test_gemini_image_imagen_predict_and_errors(tmp_path, monkeypatch):
@@ -397,3 +512,16 @@ def test_command_image_requires_explicit_command():
     from studio.media import CommandImage
     with pytest.raises(MediaError, match=r"image\.command"):
         CommandImage(MediaConfig(image={"provider": "command"}))
+
+
+def test_gpt_image_2_accepts_custom_sizes_within_the_api_rules():
+    """gpt-image-2.x nhận WIDTHxHEIGHT tuỳ ý (bội 16, tỷ lệ 1:3…3:1, cạnh ≤ 3840): 16:9 thật thay vì cắt 1536x1024."""
+    from studio.media import image_size
+    cfg = MediaConfig(image={"provider": "openai", "model": "gpt-image-2.5-flare"})
+    assert image_size(cfg, "16:9") == "1920x1088" and image_size(cfg, "9:16") == "1088x1920"
+    assert image_size(cfg, "1:1") == "1024x1024"
+    cfg.image["size"] = "2560x1440"
+    assert image_size(cfg, "16:9") == "2560x1440"
+    for bad in ("1920x1080", "4096x2304", "3840x1024", "abc"):   # không bội 16 / quá 3840 / tỷ lệ > 3:1 / sai dạng
+        cfg.image["size"] = bad
+        assert image_size(cfg, "16:9") == "1920x1088"

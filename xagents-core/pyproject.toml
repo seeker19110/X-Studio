@@ -3,6 +3,7 @@ name = "xagents-core"
 version = "0.1.0"
 description = "Lõi chung của mọi công ty AI trong X-Agents: bus, llm, runner, guard, gate (ADR gốc 0001)"
 requires-python = ">=3.11"
+license = "Apache-2.0"
 # Chỉ phụ thuộc thứ mà CẢ HAI công ty đã dùng. Core không biết tên công ty nào (ADR-0001 §2).
 dependencies = [
     "jsonschema>=4.21",

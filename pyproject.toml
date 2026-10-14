@@ -3,6 +3,7 @@ name = "video-creators"
 version = "0.1.0"
 description = "Phòng ban sáng tạo video đa agent, event-driven, approval-first (7 khối, 14 agent + human gate)"
 requires-python = ">=3.11"
+license = "Apache-2.0"
 dependencies = [
     "pydantic>=2.6",
     "pyyaml>=6",

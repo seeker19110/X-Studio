@@ -3,6 +3,7 @@ name = "gateway"
 version = "0.1.0"
 description = "Proxy OpenAI-compatible xoay vòng tài khoản Google Antigravity (OAuth) cho các công ty AI trong X-Agents"
 requires-python = ">=3.11"
+license = "Apache-2.0"
 dependencies = [
     "aiohttp>=3.14.3,<4",
     "httpx>=0.28.1,<1",

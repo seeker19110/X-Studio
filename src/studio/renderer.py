@@ -26,7 +26,7 @@ from .media_cost import Ledger, without_prices
 from .motion import LAYOUT_VERSION, MotionSpec, render_motion, safe_bottom
 from .production import copy_asset, finish, selections
 from .render_cache import RenderCache, digest, fingerprint
-from .timeline import caption_pages, chapter_time, srt, timeline
+from .timeline import caption_pages, chapter_time, karaoke_ass, srt, timeline
 from .video_gen import validate_video_inputs
 
 ACTOR = "renderer"
@@ -174,6 +174,13 @@ class Renderer:
                                              lambda: self.media.tts.synthesize(s.narration, m.voice, p),
                                              scene_id=s.scene_id), force=force)
             s.asset_refs["scene_audio"] = str(r.path); s.duration_s = r.duration_s or s.duration_s
+            # Mốc từng từ của provider (nếu có) nằm cạnh audio cảnh để finalize dựng phụ đề theo lời đọc thật;
+            # provider/giọng đổi mà không còn mốc thì xoá bản cũ, không để phụ đề bám nhầm audio trước.
+            sidecar = d / f"{s.scene_id}.words.json"
+            if r.words:
+                sidecar.write_text(json.dumps([list(w) for w in r.words], ensure_ascii=False), encoding="utf-8")
+            else:
+                sidecar.unlink(missing_ok=True)
             out.append(self._asset(m.video_id, "scene_audio", r, m.version, s.scene_id, prompt_ref=f"{s.scene_id}:narration"))
         if image:
             if motion:
@@ -342,6 +349,20 @@ class Renderer:
                         transition=getattr(self.media.video, "transition_s", 0.0),
                         frame_rate=self._video_opts(m.aspect)[0] if getattr(self.media.video, "bounded", False) else None)
 
+    def _word_times(self, m: SceneManifest) -> dict[str, list[Any]]:
+        """Mốc từng từ đã lưu cạnh audio từng cảnh (`<cảnh>.words.json`); file hỏng/thiếu = cảnh đó chia theo tỷ lệ."""
+        out: dict[str, list[Any]] = {}
+        for s in m.scenes:
+            audio = s.asset_refs.get("scene_audio")
+            if not audio:
+                continue
+            try:
+                data = json.loads((Path(audio).parent / f"{s.scene_id}.words.json").read_text(encoding="utf-8"))
+                out[s.scene_id] = [(float(a), float(b), str(w)) for a, b, w in data]
+            except (OSError, ValueError, TypeError):
+                continue
+        return out
+
     def finalize(self, m: SceneManifest, order: list[str] | None = None) -> MediaAsset:
         """Bản cuối + phụ đề. Phụ đề sinh thẳng từ narration của manifest (đó chính là văn bản đã đọc) nên không cần
         nhận dạng giọng nói, và mốc thời gian khớp bản dựng vì cùng một công thức."""
@@ -361,12 +382,14 @@ class Renderer:
                 r = self.media.video.assemble(self._segments(m, order), pending_video, fps, res)
                 assets: list[MediaAsset] = []; moves: list[tuple[MediaAsset, Path]] = []
                 captions = None; music_path = None
+                words = self._word_times(m)
                 text = srt(caption_pages(self.cues(m, order),
-                                        max_chars=int(self.media.cfg.video.get("caption_max_chars", 42))))
+                                        max_chars=int(self.media.cfg.video.get("caption_max_chars", 42)), words=words))
                 if text:
                     captions = stage / f"captions_v{m.version}.srt"
                     captions.write_text(text, encoding="utf-8")
-                    cap = self._asset(m.video_id, "captions", MediaResult(captions, "studio", "srt-from-manifest"),
+                    cap = self._asset(m.video_id, "captions", MediaResult(
+                        captions, "studio", "srt-word-times" if words else "srt-from-manifest"),
                                       m.version, prompt_ref=f"manifest:v{m.version}")
                     assets.append(cap); moves.append((cap, directory / captions.name))
                 if music:
@@ -375,11 +398,21 @@ class Renderer:
                     ma.provenance = music.provenance()
                     assets.append(ma); moves.append((ma, directory / music_path.name))
                 burn = captions if self.media.cfg.video.get("burn_captions") else None
+                karaoke = None
+                if burn and words and self.media.cfg.video.get("karaoke"):
+                    # Đốt cứng ASS `\k` (từ đổi màu đúng lúc được đọc); SRT vẫn là phụ đề đăng nền tảng.
+                    karaoke = stage / f"captions_v{m.version}.ass"
+                    karaoke.write_text(karaoke_ass(self.cues(m, order), words, res,
+                                                   max_chars=int(self.media.cfg.video.get("caption_max_chars", 42))),
+                                       encoding="utf-8")
+                    burn = karaoke
                 # FakeVideo records references only; its JSON must point to durable filenames.
                 fake = isinstance(self.media.video, FakeVideo)
                 finish(self.media.video, r.path, directory / burn.name if burn and fake else burn,
                        directory / music_path.name if music_path and fake else music_path,
                        music.attribution if music else "", float(self.media.cfg.production.get("music_volume", 0.12)))
+                if karaoke:
+                    karaoke.replace(directory / karaoke.name)
                 sheet = self._contact_sheet(m, order, r.path, stage)
                 if sheet is not None:
                     assets.append(sheet); moves.append((sheet, directory / Path(sheet.path).name))

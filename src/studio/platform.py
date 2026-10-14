@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Protocol
 
 from .events import MetadataPackage, PerformanceSnapshot, RetentionPoint
-from .media import THUMBNAIL_MAX_BYTES, MediaConfig, load_media_config
+from .media import PLATFORM_THUMBNAIL_MAX_BYTES, MediaConfig, load_media_config
 
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 API_URL = "https://www.googleapis.com/youtube/v3"
@@ -85,6 +85,7 @@ class Comment:
     author: str = ""
     likes: int = 0
     published_at: str = ""
+    has_image: bool = False  # YouTube 11/2026 `snippet.imageUrl`; chỉ giữ cờ, ảnh/URL không vào bus (ADR-0007)
 
 
 def parse_ts(s: str | None) -> datetime | None:
@@ -156,8 +157,12 @@ class FakePlatform:
         self._check("upload_video", path=str(path), video_id=metadata.video_id, title=metadata.title, privacy=privacy, publish_at=publish_at)
         if not Path(path).exists(): raise PlatformError(f"không có file {path}")
         ref = f"fake-{len(self.videos) + 1:04d}"
-        self.videos[ref] = {"title": metadata.title, "privacy": privacy, "publish_at": publish_at, "thumbnail": None, "path": str(path)}
-        return UploadResult(ref, f"https://fake.video/{ref}", "scheduled" if publish_at else privacy, evidence=f"fake upload {ref} bytes={Path(path).stat().st_size}")
+        self.videos[ref] = {"title": metadata.title, "privacy": privacy, "publish_at": publish_at, "thumbnail": None, "path": str(path),
+                            "synthetic_media": metadata.synthetic_media,
+                            "paid_product_placement": metadata.paid_product_placement}
+        return UploadResult(ref, f"https://fake.video/{ref}", "scheduled" if publish_at else privacy,
+                            evidence=f"fake upload {ref} bytes={Path(path).stat().st_size} synthetic_media={metadata.synthetic_media} "
+                                     f"paid_product_placement={metadata.paid_product_placement}")
 
     def set_thumbnail(self, platform_ref: str, path: Path) -> str:
         self._check("set_thumbnail", platform_ref=platform_ref, path=str(path))
@@ -399,8 +404,14 @@ class YouTubePlatform:
             if metadata.category.isdigit(): snippet["categoryId"] = metadata.category
             status: dict[str, Any] = {"privacyStatus": "private" if publish_at else privacy, "selfDeclaredMadeForKids": made_for_kids}
             if publish_at: status["publishAt"] = publish_at
-            st1, rh, _ = self._call("POST", f"{UPLOAD_URL}?uploadType=resumable&part=snippet,status",
-                                    json.dumps({"snippet": snippet, "status": status}).encode(),
+            # ADR-0018: chỉ gửi khi đã quyết (code/người); bỏ trống thì YouTube tự xét và gắn nhãn (5/2026).
+            if metadata.synthetic_media is not None: status["containsSyntheticMedia"] = bool(metadata.synthetic_media)
+            body: dict[str, Any] = {"snippet": snippet, "status": status}
+            # Tài trợ trả tiền (7/2026) là part riêng; chỉ gửi khi kênh đã khai, bỏ trống = YouTube coi như không khai.
+            if metadata.paid_product_placement is not None:
+                body["paidProductPlacementDetails"] = {"hasPaidProductPlacement": bool(metadata.paid_product_placement)}
+            st1, rh, _ = self._call("POST", f"{UPLOAD_URL}?uploadType=resumable&part={','.join(body)}",
+                                    json.dumps(body).encode(),
                                     {"Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": "video/*",
                                      "X-Upload-Content-Length": str(size)})
             loc = rh.get("location")
@@ -416,11 +427,11 @@ class YouTubePlatform:
 
     def set_thumbnail(self, platform_ref: str, path: Path) -> str:
         path = Path(path); data = path.read_bytes()
-        # Giới hạn nền tảng: ảnh > 2 MB bị API từ chối. Bắt tại đây để evidence nói đúng nguyên nhân và người duyệt
-        # thấy ngay phải làm gì, thay vì đọc HTTP 400 của Google.
-        if len(data) > THUMBNAIL_MAX_BYTES:
+        # Giới hạn nền tảng (50 MB từ 14/9/2026; trước đó 2 MB — nay 2 MB chỉ là mục tiêu của renderer, QC warn). Bắt tại
+        # đây để evidence nói đúng nguyên nhân và người duyệt thấy ngay phải làm gì, thay vì đọc HTTP 400 của Google.
+        if len(data) > PLATFORM_THUMBNAIL_MAX_BYTES:
             raise PlatformError(f"thumbnail {path.name} nặng {len(data) / 1_000_000:.1f} MB, YouTube chỉ nhận "
-                                f"≤ {THUMBNAIL_MAX_BYTES // 1_000_000} MB (renderer nén lại, hoặc dùng file nhẹ hơn)")
+                                f"≤ {PLATFORM_THUMBNAIL_MAX_BYTES // 1_000_000} MB (renderer nén lại, hoặc dùng file nhẹ hơn)")
         ctype = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
         st, _, _ = self._call("POST", f"{UPLOAD_URL.replace('/videos', '/thumbnails/set')}?videoId={urllib.parse.quote(platform_ref)}&uploadType=media",
                                 data, {"Content-Type": ctype, "Content-Length": str(len(data))})
@@ -454,7 +465,8 @@ class YouTubePlatform:
             for it in d.get("items", []):
                 top = (it.get("snippet") or {}).get("topLevelComment") or {}; sn = top.get("snippet") or {}
                 c = Comment(top.get("id") or it.get("id", ""), sn.get("textOriginal") or sn.get("textDisplay", ""),
-                            sn.get("authorDisplayName", ""), int(sn.get("likeCount", 0) or 0), sn.get("publishedAt", ""))
+                            sn.get("authorDisplayName", ""), int(sn.get("likeCount", 0) or 0), sn.get("publishedAt", ""),
+                            has_image=bool(sn.get("imageUrl")))
                 if _before(c.published_at, since): stop = True; continue
                 out.append(c)
             token = d.get("nextPageToken")
@@ -474,6 +486,35 @@ class YouTubePlatform:
         if dimensions: q["dimensions"] = dimensions
         _, d = self._json("GET", f"{ANALYTICS_URL}?{urllib.parse.urlencode(q)}")
         return [h.get("name", "") for h in d.get("columnHeaders", [])], d.get("rows") or []
+
+    def _duration(self, platform_ref: str, ev: dict[str, Any]) -> float:
+        """Thời lượng video để đổi retention ra giây. `videos:batchGetStats` (6/2026) trước: 1 đơn vị ở rổ riêng, tới
+        mili-giây; kèm số đếm công khai TRỌN ĐỜI → chỉ ghi evidence (khác nghĩa với số theo cửa sổ của Analytics).
+        Lỗi hoặc không có video trong kết quả → `videos.list` như trước."""
+        try:
+            q = urllib.parse.urlencode({"part": "contentDetails,statistics", "id": platform_ref})
+            _, d = self._json("GET", f"{API_URL}/videos:batchGetStats?{q}")
+            item = next((i for i in d.get("items") or [] if i.get("id") == platform_ref), None)
+            if item:
+                cd, st = item.get("contentDetails") or {}, item.get("statistics") or {}
+                ms = cd.get("durationMillis")
+                dur = round(int(ms) / 1000, 3) if ms else parse_duration(cd.get("duration", ""))
+                ev.update(duration_s=dur, duration_source="videos.batchGetStats",
+                          public_lifetime={k: int(st.get(f, 0) or 0) for k, f in
+                                           (("views", "viewCount"), ("likes", "likeCount"), ("comments", "commentCount"))})
+                return dur
+            ev["batch_stats"] = {"status": 200, "note": "video không có trong kết quả"}
+        except PlatformError as x:
+            ev["batch_stats"] = {"error": str(x)[:160], "status": x.status}
+        try:
+            _, d = self._json("GET", f"{API_URL}/videos?{urllib.parse.urlencode({'part': 'contentDetails', 'id': platform_ref})}")
+            items = d.get("items") or []
+            dur = parse_duration(((items[0].get("contentDetails") or {}).get("duration", "")) if items else "")
+            ev.update(duration_s=dur, duration_source="videos.list")
+            return dur
+        except PlatformError as x:
+            ev["duration"] = {"error": str(x)[:160], "status": x.status}
+            return 0.0
 
     def snapshot(self, platform_ref: str, window_days: int = 7, channel_id: str = "") -> SnapshotResult:
         end = self.now().date(); start = end - timedelta(days=max(1, window_days) - 1)
@@ -498,14 +539,7 @@ class YouTubePlatform:
         except PlatformError as x:
             ev["impressions"] = {"error": str(x)[:160], "status": x.status, "note": "không có quyền/metric → impressions=0, ctr=0 (không bịa)"}
         # 3) retention: audienceWatchRatio theo elapsedVideoTimeRatio, đổi ra giây theo duration
-        dur = 0.0
-        try:
-            _, d = self._json("GET", f"{API_URL}/videos?{urllib.parse.urlencode({'part': 'contentDetails', 'id': platform_ref})}")
-            items = d.get("items") or []
-            dur = parse_duration(((items[0].get("contentDetails") or {}).get("duration", "")) if items else "")
-            ev["duration_s"] = dur
-        except PlatformError as x:
-            ev["duration"] = {"error": str(x)[:160], "status": x.status}
+        dur = self._duration(platform_ref, ev)
         try:
             cols, rows = self._report(platform_ref, "audienceWatchRatio", s, e, dimensions="elapsedVideoTimeRatio")
             ci, cw = cols.index("elapsedVideoTimeRatio"), cols.index("audienceWatchRatio")

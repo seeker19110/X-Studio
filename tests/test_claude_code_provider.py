@@ -132,3 +132,29 @@ def test_claude_code_reports_requested_model_not_internal_haiku():
     assert c.model == "claude-opus-5"
     assert reported_model({"claude-haiku-4-5-20251001": {"outputTokens": 40}, "x": {"outputTokens": 90}}, "claude-opus-5") == "x"
     assert reported_model({}, "claude-opus-5") == "claude-opus-5"
+
+
+def test_claude_code_sends_images_over_stream_json_and_reads_the_result_line():
+    """ADR-0020: lượt có ảnh → `--input-format stream-json --output-format stream-json --verbose`; stdin là MỘT dòng
+    user gồm ảnh base64 + chữ (kèm gợi ý schema). Không mở tool đọc file cho model; đầu ra đọc đúng dòng `result`."""
+    from xagents_core.llm import Attachment
+    seen: list[tuple[list[str], str]] = []
+
+    def runner(args, stdin):
+        seen.append((args, stdin))
+        return "\n".join([json.dumps({"type": "system", "subtype": "init"}),
+                          json.dumps({"type": "result", "subtype": "success", "result": "x",
+                                      "structured_output": {"ok": True}, "usage": {"input_tokens": 900, "output_tokens": 3},
+                                      "modelUsage": {"claude-sonnet-5": {}}})])
+
+    img = Attachment(media_type="image/jpeg", data=b"\xff\xd8img", sha256="d" * 64, label="lưới cảnh")
+    c = ClaudeCodeClient(_cfg(), runner=runner).complete(system="SYS", user="XEM", schema={"type": "object"},
+                                                         model_tier="standard", attachments=[img])
+    assert c.json() == {"ok": True} and c.input_tokens == 900
+    args, stdin = seen[0]
+    assert args[args.index("--output-format") + 1] == "stream-json" and args[args.index("--input-format") + 1] == "stream-json"
+    assert "--verbose" in args and args[args.index("--tools") + 1] == ""
+    line = json.loads(stdin)
+    blocks = line["message"]["content"]
+    assert blocks[0]["type"] == "image" and blocks[0]["source"]["media_type"] == "image/jpeg"
+    assert blocks[-1]["type"] == "text" and blocks[-1]["text"].startswith("XEM") and "JSON Schema" in blocks[-1]["text"]

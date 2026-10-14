@@ -23,7 +23,8 @@ const mediaCost = (p) => {
   const c = p.media_cost;
   if (!c || !c.priced) return "Chưa khai bảng giá media";
   const usd = (v) => `${Number(v).toLocaleString("vi-VN", { maximumFractionDigits: 4 })} USD`;
-  return `${usd(c.usd)} ${c.budget_usd ? `/ trần ${usd(c.budget_usd)}` : "· không đặt trần"}`;
+  const warn = c.warning ? " · ⚠ đã dùng ≥ 80 % trần" : "";
+  return `${usd(c.usd)} ${c.budget_usd ? `/ trần ${usd(c.budget_usd)}` : "· không đặt trần"}${warn}`;
 };
 const sheetFigure = (p) => {
   const sheet = contactSheet(p);

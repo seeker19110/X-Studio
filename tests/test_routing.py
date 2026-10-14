@@ -238,6 +238,7 @@ def test_make_client_codex_backend_has_no_tools(tmp_path: Path, monkeypatch):
     for v in ("COMPANY_LLM_BACKENDS", "COMPANY_LLM_PROVIDER", "STUDIO_LLM_BACKENDS", "STUDIO_LLM_PROVIDER"): monkeypatch.delenv(v, raising=False)
     client = make_client(load_config(p))
     assert [(b.name, b.supports_tools) for b in client.backends] == [("gpt", False), ("f", True)]
+    assert [b.supports_images for b in client.backends] == [False, True]   # ADR-0020: codex không nhận ảnh
     inner = client.backends[0].client; inner = getattr(inner, "inner", inner)
     assert isinstance(inner, CodexClient) and inner.binary.endswith("codex-khong-ton-tai")
 
