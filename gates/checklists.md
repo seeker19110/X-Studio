@@ -10,6 +10,8 @@ quá hạn KHÔNG tự đi tiếp. Lệnh: `python -m studio.gate_cli list | app
 - [ ] `risk_tags` đúng cho chủ đề nhạy cảm (health/finance/legal/minors/politics/music/footage/brand/person)
 - [ ] Số brief không vượt nhịp đăng đã cam kết; brief bắt trend có hạn dùng
 - [ ] priority hợp lý (deadline/trend = 1)
+- [ ] Kế hoạch không phải loạt video cùng một khuôn chỉ đổi chủ đề: mỗi brief có giá trị riêng của kênh (YouTube YPP
+      "inauthentic content" không kiếm tiền nội dung làm hàng loạt — skill `channel-strategy` v2)
 Kết quả: approve (desk dispatch) / request_changes / reject
 
 ## Gate `publish` — Duyệt gói nội dung trước khi lên lịch (PUB-\<video\>)

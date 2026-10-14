@@ -1,7 +1,7 @@
 ---
 name: quality-review
-version: 1
-standards: [Editorial QC checklist, Title–content honesty, Pacing limits, Audio/visual sync, Accessibility (captions-ready)]
+version: 2
+standards: [Editorial QC checklist, Title–content honesty, Pacing limits, Audio/visual sync, Accessibility (captions-ready), YPP inauthentic content, Altered or synthetic content disclosure]
 ---
 # Skill: quality-review
 
@@ -19,6 +19,8 @@ kiểm preflight còn block? → xếp finding theo mức → root_cause một c
 ## Quy tắc
 - Block: khán giả bị lừa (tiêu đề/thumbnail không được chứng minh), hook > 8s, cảnh trống/ảnh sai hẳn, thời lượng lệch > 30%, preflight block.
 - Warn: cảnh > 20s, chuyển gãy, CTA yếu, narration lặp.
+- Warn: video chỉ đọc lại nguồn trên ảnh minh hoạ, không có góc nhìn riêng (YPP "inauthentic content" không kiếm tiền).
+- Warn: hình sinh trông như người/sự kiện thật mà `synthetic_media` chưa khai — để gate publish quyết khai báo.
 - Mỗi finding có location; "video hơi chán" không phải finding.
 - Không hạ chuẩn vì đã hết vòng sửa; ghi rõ để gate quyết.
 
@@ -29,6 +31,7 @@ kiểm preflight còn block? → xếp finding theo mức → root_cause một c
 - [ ] Thời lượng ± 20% target
 - [ ] CTA có, một hành động
 - [ ] Preflight 0 block
+- [ ] Có giá trị riêng; hình sinh trông như thật đã được nêu cho gate
 - [ ] metrics đủ
 
 ## Ví dụ tốt

@@ -194,10 +194,14 @@ AI với người nghe (khớp §3.3). Không cần đổi code; ví dụ có th
 
 ## 5. Lộ trình đề xuất
 
-**Trạng thái (cùng ngày, nhánh `claude/sleepy-gates-j7tq7i`):** Đợt A xong; Đợt B xong phần `synthetic_media` + Veo
-(ADR-0018; Omni và `hasPaidProductPlacement` chưa làm); Đợt C xong phần whisper QC (ADR-0019; timestamps karaoke chưa làm);
-Đợt D xong AGENTS.md và cảnh báo 80 % — LICENSE là quyết định của chủ xưởng, skill `content-policy` cần eval model thật nên
-chưa chạm.
+**Trạng thái (cùng ngày, nhánh `claude/sleepy-gates-j7tq7i`):** cả bốn đợt đã làm. A: Gemini TTS 3.8, ảnh Gemini +
+`image_size`, ElevenLabs tiếng Việt, thumbnail 50 MB, edge-tts 7.3.1, gpt-image-2 kích thước tuỳ ý. B (ADR-0018):
+`synthetic_media`, `paid_product_placement`, provider `veo` và `omni`. C (ADR-0019): QC whisper, mốc từng từ
+(ElevenLabs `/with-timestamps`, provider `edge` gốc) cho phụ đề. D: AGENTS.md, cảnh báo 80 % (audit + gate + console),
+`tts.price_per_second`, cờ `has_image` cho bình luận kèm ảnh, quy tắc "inauthentic content" trong skill `channel-strategy`, `scriptwriting`, `quality-review` v2 (đặt ở khâu lập kế hoạch, viết và duyệt thay vì `content-policy`: skill chung đó nằm trong prompt của trend-researcher, mà ca nghiên cứu web của agent này đã sát trần 60 000 token) và `youtube-analytics` v2 (mốc đếm view 24/8/2026), eval bốn agent ghi lại bằng model thật; README nói rõ
+chưa có giấy phép mã nguồn mở (mọi quyền thuộc chủ repo). Không làm: chọn giấy phép mở (quyết định của chủ xưởng),
+`videos.batchGetStats` (sync-metrics vẫn cần Analytics API cho AVD/CTR), tô sáng từng từ kiểu karaoke (SRT không
+biểu diễn được), reviewer đa phương thức.
 
 | Đợt | Nội dung | ADR | Khi nào |
 |---|---|---|---|
