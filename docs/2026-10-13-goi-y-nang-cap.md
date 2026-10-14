@@ -12,8 +12,8 @@
 
 | # | Mức | Đề xuất | Bằng chứng | Kiểm xong khi |
 |---|---|---|---|---|
-| 1 | 🟠 | Thêm `.github/dependabot.yml` (uv, github-actions) | Không có Dependabot, dù đã có `uv.lock` và 3/3 action ghim SHA | Dependabot mở PR đầu tiên |
-| 2 | 🟢 | Thêm `SECURITY.md`, và LICENSE hoặc dòng "giữ mọi quyền" | Repo không có LICENSE và không có SECURITY.md | Có file |
+| 1 | ✅ | ~~Thêm `.github/dependabot.yml` (uv, github-actions)~~ — đã có từ `1e9ca1b` (#13) | Không có Dependabot, dù đã có `uv.lock` và 3/3 action ghim SHA | Dependabot mở PR đầu tiên |
+| 2 | 🟢 | ~~Thêm `SECURITY.md`~~ (đã có từ `1e9ca1b`), **còn** LICENSE hoặc dòng "giữ mọi quyền" | Repo không có LICENSE và không có SECURITY.md | Có file |
 | 3 | 🟢 | Thêm `AGENTS.md` (tóm tắt luật cho Codex / Gemini), như X-Agents đã làm | Chỉ có CLAUDE.md (52 dòng) | Có file |
 
 ## Giữ nguyên (điểm mạnh)
@@ -28,3 +28,5 @@
 
 - Ghim action theo SHA bằng [pinact](https://github.com/suzuki-shunsuke/pinact) hoặc [ratchet](https://github.com/sethvargo/ratchet), giữ comment tag (`# v7.0.1`), rồi để Dependabot `github-actions` tự nâng SHA. Đây là cách projects-template, xboss và Sales-Hunter đang làm.
 - Chuẩn tham chiếu là `seeker19110/projects-template`: 25/25 action ghim SHA, mọi workflow có `permissions:` cấp đầu, Dependabot cho npm, github-actions và pip.
+
+> Cập nhật 14/10/2026: #1 xong, #2 còn LICENSE, #3 còn mở — xem [nghiên cứu nâng cấp 14/10](2026-10-14-nghien-cuu-nang-cap.md) §4.
