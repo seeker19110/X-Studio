@@ -144,8 +144,10 @@ chỉ đọc ở màn *Xưởng video* (thẻ video, lưới ảnh từng cảnh
 (Gemini TTS, tiếng Việt, PCM → WAV đo thời lượng chính xác), `elevenlabs`, `azure` (vi-VN-HoaiMyNeural / NamMinhNeural),
 `google` (vi-VN-Neural2), `command` (Piper, Kokoro, edge-tts chạy cục bộ — self-hosted, không tốn tiền, văn bản không rời máy).
 Còn thiếu: timestamps từng từ (ElevenLabs `/with-timestamps`, Gemini) để làm phụ đề karaoke; cache audio theo hash narration.
+Cập nhật 2026-10-14: `gemini` đi qua Interactions API (model 3.8, bản 2.5 preview tắt 17/11/2026); `elevenlabs` mặc định
+`eleven_flash_v2_5` (có tiếng Việt); QC nghe lại bản cuối bằng whisper trong ffmpeg ≥ 8 (ADR-0019).
 
-**D2. Ảnh — đã mở rộng ở đợt này.** Nay có `gemini` (Gemini Image `gemini-2.5-flash-image` hoặc Imagen `imagen-*`, kích thước
+**D2. Ảnh — đã mở rộng ở đợt này.** Nay có `gemini` (Gemini Image, mặc định `gemini-3.1-flash-lite-image` từ 2026-10-14, `image_size` 1K/2K/4K, hoặc Imagen `imagen-*`, kích thước
 đổi sang tỷ lệ 16:9 / 9:16), `stability` (core / sd3 / ultra, `negative_prompt`, `style_preset`), `replicate` (Flux, SDXL…,
 `Prefer: wait` rồi poll, URL kết quả đi qua ranh giới `check_url`). Còn thiếu: ComfyUI/SD local (có thể đi qua `replicate`-compatible
 hoặc thêm một class); nhất quán phong cách bằng **code**: `style_preset` cấp manifest nối tiền tố vào mọi prompt, seed / ảnh tham

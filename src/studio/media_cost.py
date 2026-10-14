@@ -24,6 +24,8 @@ from .media import MediaConfig, MediaError, MediaResult
 RATES = {"tts": "price_per_1k_chars", "image": "price_per_image", "scene_video": "price_per_second"}
 PRICE_KEYS = frozenset(RATES.values())
 ACTION = "media.cost"
+WARNING_ACTION = "media.cost_warning"   # một lần khi video vượt WARN_RATIO trần; không chặn
+WARN_RATIO = 0.8
 ACTOR = "renderer"  # sổ nằm trong audit-log của renderer: đúng nơi đã ghi `render.cache`
 
 
@@ -103,8 +105,11 @@ class Ledger:
                                    f"{' '.join(ref.values())} cần {usd:.4f} — tăng production.media_budget_usd "
                                    "hoặc dùng provider rẻ hơn")
         result = call()
-        self._spent[video_id] = round(used + usd, 6)
+        self._spent[video_id] = total = round(used + usd, 6)
         self._audit(ACTION, video_id, {"channel": channel, "units": units, "usd": usd,
                                        "provider": str(getattr(self.cfg, channel).get("provider")),
                                        "model": result.model, **ref})
+        if cap and used < WARN_RATIO * cap <= total:
+            self._audit(WARNING_ACTION, video_id, {"spent_usd": total, "cap_usd": cap, "pct": round(100 * total / cap),
+                                                   "channel": channel, **ref})
         return result

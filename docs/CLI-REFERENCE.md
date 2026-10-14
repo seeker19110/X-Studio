@@ -83,7 +83,10 @@ make lint                                  # ruff (make fix = ruff --fix); make 
 #   STUDIO_MEDIA_TTS_PROVIDER=openai STUDIO_MEDIA_IMAGE_PROVIDER=openai STUDIO_MEDIA_VIDEO_PROVIDER=ffmpeg STUDIO_MEDIA_API_KEY=...
 #   (fallback OPENAI_API_KEY) STUDIO_MEDIA_BASE_URL=... (chỉ cho provider openai) STUDIO_MEDIA_OUTPUT_DIR=output
 #   TTS: openai | gemini | elevenlabs | azure (vi-VN-HoaiMyNeural) | google (vi-VN-Neural2) | command (Piper/Kokoro/edge-tts cục bộ) | fake
-#   Ảnh: openai | gemini (gemini-2.5-flash-image hoặc imagen-*) | stability | replicate (Flux, SDXL…) | fake — mẫu đủ tham số ở media.example.yaml
+#   Ảnh: openai | gemini (gemini-3.1-flash-lite-image, gemini-nano-banana-2.1, gemini-3-pro-image hoặc imagen-* trên Vertex) | stability | replicate (Flux, SDXL…) | fake — mẫu đủ tham số ở media.example.yaml
+#   Clip phim (scene_video): none | fake | comfyui | command | veo (Veo 3.1 qua Gemini API, GEMINI_API_KEY, ADR-0018) — media.film.example.yaml
+#   QC nghe lại lời đọc (ADR-0019): STUDIO_QC_ASR_MODEL=/path/ggml-base.bin STUDIO_QC_ASR_LANGUAGE=vi (cần ffmpeg ≥ 8 có filter whisper;
+#   thiếu thì QC im lặng). Thời gian đo: STUDIO_QC_TIMEOUT_S=300; hình đứng yên: STUDIO_QC_MAX_STATIC_S=8.
 #   Key từng kênh: <kênh>.api_key_env, hoặc biến quen thuộc GEMINI_API_KEY / ELEVENLABS_API_KEY / AZURE_SPEECH_KEY / GOOGLE_API_KEY /
 #   STABILITY_API_KEY / REPLICATE_API_TOKEN; `tts.voices: {alloy: vi-VN-HoaiMyNeural}` dịch voice_id của manifest sang giọng provider.
 #   Tool web cho trend-researcher / fact-checker (ADR-0007): STUDIO_SEARCH_URL=http://localhost:8080/search  (SearXNG JSON;
@@ -183,7 +186,7 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
   cắt theo số từ chia 2,5) và ảnh lấp đầy khung (`fit: cover`). File trung gian của ffmpeg nằm trong thư mục tạm.
 - **Thumbnail do CODE hoàn thiện**: model ảnh chỉ vẽ nền không chữ (nó viết sai dấu tiếng Việt), code phủ `overlay_text`
   bằng `drawtext` (viết hoa, ngắt ≤ 3 dòng, viền đen, tránh góc phải dưới nơi nền tảng đè thời lượng), thu về 1280x720,
-  nén JPEG ≤ 2 MB; adapter YouTube từ chối trước khi gọi API nếu file vẫn quá nặng. Không có font thì vẫn ra ảnh đúng
+  nén JPEG ≤ 2 MB (mục tiêu; YouTube nhận tới 50 MB từ 9/2026, vượt 2 MB chỉ là QC warn); adapter YouTube từ chối trước khi gọi API nếu file > 50 MB. Không có font thì vẫn ra ảnh đúng
   kích thước và audit `thumbnail.finish` nói rõ là thiếu chữ.
 - **Scene repair** (`renderer.apply_cutlist`, ADR-0004): sinh lại đúng cảnh, khoá cảnh, thay asset, đổi thứ tự, ≤ 3 vòng.
 - **Preflight** (`preflight.py`, ADR-0005): giới hạn nền tảng (block: tiêu đề ≤ 100, mô tả ≤ 5000, tag ≤ 500 ký tự, cụm cấm)

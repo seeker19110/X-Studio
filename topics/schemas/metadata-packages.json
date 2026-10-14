@@ -89,6 +89,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "synthetic_media": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "description": "ADR-0018: khai `containsSyntheticMedia` khi đăng; code điền từ manifest/provenance hoặc production.synthetic_media; null = chưa quyết"
         }
       },
       "required": [

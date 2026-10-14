@@ -4,6 +4,7 @@ tỷ lệ khung, khóa API theo kênh, đo thời lượng audio từ file."""
 from __future__ import annotations
 
 import base64
+import io
 import json
 import shlex
 import sys
@@ -164,7 +165,7 @@ def test_gemini_tts_pcm_to_wav_measures_duration(tmp_path, monkeypatch):
     resp = {"candidates": [{"content": {"parts": [{"inlineData": {"mimeType": "audio/L16;codec=pcm;rate=24000",
                                                                   "data": base64.b64encode(pcm).decode()}}]}}]}
     calls = _capture(monkeypatch, [json.dumps(resp).encode()])
-    cfg = MediaConfig(tts={"provider": "gemini", "api_key": "gk", "style": "Giọng kể chuyện ấm"})
+    cfg = MediaConfig(tts={"provider": "gemini", "api_key": "gk", "style": "Giọng kể chuyện ấm", "model": "gemini-2.5-flash-preview-tts"})
     r = GeminiTTS(cfg).synthesize("Xin chào Việt Nam", {"voice_id": "Puck", "pace": "slow"}, tmp_path / "S1.wav")
     assert r.provider == "gemini" and r.model == "gemini-2.5-flash-preview-tts" and r.duration_s == 1.0
     with wave.open(str(r.path), "rb") as w:
@@ -180,10 +181,52 @@ def test_gemini_tts_pcm_to_wav_measures_duration(tmp_path, monkeypatch):
 def test_gemini_tts_non_pcm_mime_and_missing_inline(tmp_path, monkeypatch):
     ok = {"candidates": [{"content": {"parts": [{"text": "…"}, {"inlineData": {"mimeType": "audio/mp3", "data": base64.b64encode(b"MP3").decode()}}]}}]}
     _capture(monkeypatch, [json.dumps(ok).encode(), json.dumps({"promptFeedback": {"blockReason": "SAFETY"}}).encode()])
-    tts = GeminiTTS(MediaConfig(tts={"provider": "gemini", "api_key": "gk"}))
+    tts = GeminiTTS(MediaConfig(tts={"provider": "gemini", "api_key": "gk", "model": "gemini-2.5-pro-preview-tts"}))
     r = tts.synthesize("một hai ba bốn năm", {}, tmp_path / "a.wav")
     assert r.path.suffix == ".mp3" and r.path.read_bytes() == b"MP3" and r.duration_s == 2.0
     with pytest.raises(MediaError, match=r"không có inlineData.*SAFETY"):
+        tts.synthesize("x", {}, tmp_path / "b.wav")
+
+
+def _wav_bytes(seconds: float, rate: int = 24000) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(b"\x01\x00" * int(seconds * rate))
+    return buf.getvalue()
+
+
+def test_gemini_tts_38_uses_interactions_api_and_keeps_text_verbatim(tmp_path, monkeypatch):
+    """Gemini 3.8 TTS (Interactions API): `text` là transcript đọc NGUYÊN VĂN — câu dẫn phong cách đi trong
+    speech_metadata, không bao giờ nối vào text (3.8 sẽ đọc nó thành tiếng). Unary trả WAV 24 kHz."""
+    resp = {"steps": [{"type": "model_output", "content": [{"type": "text", "text": "…"},
+                                                           {"type": "audio", "data": base64.b64encode(_wav_bytes(1.0)).decode()}]}]}
+    calls = _capture(monkeypatch, [json.dumps(resp).encode()])
+    cfg = MediaConfig(tts={"provider": "gemini", "api_key": "gk", "style": "warm storyteller"})
+    r = GeminiTTS(cfg).synthesize("Xin chào Việt Nam", {"voice_id": "Puck", "pace": "slow"}, tmp_path / "S1.wav")
+    assert r.provider == "gemini" and r.model == "gemini-3.8-flash-lite-tts" and r.duration_s == 1.0 and r.path.suffix == ".wav"
+    c = calls[0]
+    assert c["url"] == "https://generativelanguage.googleapis.com/v1beta/interactions" and c["headers"]["x-goog-api-key"] == "gk"
+    body = json.loads(c["body"])
+    assert body["model"] == "gemini-3.8-flash-lite-tts" and body["response_format"] == {"type": "audio"}
+    assert body["generation_config"] == {"speech_config": [{"voice": "Puck"}]}
+    block = body["input"][0]["content"][0]
+    assert body["input"][0]["type"] == "user_input" and block["type"] == "text" and block["text"] == "Xin chào Việt Nam"
+    assert block["annotations"] == [{"type": "speech_metadata", "style": "warm storyteller, speaking slowly and clearly"}]
+
+
+def test_gemini_tts_38_pcm_fallback_no_style_and_missing_audio(tmp_path, monkeypatch):
+    pcm = b"\x01\x00" * 12000  # 0,5 s PCM thô (streaming/l16) không có RIFF → bọc WAV
+    ok = {"steps": [{"type": "model_output", "content": [{"type": "audio", "data": base64.b64encode(pcm).decode()}]}]}
+    calls = _capture(monkeypatch, [json.dumps(ok).encode(), json.dumps({"steps": [{"type": "model_output", "content": []}],
+                                                                          "error": {"message": "SAFETY"}}).encode()])
+    tts = GeminiTTS(MediaConfig(tts={"provider": "gemini", "api_key": "gk", "model": "gemini-3.8-flash-tts"}))
+    r = tts.synthesize("một hai", {"pace": "medium"}, tmp_path / "a.wav")
+    assert r.duration_s == 0.5 and r.path.suffix == ".wav"
+    with wave.open(str(r.path), "rb") as w:
+        assert w.getframerate() == 24000 and w.getnframes() == 12000
+    block = json.loads(calls[0]["body"])["input"][0]["content"][0]
+    assert "annotations" not in block and json.loads(calls[0]["body"])["generation_config"] == {"speech_config": [{"voice": "Kore"}]}
+    with pytest.raises(MediaError, match=r"không có audio.*SAFETY"):
         tts.synthesize("x", {}, tmp_path / "b.wav")
 
 
@@ -197,8 +240,10 @@ def test_elevenlabs_tts_uses_provider_voice_id_and_speed(tmp_path, monkeypatch):
     body = json.loads(c["body"])
     assert body["model_id"] == "eleven_flash_v2_5" and body["voice_settings"]["speed"] == 1.1 and body["text"] == "xin chào"
     assert r.path.suffix == ".mp3" and r.provider == "elevenlabs"
+    default = ElevenLabsTTS(MediaConfig(tts={"provider": "elevenlabs", "api_key": "xi"}))
+    assert default.model == "eleven_flash_v2_5"  # eleven_multilingual_v2 KHÔNG có tiếng Việt (docs models, 14/10/2026)
     with pytest.raises(MediaError, match="cần voice_id"):
-        ElevenLabsTTS(MediaConfig(tts={"provider": "elevenlabs", "api_key": "xi"})).synthesize("x", {"voice_id": "alloy"}, tmp_path / "b.wav")
+        default.synthesize("x", {"voice_id": "alloy"}, tmp_path / "b.wav")
 
 
 def test_azure_tts_builds_ssml_with_voice_table_and_prosody(tmp_path, monkeypatch):
@@ -268,14 +313,17 @@ def test_gemini_image_generatecontent_png_and_jpeg(tmp_path, monkeypatch):
     calls = _capture(monkeypatch, [json.dumps(r1).encode(), json.dumps(r2).encode()])
     gen = GeminiImage(MediaConfig(image={"provider": "gemini", "api_key": "gk"}))
     a = gen.generate("bàn làm việc", "1792x1024", tmp_path / "S1.png")
-    assert a.path == tmp_path / "S1.png" and a.path.read_bytes() == png and a.model == "gemini-2.5-flash-image"
+    assert a.path == tmp_path / "S1.png" and a.path.read_bytes() == png and a.model == "gemini-3.1-flash-lite-image"
     body = json.loads(calls[0]["body"])
-    assert calls[0]["url"].endswith("/models/gemini-2.5-flash-image:generateContent") and calls[0]["headers"]["x-goog-api-key"] == "gk"
+    assert calls[0]["url"].endswith("/models/gemini-3.1-flash-lite-image:generateContent") and calls[0]["headers"]["x-goog-api-key"] == "gk"
     assert body["generationConfig"] == {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": "16:9"}}
     assert body["contents"][0]["parts"][0]["text"] == "bàn làm việc"
-    b = gen.generate("sơ đồ", "1024x1792", tmp_path / "S2.png")
-    assert b.path == tmp_path / "S2.jpg" and b.path.read_bytes() == jpg
-    assert json.loads(calls[1]["body"])["generationConfig"]["imageConfig"]["aspectRatio"] == "9:16"
+    gen2 = GeminiImage(MediaConfig(image={"provider": "gemini", "api_key": "gk", "model": "gemini-nano-banana-2.1", "image_size": "2k"}))
+    b = gen2.generate("sơ đồ", "1024x1792", tmp_path / "S2.png")
+    assert b.path == tmp_path / "S2.jpg" and b.path.read_bytes() == jpg and b.model == "gemini-nano-banana-2.1"
+    assert json.loads(calls[1]["body"])["generationConfig"]["imageConfig"] == {"aspectRatio": "9:16", "imageSize": "2K"}
+    with pytest.raises(MediaError, match="image_size"):
+        GeminiImage(MediaConfig(image={"provider": "gemini", "api_key": "gk", "image_size": "8K"}))
 
 
 def test_gemini_image_imagen_predict_and_errors(tmp_path, monkeypatch):

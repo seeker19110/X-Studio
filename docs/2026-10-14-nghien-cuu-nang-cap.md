@@ -194,6 +194,11 @@ AI với người nghe (khớp §3.3). Không cần đổi code; ví dụ có th
 
 ## 5. Lộ trình đề xuất
 
+**Trạng thái (cùng ngày, nhánh `claude/sleepy-gates-j7tq7i`):** Đợt A xong; Đợt B xong phần `synthetic_media` + Veo
+(ADR-0018; Omni và `hasPaidProductPlacement` chưa làm); Đợt C xong phần whisper QC (ADR-0019; timestamps karaoke chưa làm);
+Đợt D xong AGENTS.md và cảnh báo 80 % — LICENSE là quyết định của chủ xưởng, skill `content-policy` cần eval model thật nên
+chưa chạm.
+
 | Đợt | Nội dung | ADR | Khi nào |
 |---|---|---|---|
 | A — bảo trì có hạn | §3.2 edge-tts; §3.1 GeminiTTS v2; §3.4 mặc định ảnh + `image_size`; §3.5 mặc định ElevenLabs; §3.7 thumbnail 50 MB; sửa `media.example.yaml`, CLI-REFERENCE | không (không đổi schema/prompt) | **trước 17/11/2026** |

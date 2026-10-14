@@ -1,11 +1,14 @@
-"""Generate individual film/animation shots from an operator-owned local workflow.
+"""Generate individual film/animation shots from an operator-owned workflow or a hosted model.
 
 ComfyUI protocol: POST /prompt, GET /history/{prompt_id}, GET /view. Only
-configured existing workflow inputs are changed. The model never supplies a
-graph, executable, download URL, or credentials. MP4 is the v1 interchange format.
+configured existing workflow inputs are changed. Veo (ADR-0018): POST
+models/{model}:predictLongRunning, GET {operation}, download the sample URI
+(googleapis host only). The model never supplies a graph, executable, download
+URL, or credentials. MP4 is the v1 interchange format.
 """
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import json
@@ -24,7 +27,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
-from .media import ROOT, MediaConfig, MediaError, MediaResult
+from .media import ROOT, MediaConfig, MediaError, MediaResult, require_key, section_api_key
 from .media_cost import without_prices
 from .sandbox import RunSpec, Sandbox, SandboxError, clean_env, sandbox_from_config
 
@@ -39,9 +42,9 @@ def make_video_generator(cfg: MediaConfig) -> VideoGenerator | None:
     if provider == "none":
         return None
     providers: dict[str, Callable[[MediaConfig], VideoGenerator]] = {
-        "fake": FakeSceneVideo, "comfyui": ComfyUIVideo, "command": CommandVideo}
+        "fake": FakeSceneVideo, "comfyui": ComfyUIVideo, "command": CommandVideo, "veo": VeoVideo}
     if provider not in providers:
-        raise MediaError(f"scene_video: unknown provider `{provider}` (none, fake, comfyui, command)")
+        raise MediaError(f"scene_video: unknown provider `{provider}` (none, fake, comfyui, command, veo)")
     return providers[provider](cfg)
 
 
@@ -168,8 +171,81 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise MediaError("scene_video: HTTP redirects are disabled")
 
 
-class ComfyUIVideo:
+class _HttpJob:
+    """Submit → checkpoint → poll → download, shared by hosted/remote providers. Messages name `label`."""
+    label = "service"
+    base_url: str
+    timeout: float
+    request_timeout: float
+    auth: dict[str, str]
+    opener: Any
+
+    def _remaining(self, deadline: float) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise MediaError(f"scene_video: {self.label} timeout; accepted job retained for retry")
+        return min(self.request_timeout, remaining)
+
+    def _request(self, path: str, deadline: float, body: dict[str, Any] | None = None,
+                 limit: int = 4 * 1024 * 1024) -> bytes:
+        url = path if path.startswith("https://") else self.base_url + path
+        req = urllib.request.Request(url, headers={"Content-Type": "application/json", **self.auth},
+                    data=json.dumps(body).encode("utf-8") if body is not None else None,
+                    method="POST" if body is not None else "GET")
+        try:
+            with self.opener.open(req, timeout=self._remaining(deadline)) as response:
+                content = response.read(limit + 1)
+                self._remaining(deadline)
+                if len(content) > limit:
+                    raise MediaError("scene_video: HTTP response exceeds configured byte limit")
+                return content
+        except urllib.error.HTTPError as exc:
+            raise MediaError(f"scene_video: {self.label} HTTP {exc.code}") from exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise MediaError(f"scene_video: {self.label} request failed; accepted job retained for retry") from exc
+
+    def _json(self, path: str, deadline: float, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        try:
+            data = json.loads(self._request(path, deadline, body))
+        except ValueError as exc:
+            raise MediaError(f"scene_video: {self.label} returned invalid JSON") from exc
+        if not isinstance(data, dict):
+            raise MediaError(f"scene_video: {self.label} JSON object required")
+        return data
+
+    @staticmethod
+    def _save(path: Path, record: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(f".{uuid4().hex}.tmp")
+        temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(path)
+
+    def _load(self, checkpoint: Path, field: str, pattern: str) -> dict[str, Any]:
+        if not checkpoint.exists():
+            return {}
+        try:
+            record = json.loads(checkpoint.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise MediaError("scene_video: invalid job checkpoint; refusing duplicate submission") from exc
+        if not isinstance(record, dict) or not re.fullmatch(pattern, str(record.get(field, ""))):
+            raise MediaError(f"scene_video: invalid checkpoint {field}")
+        return record
+
+    def _download(self, url: str, cached: Path, deadline: float, probe_binary: str, sandbox: Sandbox,
+                  limit: int) -> None:
+        raw = self._request(url, deadline, limit=limit)
+        temporary = cached.with_suffix(f".{uuid4().hex}.mp4")
+        try:
+            temporary.write_bytes(raw)
+            _probe(temporary, sandbox, probe_binary, timeout=self._remaining(deadline))
+            temporary.replace(cached)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+class ComfyUIVideo(_HttpJob):
     """An API-format graph exported by the operator; persist accepted GPU jobs."""
+    label = "ComfyUI"
     def __init__(self, cfg: MediaConfig):
         self.cfg, section = cfg, cfg.scene_video
         self.base_url = str(section.get("base_url") or "http://127.0.0.1:8188").rstrip("/")
@@ -225,54 +301,13 @@ class ComfyUIVideo:
         self.api_key = os.environ.get(str(env_name)) if env_name else None
         if env_name and not self.api_key:
             raise MediaError("scene_video.api_key_env: configured credential missing")
+        self.auth = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         self.opener = urllib.request.build_opener(_NoRedirect())
         self.sandbox = sandbox_from_config(cfg)
         self.jobs_dir = cfg.output_dir / ".cache" / "video-jobs"
         self.cache_identity = hashlib.sha256(json.dumps({"workflow": self.workflow,
             "settings": {k: v for k, v in without_prices(section).items() if k != "api_key"}},
             sort_keys=True).encode()).hexdigest()
-
-    def _remaining(self, deadline: float) -> float:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise MediaError("scene_video: ComfyUI timeout; accepted job retained for retry")
-        return min(self.request_timeout, remaining)
-
-    def _request(self, path: str, deadline: float, body: dict[str, Any] | None = None,
-                 limit: int = 4 * 1024 * 1024) -> bytes:
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        req = urllib.request.Request(self.base_url + path, headers=headers,
-                    data=json.dumps(body).encode("utf-8") if body is not None else None,
-                    method="POST" if body is not None else "GET")
-        try:
-            with self.opener.open(req, timeout=self._remaining(deadline)) as response:
-                content = response.read(limit + 1)
-                self._remaining(deadline)
-                if len(content) > limit:
-                    raise MediaError("scene_video: HTTP response exceeds configured byte limit")
-                return content
-        except urllib.error.HTTPError as exc:
-            raise MediaError(f"scene_video: ComfyUI HTTP {exc.code}") from exc
-        except (urllib.error.URLError, OSError) as exc:
-            raise MediaError("scene_video: ComfyUI request failed; accepted job retained for retry") from exc
-
-    def _json(self, path: str, deadline: float, body: dict[str, Any] | None = None) -> dict[str, Any]:
-        try:
-            data = json.loads(self._request(path, deadline, body))
-        except ValueError as exc:
-            raise MediaError("scene_video: ComfyUI returned invalid JSON") from exc
-        if not isinstance(data, dict):
-            raise MediaError("scene_video: ComfyUI JSON object required")
-        return data
-
-    @staticmethod
-    def _save(path: Path, record: dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(f".{uuid4().hex}.tmp")
-        temporary.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-        temporary.replace(path)
 
     def _select_output(self, record: dict[str, Any]) -> dict[str, str]:
         outputs = record.get("outputs") or {}
@@ -310,14 +345,7 @@ class ComfyUIVideo:
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         checkpoint, cached = self.jobs_dir / f"{key}.json", self.jobs_dir / f"{key}.mp4"
         deadline = time.monotonic() + self.timeout
-        record: dict[str, Any] = {}
-        if checkpoint.exists():
-            try:
-                record = json.loads(checkpoint.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                raise MediaError("scene_video: invalid job checkpoint; refusing duplicate submission") from exc
-            if not isinstance(record, dict) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", str(record.get("prompt_id", ""))):
-                raise MediaError("scene_video: invalid checkpoint prompt_id")
+        record = self._load(checkpoint, "prompt_id", r"[a-zA-Z0-9_-]{1,128}")
         if not record:
             accepted = self._json("/prompt", deadline, {"prompt": graph})
             prompt_id = str(accepted.get("prompt_id") or "")
@@ -351,17 +379,136 @@ class ComfyUIVideo:
         if not cached.exists():
             # Do not use server-supplied fullpath/URL. Revalidate checkpoint data too.
             output = self._select_output({"outputs": {self.output_node: {"videos": [record["output"]]}}})
-            raw = self._request("/view?" + urllib.parse.urlencode(output), deadline, limit=self.max_bytes)
-            temporary = cached.with_suffix(f".{uuid4().hex}.mp4")
-            try:
-                temporary.write_bytes(raw)
-                _probe(temporary, self.sandbox, str(self.cfg.scene_video.get("probe_binary", "ffprobe")),
-                       timeout=self._remaining(deadline))
-                temporary.replace(cached)
-            finally:
-                temporary.unlink(missing_ok=True)
+            self._download("/view?" + urllib.parse.urlencode(output), cached, deadline,
+                           str(self.cfg.scene_video.get("probe_binary", "ffprobe")), self.sandbox, self.max_bytes)
         duration = _probe(cached, self.sandbox, str(self.cfg.scene_video.get("probe_binary", "ffprobe")))
         target = out.with_suffix(".mp4")
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(cached, target)
         return MediaResult(target, "comfyui", self.model, duration, notes=f"ComfyUI prompt_id={prompt_id}")
+
+
+VEO_DEFAULT_MODEL = "veo-3.1-fast-generate-001"
+VEO_DURATIONS = (4, 6, 8)
+VEO_OPERATION = r"models/[A-Za-z0-9._-]+/operations/[A-Za-z0-9_-]{1,128}"
+_IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+
+
+class VeoVideo(_HttpJob):
+    """Google Veo 3.1 through the Gemini API (ADR-0018). Every clip carries a SynthID watermark; the
+    operator keeps `license: generated` and the publish gate sees `synthetic_media`."""
+    label = "Veo"
+
+    def __init__(self, cfg: MediaConfig):
+        self.cfg, section = cfg, cfg.scene_video
+        if section.get("output_format", "mp4") != "mp4":
+            raise MediaError("scene_video.output_format: only mp4 supported")
+        self.base_url = str(section.get("base_url") or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+        if not self.base_url.startswith("https://"):
+            raise MediaError("scene_video.base_url: Veo requires an HTTPS Gemini API endpoint")
+        self.model = str(section.get("model") or VEO_DEFAULT_MODEL)
+        if not re.fullmatch(r"veo-[a-z0-9.-]+", self.model):
+            raise MediaError("scene_video.model: Veo model id expected (veo-3.1-generate-001, veo-3.1-fast-generate-001)")
+        self.timeout = _timeout(section, "timeout_s", 900)
+        self.request_timeout = _timeout(section, "request_timeout_s", 60)
+        self.poll_interval = _timeout(section, "poll_interval_s", 5)
+        self.max_bytes = int(_number(section.get("max_download_bytes", 256 * 1024 * 1024),
+                                     "max_download_bytes", 16, 1024**3, integer=True))
+        key = require_key("scene_video", "veo", section_api_key(section, cfg, "GEMINI_API_KEY", "GOOGLE_API_KEY"),
+                          "GEMINI_API_KEY")
+        self.auth = {"x-goog-api-key": key}
+        refs = section.get("reference_images") or []
+        if not isinstance(refs, list) or len(refs) > 3 or not all(isinstance(r, str) and r for r in refs):
+            raise MediaError("scene_video.reference_images: list of up to 3 PNG/JPEG/WebP paths")
+        self.reference_images = [self._reference(Path(r)) for r in refs]
+        self.opener = urllib.request.build_opener(_NoRedirect())
+        self.sandbox = sandbox_from_config(cfg)
+        self.jobs_dir = cfg.output_dir / ".cache" / "video-jobs"
+        settings = {k: v for k, v in without_prices(section).items() if k not in {"api_key", "api_key_env"}}
+        self.cache_identity = hashlib.sha256(json.dumps(
+            {"provider": "veo", "model": self.model, "settings": settings,
+             "references": [r["image"]["bytesBase64Encoded"] for r in self.reference_images]},
+            sort_keys=True).encode()).hexdigest()
+
+    @staticmethod
+    def _reference(path: Path) -> dict[str, Any]:
+        path = path if path.is_absolute() else ROOT / path
+        mime = _IMAGE_MIME.get(path.suffix.lower())
+        if not mime or not path.is_file():
+            raise MediaError(f"scene_video.reference_images: readable PNG/JPEG/WebP required ({path.name})")
+        return {"image": {"bytesBase64Encoded": base64.b64encode(path.read_bytes()).decode("ascii"), "mimeType": mime},
+                "referenceType": "asset"}
+
+    @staticmethod
+    def _select_uri(op: dict[str, Any]) -> str:
+        response = op.get("response") or {}
+        video = response.get("generateVideoResponse") if isinstance(response, dict) else None
+        samples = video.get("generatedSamples") if isinstance(video, dict) else None
+        if not isinstance(samples, list):
+            raise MediaError("scene_video: malformed Veo operation response")
+        for sample in samples:
+            uri = (sample.get("video") or {}).get("uri") if isinstance(sample, dict) else None
+            if not isinstance(uri, str):
+                continue
+            parsed = urllib.parse.urlsplit(uri)
+            if (parsed.scheme != "https" or not (parsed.hostname or "").endswith(".googleapis.com")
+                    or parsed.username or parsed.password):
+                raise MediaError("scene_video: Veo sample URI must be an HTTPS googleapis.com URL")
+            return uri
+        if isinstance(video, dict) and video.get("raiMediaFilteredCount"):
+            raise MediaError(f"scene_video: Veo filtered the request: {video.get('raiMediaFilteredReasons')}")
+        raise MediaError("scene_video: Veo operation returned no video")
+
+    def generate(self, prompt: str, *, negative_prompt: str, duration_s: float, fps: int,
+                 resolution: str, seed: int, out: Path) -> MediaResult:
+        values = _inputs(prompt, negative_prompt, duration_s, fps, resolution, seed, self.cfg.scene_video)
+        short = min(values["width"], values["height"])
+        tier = "4k" if short >= 2160 else "1080p" if short >= 1080 else "720p"
+        seconds = next((d for d in VEO_DURATIONS if d >= duration_s), VEO_DURATIONS[-1])
+        if tier != "720p" or self.reference_images:
+            seconds = VEO_DURATIONS[-1]
+        instance: dict[str, Any] = {"prompt": prompt}
+        if self.reference_images:
+            instance["referenceImages"] = self.reference_images
+        parameters: dict[str, Any] = {"aspectRatio": "16:9" if values["width"] >= values["height"] else "9:16",
+                                      "resolution": tier, "durationSeconds": seconds, "seed": seed % 2**32}
+        if negative_prompt.strip():
+            parameters["negativePrompt"] = negative_prompt
+        body = {"instances": [instance], "parameters": parameters}
+        key = hashlib.sha256(json.dumps({"base_url": self.base_url, "model": self.model, "body": body},
+                                        sort_keys=True).encode()).hexdigest()
+        checkpoint, cached = self.jobs_dir / f"{key}.json", self.jobs_dir / f"{key}.mp4"
+        deadline = time.monotonic() + self.timeout
+        record = self._load(checkpoint, "operation", VEO_OPERATION)
+        if not record:
+            accepted = self._json(f"/models/{self.model}:predictLongRunning", deadline, body)
+            name = str(accepted.get("name") or "")
+            if not re.fullmatch(VEO_OPERATION, name):
+                raise MediaError("scene_video: Veo returned no operation name")
+            record = {"operation": name}
+            self._save(checkpoint, record)
+        name = record["operation"]
+        if record.get("error"):
+            raise MediaError(f"scene_video: Veo operation {name} failed (checkpoint retained)")
+        while not record.get("uri"):
+            op = self._json("/" + name, deadline)
+            if op.get("error"):
+                record["error"] = True
+                self._save(checkpoint, record)
+                message = op["error"].get("message") if isinstance(op["error"], dict) else op["error"]
+                raise MediaError(f"scene_video: Veo operation {name} failed: {str(message)[:200]}")
+            if op.get("done"):
+                record["uri"] = self._select_uri(op)
+                self._save(checkpoint, record)
+                break
+            time.sleep(min(self.poll_interval, self._remaining(deadline)))
+        if not cached.exists():
+            uri = self._select_uri({"response": {"generateVideoResponse": {"generatedSamples": [{"video": {"uri": record["uri"]}}]}}})
+            self._download(uri, cached, deadline, str(self.cfg.scene_video.get("probe_binary", "ffprobe")),
+                           self.sandbox, self.max_bytes)
+        duration = _probe(cached, self.sandbox, str(self.cfg.scene_video.get("probe_binary", "ffprobe")))
+        target = out.with_suffix(".mp4")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(cached, target)
+        return MediaResult(target, "veo", self.model, duration,
+                           notes=f"Veo operation={name}; durationSeconds={seconds}; SynthID watermark")

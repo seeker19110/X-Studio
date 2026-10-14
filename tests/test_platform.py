@@ -102,7 +102,7 @@ def test_youtube_resumable_upload_two_steps_then_thumbnail_and_schedule(tmp_path
     init = http.calls[0]; body = json.loads(init[3])
     assert "uploadType=resumable" in init[1] and init[2]["X-Upload-Content-Length"] == "100" and init[2]["Authorization"] == "Bearer tok-1"
     assert body["snippet"]["title"] == "AI dựng video" and "00:00 Mở đầu" in body["snippet"]["description"] and body["snippet"]["categoryId"] == "27"
-    assert body["status"] == {"privacyStatus": "private", "selfDeclaredMadeForKids": False}
+    assert body["status"] == {"privacyStatus": "private", "selfDeclaredMadeForKids": False}  # chưa quyết → không gửi cờ
     put = http.calls[1]; assert put[0] == "PUT" and put[3] == b"v" * 100 and put[2]["Content-Length"] == "100"
     ev = json.loads(up.evidence); assert ev["init"] == 200 and ev["put"] == 200 and ev["id"] == "yt123" and ev["bytes"] == 100
     th = yt.set_thumbnail("yt123", t); assert json.loads(th)["thumbnails.set"] == 200
@@ -110,6 +110,19 @@ def test_youtube_resumable_upload_two_steps_then_thumbnail_and_schedule(tmp_path
     sc = yt.schedule("yt123", "2026-09-05T12:00:00Z"); assert json.loads(sc)["publishAt"] == "2026-09-05T12:00:00Z"
     assert json.loads(http.calls[3][3]) == {"id": "yt123", "status": {"privacyStatus": "private", "publishAt": "2026-09-05T12:00:00Z"}}
     assert not any(TOKEN_URL in u for u in http.urls())  # token còn hạn → không refresh
+
+
+def test_youtube_upload_declares_synthetic_media_when_decided(tmp_path):
+    """ADR-0018: `status.containsSyntheticMedia` (Data API) chỉ gửi khi code/người đã quyết; YouTube tự gắn nhãn từ 5/2026."""
+    f = tmp_path / "final.mp4"; f.write_bytes(b"v" * 10)
+    http = FakeHTTP()
+    http.on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session/1"}, b""))
+    http.on("PUT", "https://upload.example/session/1", (200, {}, {"id": "yt9", "status": {"privacyStatus": "private"}}))
+    yt = YouTubePlatform(_store(tmp_path), fetcher=http, now=lambda: NOW)
+    yt.upload_video(f, META.model_copy(update={"synthetic_media": True}))
+    assert json.loads(http.calls[0][3])["status"]["containsSyntheticMedia"] is True
+    fake = FakePlatform(); up = fake.upload_video(f, META.model_copy(update={"synthetic_media": False}))
+    assert fake.videos[up.platform_ref]["synthetic_media"] is False and "synthetic_media=False" in up.evidence
 
 
 def test_youtube_upload_missing_location_or_id_is_clear_error(tmp_path):

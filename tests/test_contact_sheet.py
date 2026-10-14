@@ -160,3 +160,23 @@ def test_rights_checker_is_not_shown_the_internal_contact_sheet(tmp_path):
     env = bus.publish(Envelope(topic="media-assets", key="CH1-V1", actor="renderer", payload=a.model_dump()))
     kinds = {x["kind"] for x in _with_provenance(env, o)["assets"]}
     assert "final_video" in kinds and "contact_sheet" not in kinds
+
+
+def test_publish_checklist_shows_the_synthetic_media_decision(tmp_path):
+    """ADR-0018: dòng `synthetic_media:` luôn có ở gate publish. Explainer bằng ảnh: code không đoán → "(chưa khai)";
+    chính sách kênh `production.synthetic_media` thắng và được code ghi vào metadata sau bản cuối."""
+    from test_orchestrator import _to_publish_gate
+    bus, o = _to_publish_gate(tmp_path)
+    vid = "CH1-V1"
+    assert "synthetic_media:(chưa khai — người duyệt quyết; YouTube tự gắn nhãn AI nếu bỏ trống)" in o._publish_checklist(vid)
+    assert bus.latest("metadata-packages", vid).payload.get("synthetic_media") is None
+    o.renderer.media.cfg.production["synthetic_media"] = False
+    from studio.events import SceneManifest
+    m = SceneManifest.model_validate(bus.latest("scene-manifests", vid).payload)
+    final = next(a for a in reversed([e.payload for e in bus.replay("media-assets", vid)]) if a["kind"] == "final_video")
+    from studio.events import MediaAsset
+    from studio.orchestrator import StepResult
+    o._after_final(m, None, MediaAsset.model_validate(final), StepResult("e1", "media-assets", vid))
+    assert bus.latest("metadata-packages", vid).payload["synthetic_media"] is False
+    assert "synthetic_media:False" in o._publish_checklist(vid)
+    assert any(e.payload["action"] == "synthetic_media.decided" for e in bus.replay("audit-log"))

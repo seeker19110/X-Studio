@@ -3,10 +3,10 @@
 Ba interface nhỏ (`TTS`, `ImageGen`, `VideoAssembler`), mỗi kênh chọn provider độc lập trong `media.yaml` hoặc
 biến môi trường `STUDIO_MEDIA_*`. `fake` sinh file giữ chỗ hợp lệ để chạy offline/test.
 
-- TTS: `openai` (`/audio/speech`, mọi server OpenAI-compatible), `gemini` (Gemini TTS: PCM → WAV, thời lượng đo từ số mẫu),
+- TTS: `openai` (`/audio/speech`, mọi server OpenAI-compatible), `gemini` (Gemini TTS 3.x qua Interactions API, WAV; 2.5 legacy),
   `elevenlabs`, `azure` (Azure Speech, giọng vi-VN-HoaiMyNeural/NamMinhNeural), `google` (Cloud Text-to-Speech, vi-VN-Neural2),
   `command` (lệnh cục bộ: Piper, Kokoro, edge-tts… — self-hosted, không tốn tiền).
-- Ảnh: `openai` (`/images/generations`), `gemini` (Gemini Image `gemini-*-image` hoặc Imagen `imagen-*` theo tên model),
+- Ảnh: `openai` (`/images/generations`), `gemini` (Nano Banana `gemini-*-image`/`gemini-nano-banana-*` hoặc Imagen `imagen-*`),
   `stability` (Stable Image core/sd3/ultra), `replicate` (Flux, SDXL… qua predictions có `Prefer: wait`),
   `command` (chương trình cục bộ tạo PNG thật; prompt qua stdin, không chạy shell).
 - Video: `ffmpeg` ghép ảnh + audio thành MP4 bằng ffmpeg trên PATH; cũng là nơi hoàn thiện thumbnail (thu về 1280x720,
@@ -75,8 +75,9 @@ MODEL_SIZES: dict[str, dict[str, str]] = {
     "dall-e-2": {"16:9": "1024x1024", "9:16": "1024x1024", "1:1": "1024x1024"},
 }
 DEFAULT_SIZES = {"16:9": "1536x1024", "9:16": "1024x1536", "1:1": "1024x1024"}
-THUMBNAIL_SIZE = "1280x720"      # YouTube: 1280x720, ≤ 2 MB, JPG/PNG
-THUMBNAIL_MAX_BYTES = 2_000_000
+THUMBNAIL_SIZE = "1280x720"      # YouTube: 1280x720 (hoặc 1080p/1440p/4K từ 9/2026), JPG/PNG
+THUMBNAIL_MAX_BYTES = 2_000_000  # MỤC TIÊU của renderer (tải nhanh, bản thu 120 px vẫn nét); vượt chỉ là QC warn
+PLATFORM_THUMBNAIL_MAX_BYTES = 50_000_000  # giới hạn API YouTube (2 MB → 50 MB ngày 14/9/2026, revision history)
 # Ngắt mẫu bằng hình (skill retention-storytelling): mỗi cảnh một kiểu chuyển động, xoay vòng để hai cảnh liền nhau khác nhau.
 MOTIONS = ("zoom_in", "pan_right", "zoom_out", "pan_left")
 MOTION_ZOOM = 1.12               # biên độ zoom/pan: đủ thấy là có chuyển động, không đủ để thấy méo
@@ -525,27 +526,60 @@ def _gemini_inline(data: dict[str, Any]) -> dict[str, Any]:
     raise MediaError("phản hồi Gemini không có inlineData" + (f" ({json.dumps(why, ensure_ascii=False)[:200]})" if why else ""))
 
 
-GEMINI_PACE = {"slow": "Đọc chậm rãi, rõ từng chữ", "fast": "Đọc nhanh, dứt khoát"}
+GEMINI_PACE = {"slow": "Đọc chậm rãi, rõ từng chữ", "fast": "Đọc nhanh, dứt khoát"}          # model 2.5 (câu dẫn trong text)
+GEMINI_PACE_STYLE = {"slow": "speaking slowly and clearly", "fast": "speaking briskly"}  # model ≥ 3.x (speech_metadata.style)
+GEMINI_TTS_DEFAULT = "gemini-3.8-flash-lite-tts"
+GEMINI_TTS_LEGACY = ("gemini-2.5-",)  # *-preview-tts: generateContent + câu dẫn trong text; Google tắt 17/11/2026
+
+
+def _gemini_audio_blocks(data: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for step in data.get("steps") or []:
+        if isinstance(step, dict) and step.get("type") == "model_output":
+            out += [b for b in step.get("content") or [] if isinstance(b, dict) and b.get("type") == "audio" and b.get("data")]
+    return out
 
 
 class GeminiTTS:
-    """generateContent với responseModalities AUDIO → PCM 16-bit mono (audio/L16;rate=24000) → WAV.
-    Thời lượng = số mẫu / rate: đo thật, không ước lượng. Phong cách/nhịp điều khiển bằng câu dẫn (theo tài liệu Gemini TTS):
-    `tts.style` (vd. "Giọng kể chuyện ấm, tự nhiên") + pace slow/fast của manifest."""
+    """Gemini TTS. Model 3.x (`gemini-3.8-flash-tts`, `-lite-tts`): Interactions API `POST /interactions` —
+    `text` là transcript đọc NGUYÊN VĂN, phong cách và nhịp (`tts.style`, pace slow/fast) đi trong
+    `annotations[speech_metadata].style`; không bao giờ nối câu dẫn vào text (3.x sẽ đọc nó thành tiếng). Unary trả
+    WAV 24 kHz mono (có RIFF); không có RIFF thì coi là PCM thô và bọc WAV. Model 2.5 `*-preview-tts` (tắt 17/11/2026):
+    generateContent + câu dẫn trong text như cũ. Thời lượng đọc từ file thật."""
     def __init__(self, cfg: MediaConfig):
         self.cfg = cfg; s = cfg.tts
         key = require_key("tts", "gemini", section_api_key(s, cfg, "GEMINI_API_KEY", "GOOGLE_API_KEY"), "GEMINI_API_KEY")
         self.http = _HTTP(str(s.get("base_url") or GEMINI_BASE), key, key_header="x-goog-api-key", key_prefix="")
-        self.model = str(s.get("model") or "gemini-2.5-flash-preview-tts")
+        self.model = str(s.get("model") or GEMINI_TTS_DEFAULT)
+        self.legacy = self.model.startswith(GEMINI_TTS_LEGACY)
 
     def synthesize(self, text: str, voice: dict[str, Any], out: Path) -> MediaResult:
         out.parent.mkdir(parents=True, exist_ok=True)
-        s = self.cfg.tts; pace = pace_of(voice)
+        s = self.cfg.tts; pace = pace_of(voice); voice_name = pick_voice(s, voice, "Kore")
+        if self.legacy: return self._legacy(text, pace, voice_name, out)
+        style = ([str(s["style"])] if s.get("style") else []) + ([GEMINI_PACE_STYLE[pace]] if pace in GEMINI_PACE_STYLE else [])
+        block: dict[str, Any] = {"type": "text", "text": text}
+        if style: block["annotations"] = [{"type": "speech_metadata", "style": ", ".join(style)}]
+        body = {"model": self.model, "input": [{"type": "user_input", "content": [block]}],
+                "response_format": {"type": "audio"}, "generation_config": {"speech_config": [{"voice": voice_name}]}}
+        data = json.loads(self.http.post("/interactions", body))
+        blocks = _gemini_audio_blocks(data)
+        if not blocks:
+            why = data.get("error") or data.get("status")
+            raise MediaError("phản hồi Gemini TTS không có audio" + (f" ({json.dumps(why, ensure_ascii=False)[:200]})" if why else ""))
+        raw = base64.b64decode(str(blocks[-1]["data"]))
+        p = out.with_suffix(".wav")
+        if raw[:4] == b"RIFF": p.write_bytes(raw)
+        else: write_wav(p, raw, 24000)
+        return MediaResult(p, "gemini", self.model, audio_duration(p, text))
+
+    def _legacy(self, text: str, pace: str, voice_name: str, out: Path) -> MediaResult:
+        s = self.cfg.tts
         style = ([str(s["style"])] if s.get("style") else []) + ([GEMINI_PACE[pace]] if pace in GEMINI_PACE else [])
         prompt = f"{', '.join(style)}: {text}" if style else text
         body = {"contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {"voiceConfig": {
-                    "prebuiltVoiceConfig": {"voiceName": pick_voice(s, voice, "Kore")}}}}}
+                    "prebuiltVoiceConfig": {"voiceName": voice_name}}}}}
         part = _gemini_inline(json.loads(self.http.post(f"/models/{self.model}:generateContent", body)))
         raw = base64.b64decode(part.get("data") or ""); mime = str(part.get("mimeType") or "audio/L16;codec=pcm;rate=24000").lower()
         if not raw: raise MediaError("phản hồi Gemini TTS rỗng")
@@ -566,7 +600,7 @@ class ElevenLabsTTS:
         self.cfg = cfg; s = cfg.tts
         key = require_key("tts", "elevenlabs", section_api_key(s, cfg, "ELEVENLABS_API_KEY", "ELEVEN_API_KEY"), "ELEVENLABS_API_KEY")
         self.http = _HTTP(str(s.get("base_url") or "https://api.elevenlabs.io/v1"), key, key_header="xi-api-key", key_prefix="")
-        self.model = str(s.get("model") or "eleven_multilingual_v2")
+        self.model = str(s.get("model") or "eleven_flash_v2_5")  # multilingual_v2 không có tiếng Việt
 
     def synthesize(self, text: str, voice: dict[str, Any], out: Path) -> MediaResult:
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -733,15 +767,24 @@ class OpenAIImage:
 
 # ---------- Ảnh: Gemini Image / Imagen ----------
 
+GEMINI_IMAGE_DEFAULT = "gemini-3.1-flash-lite-image"   # Nano Banana 2 Lite: rẻ nhất, đủ cho ảnh cảnh; 2.5-flash-image tắt 15/3/2027
+GEMINI_IMAGE_SIZES = ("1K", "2K", "4K")
+
+
 class GeminiImage:
-    """Model `imagen-*` → POST /models/{model}:predict {instances, parameters{aspectRatio}} → bytesBase64Encoded.
-    Model khác (gemini-2.5-flash-image, gemini-*-image-*) → generateContent với responseModalities IMAGE + imageConfig.aspectRatio.
-    Kích thước pixel của cấu hình được đổi sang tỷ lệ gần nhất; renderer/ffmpeg scale về khung video."""
+    """Model `imagen-*` (Vertex) → POST /models/{model}:predict {instances, parameters{aspectRatio}} → bytesBase64Encoded.
+    Model khác (gemini-3.1-flash-lite-image, gemini-nano-banana-2.1, gemini-3-pro-image…) → generateContent với
+    responseModalities IMAGE + imageConfig{aspectRatio, imageSize}. `image.image_size`: 1K | 2K | 4K (chữ K hoa — API từ
+    chối chữ thường; code tự viết hoa). Kích thước pixel của cấu hình được đổi sang tỷ lệ gần nhất; renderer/ffmpeg scale
+    về khung video."""
     def __init__(self, cfg: MediaConfig):
         self.cfg = cfg; s = cfg.image
         key = require_key("image", "gemini", section_api_key(s, cfg, "GEMINI_API_KEY", "GOOGLE_API_KEY"), "GEMINI_API_KEY")
         self.http = _HTTP(str(s.get("base_url") or GEMINI_BASE), key, key_header="x-goog-api-key", key_prefix="")
-        self.model = str(s.get("model") or "gemini-2.5-flash-image")
+        self.model = str(s.get("model") or GEMINI_IMAGE_DEFAULT)
+        self.image_size = str(s.get("image_size") or "").upper() or None
+        if self.image_size and self.image_size not in GEMINI_IMAGE_SIZES:
+            raise MediaError(f"image.image_size `{s.get('image_size')}` không hợp lệ (Gemini nhận {', '.join(GEMINI_IMAGE_SIZES)})")
 
     def generate(self, prompt: str, size: str, out: Path) -> MediaResult:
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -754,9 +797,11 @@ class GeminiImage:
             raw = base64.b64decode(preds[0]["bytesBase64Encoded"]); mime = str(preds[0].get("mimeType") or "image/png")
         else:
             modalities = list(self.cfg.image.get("response_modalities") or ["IMAGE"])
+            image_cfg: dict[str, Any] = {"aspectRatio": aspect}
+            if self.image_size: image_cfg["imageSize"] = self.image_size
             part = _gemini_inline(json.loads(self.http.post(f"/models/{self.model}:generateContent", {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"responseModalities": modalities, "imageConfig": {"aspectRatio": aspect}}})))
+                "generationConfig": {"responseModalities": modalities, "imageConfig": image_cfg}})))
             raw = base64.b64decode(part.get("data") or ""); mime = str(part.get("mimeType") or "image/png")
         if not raw: raise MediaError("phản hồi Gemini ảnh rỗng")
         p = out.with_suffix(".jpg") if "jpeg" in mime or "jpg" in mime else out

@@ -298,15 +298,23 @@ def test_thumbnail_is_finished_by_code_not_by_the_image_model(tmp_path):
 
 
 def test_youtube_rejects_thumbnail_over_platform_limit(tmp_path):
-    from studio.media import THUMBNAIL_MAX_BYTES
+    """YouTube nhận thumbnail tới 50 MB từ 14/9/2026 (Data API revision history); 2 MB chỉ còn là MỤC TIÊU của
+    renderer (QC warn), không phải lý do adapter từ chối."""
+    from studio.media import PLATFORM_THUMBNAIL_MAX_BYTES, THUMBNAIL_MAX_BYTES
     from studio.platform import PlatformError, Tokens, TokenStore, YouTubePlatform
+    assert PLATFORM_THUMBNAIL_MAX_BYTES == 50_000_000 and THUMBNAIL_MAX_BYTES == 2_000_000
     st = TokenStore(tmp_path / "t.json")
     st.save(Tokens(access_token="a", refresh_token="r", client_id="c", client_secret="s",
                    expiry="2099-01-01T00:00:00+00:00", scopes=["a"]))
-    big = tmp_path / "big.jpg"; big.write_bytes(b"x" * (THUMBNAIL_MAX_BYTES + 1))
+    big = tmp_path / "big.jpg"; big.write_bytes(b"x" * (PLATFORM_THUMBNAIL_MAX_BYTES + 1))
     def boom(*a, **k): raise AssertionError("không được gọi API khi file đã quá nặng")
-    with pytest.raises(PlatformError, match=r"2\.0 MB.*≤ 2 MB"):
+    with pytest.raises(PlatformError, match=r"50\.0 MB.*≤ 50 MB"):
         YouTubePlatform(st, fetcher=boom).set_thumbnail("vid1", big)
+    ok = tmp_path / "ok.jpg"; ok.write_bytes(b"x" * (THUMBNAIL_MAX_BYTES + 1))
+    sent = {}
+    def fetch(method, url, headers, body):
+        sent["bytes"] = len(body); return 200, {}, b"{}"
+    assert json.loads(YouTubePlatform(st, fetcher=fetch).set_thumbnail("vid1", ok))["bytes"] == THUMBNAIL_MAX_BYTES + 1
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="cần ffmpeg + ffprobe")

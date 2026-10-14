@@ -11,7 +11,7 @@ from studio import media_cost
 from studio.bus import InMemoryBus
 from studio.events import Envelope, Scene, SceneManifest, ThumbnailSpec, ThumbnailVariant, VideoBrief
 from studio.fakes import make_scripted_client
-from studio.media import MediaConfig, MediaError, make_media
+from studio.media import MediaConfig, MediaError, MediaResult, make_media
 from studio.media_cost import MediaBudgetError
 from studio.orchestrator import Orchestrator, StepResult
 from studio.renderer import Renderer
@@ -172,3 +172,21 @@ def test_comfyui_cache_identity_ignores_the_price(tmp_path):
     plain = ComfyUIVideo(workflow(tmp_path)).cache_identity
     priced = workflow(tmp_path); priced.scene_video["price_per_second"] = 0.2
     assert ComfyUIVideo(priced).cache_identity == plain
+
+
+def test_ledger_warns_once_when_a_video_passes_80_percent_of_its_budget(tmp_path):
+    """Cảnh báo 80 % (rà 2026-10-14, học từ cost tracker): một dòng `media.cost_warning` đúng lúc vượt ngưỡng, không
+    lặp mỗi lượt, không chặn — trần vẫn là việc của MediaBudgetError."""
+    r = _paid(tmp_path, budget=0.1)
+    r.render(_manifest())   # S1: 0.0475 (< 0.08); S2 tts: 0.055; S2 ảnh: 0.095 (≥ 0.08) → cảnh báo tại lượt ảnh S2
+    warnings = [e.payload for e in r.bus.replay("audit-log") if e.payload["action"] == "media.cost_warning"]
+    assert len(warnings) == 1 and warnings[0]["video_id"] == "V"
+    data = json.loads(warnings[0]["evidence"])
+    assert data["spent_usd"] == pytest.approx(0.095) and data["cap_usd"] == 0.1 and data["pct"] == 95
+    assert data["channel"] == "image" and data["scene_id"] == "S2"
+    # một lượt trả tiền nữa còn trong trần (0.0965 ≤ 0.1) nhưng đã qua ngưỡng: không cảnh báo lại
+    r.ledger.charge("V", "tts", 100, lambda: MediaResult(tmp_path / "x.mp3", "openai", "m", 1.0), scene_id="S9")
+    assert len([e for e in r.bus.replay("audit-log") if e.payload["action"] == "media.cost_warning"]) == 1
+    # không trần → không có ngưỡng
+    r2 = _paid(tmp_path / "b"); r2.render(_manifest())
+    assert not [e for e in r2.bus.replay("audit-log") if e.payload["action"] == "media.cost_warning"]

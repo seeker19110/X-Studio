@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Protocol
 
 from .events import MetadataPackage, PerformanceSnapshot, RetentionPoint
-from .media import THUMBNAIL_MAX_BYTES, MediaConfig, load_media_config
+from .media import PLATFORM_THUMBNAIL_MAX_BYTES, MediaConfig, load_media_config
 
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 API_URL = "https://www.googleapis.com/youtube/v3"
@@ -156,8 +156,10 @@ class FakePlatform:
         self._check("upload_video", path=str(path), video_id=metadata.video_id, title=metadata.title, privacy=privacy, publish_at=publish_at)
         if not Path(path).exists(): raise PlatformError(f"không có file {path}")
         ref = f"fake-{len(self.videos) + 1:04d}"
-        self.videos[ref] = {"title": metadata.title, "privacy": privacy, "publish_at": publish_at, "thumbnail": None, "path": str(path)}
-        return UploadResult(ref, f"https://fake.video/{ref}", "scheduled" if publish_at else privacy, evidence=f"fake upload {ref} bytes={Path(path).stat().st_size}")
+        self.videos[ref] = {"title": metadata.title, "privacy": privacy, "publish_at": publish_at, "thumbnail": None, "path": str(path),
+                            "synthetic_media": metadata.synthetic_media}
+        return UploadResult(ref, f"https://fake.video/{ref}", "scheduled" if publish_at else privacy,
+                            evidence=f"fake upload {ref} bytes={Path(path).stat().st_size} synthetic_media={metadata.synthetic_media}")
 
     def set_thumbnail(self, platform_ref: str, path: Path) -> str:
         self._check("set_thumbnail", platform_ref=platform_ref, path=str(path))
@@ -399,6 +401,8 @@ class YouTubePlatform:
             if metadata.category.isdigit(): snippet["categoryId"] = metadata.category
             status: dict[str, Any] = {"privacyStatus": "private" if publish_at else privacy, "selfDeclaredMadeForKids": made_for_kids}
             if publish_at: status["publishAt"] = publish_at
+            # ADR-0018: chỉ gửi khi đã quyết (code/người); bỏ trống thì YouTube tự xét và gắn nhãn (5/2026).
+            if metadata.synthetic_media is not None: status["containsSyntheticMedia"] = bool(metadata.synthetic_media)
             st1, rh, _ = self._call("POST", f"{UPLOAD_URL}?uploadType=resumable&part=snippet,status",
                                     json.dumps({"snippet": snippet, "status": status}).encode(),
                                     {"Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": "video/*",
@@ -416,11 +420,11 @@ class YouTubePlatform:
 
     def set_thumbnail(self, platform_ref: str, path: Path) -> str:
         path = Path(path); data = path.read_bytes()
-        # Giới hạn nền tảng: ảnh > 2 MB bị API từ chối. Bắt tại đây để evidence nói đúng nguyên nhân và người duyệt
-        # thấy ngay phải làm gì, thay vì đọc HTTP 400 của Google.
-        if len(data) > THUMBNAIL_MAX_BYTES:
+        # Giới hạn nền tảng (50 MB từ 14/9/2026; trước đó 2 MB — nay 2 MB chỉ là mục tiêu của renderer, QC warn). Bắt tại
+        # đây để evidence nói đúng nguyên nhân và người duyệt thấy ngay phải làm gì, thay vì đọc HTTP 400 của Google.
+        if len(data) > PLATFORM_THUMBNAIL_MAX_BYTES:
             raise PlatformError(f"thumbnail {path.name} nặng {len(data) / 1_000_000:.1f} MB, YouTube chỉ nhận "
-                                f"≤ {THUMBNAIL_MAX_BYTES // 1_000_000} MB (renderer nén lại, hoặc dùng file nhẹ hơn)")
+                                f"≤ {PLATFORM_THUMBNAIL_MAX_BYTES // 1_000_000} MB (renderer nén lại, hoặc dùng file nhẹ hơn)")
         ctype = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
         st, _, _ = self._call("POST", f"{UPLOAD_URL.replace('/videos', '/thumbnails/set')}?videoId={urllib.parse.quote(platform_ref)}&uploadType=media",
                                 data, {"Content-Type": ctype, "Content-Length": str(len(data))})

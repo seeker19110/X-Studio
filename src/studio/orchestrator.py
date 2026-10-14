@@ -61,7 +61,7 @@ from .media import MediaError, MediaSuite, frame_size
 from .media_cost import MediaBudgetError
 from .motion import verify_graphics
 from .platform import Platform, PlatformError, UploadResult, make_platform
-from .preflight import PreflightReport, preflight
+from .preflight import PreflightReport, preflight, synthetic_media_of
 from .qc import QCReport, qc_scenes, qc_video
 from .registry import AgentSpec, load_agents
 from .renderer import ACTOR as RENDERER
@@ -763,7 +763,14 @@ class Orchestrator:
             meta = MetadataPackage.model_validate(latest)
             fixed = snap_chapters(meta.chapters, cues)
             self._credit_metadata(meta)
-            if [c.model_dump() for c in fixed] != [c.model_dump() for c in meta.chapters] or meta.description != latest["description"]:
+            # ADR-0018: cờ nội dung tổng hợp do CODE quyết từ manifest + provenance (hoặc chính sách kênh), không hỏi model.
+            decided = synthetic_media_of(m, _assets_of(self, vid), self.renderer.media.cfg.production.get("synthetic_media"))
+            if decided is not None and decided != meta.synthetic_media:
+                meta.synthetic_media = decided
+                self._audit("synthetic_media.decided", {"video_id": vid, "synthetic_media": decided,
+                                                        "production_type": m.cinema.production_type, "visual_mode": m.cinema.visual_mode}, video_id=vid)
+            if ([c.model_dump() for c in fixed] != [c.model_dump() for c in meta.chapters] or meta.description != latest["description"]
+                    or meta.synthetic_media != latest.get("synthetic_media")):
                 meta.chapters = fixed
                 self._audit("chapters.snapped", {"video_id": vid, "chapters": [c.model_dump() for c in fixed]}, video_id=vid)
                 self.bus.publish(Envelope(topic="metadata-packages", key=vid, actor="chapters", payload=meta.model_dump()))
@@ -772,7 +779,8 @@ class Orchestrator:
         fps, res_str = int(v.get("fps", 30)), frame_size(v, m.aspect)
         thumb = self._chosen_thumbnail(vid); cap = self._captions_of(vid)
         rep = qc_video(Path(final.path), expected_duration_s=final.duration_s or 0.0, expected_resolution=res_str,
-                       expected_fps=fps, thumbnail=Path(thumb) if thumb else None, captions=Path(cap) if cap else None)
+                       expected_fps=fps, thumbnail=Path(thumb) if thumb else None, captions=Path(cap) if cap else None,
+                       narration=[(c.scene_id, c.start, c.end, c.text) for c in cues])
         self.qcs[vid] = rep
         self._audit("qc", {"video_id": vid, **rep.as_dict()}, video_id=vid)
         res.actions.append(f"qc:{'block' if rep.blocked else 'ok'}:{len(rep.findings)}" if rep.available else "qc:n/a")
@@ -885,7 +893,10 @@ class Orchestrator:
         cfg = self.renderer.media.cfg
         facts = [f"final_video:{final['path']}" if final else "final_video:(chưa có)",
                  f"thumbnail:{thumb}" if thumb else "thumbnail:(chưa có)", f"title:{meta.get('title', '(chưa có)')}",
-                 f"captions:{cap}" if cap else "captions:(chưa có)"]
+                 f"captions:{cap}" if cap else "captions:(chưa có)",
+                 # ADR-0018: người duyệt thấy cờ sẽ gửi lên nền tảng; chưa quyết thì nói thẳng là nền tảng sẽ tự xét.
+                 f"synthetic_media:{meta['synthetic_media']}" if meta.get("synthetic_media") is not None
+                 else "synthetic_media:(chưa khai — người duyệt quyết; YouTube tự gắn nhãn AI nếu bỏ trống)"]
         # Contact sheet (ADR-0016) chỉ đứng tên cho đúng phiên bản bản cuối; bản giả không có sheet nên không có dòng.
         sheet = next((a["path"] for a in reversed(_assets_of(self, vid)) if a["kind"] == "contact_sheet" and final
                       and a["manifest_version"] == final["manifest_version"]), None)
