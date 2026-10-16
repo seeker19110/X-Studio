@@ -8,28 +8,39 @@
 # dịch voice_id sang giọng của provider đang dùng; `pace` tự map sang tham số tốc độ của từng provider.
 
 tts:
-  provider: openai          # openai | gemini | elevenlabs | azure | google | command | fake
+  provider: openai          # openai | gemini | elevenlabs | azure | google | edge | command | fake
   # --- openai: POST {base_url}/audio/speech — OpenAI hoặc mọi server tương thích
   base_url: https://api.openai.com/v1
   model: gpt-4o-mini-tts
-  voice: alloy              # dùng khi manifest không có voice_id (hoặc id không có trong `voices`)
+  voice: alloy              # dùng khi manifest không có voice_id (hoặc id không có trong `voices`); marin, cedar là
+                            # giọng OpenAI khuyên dùng (10/2026); OpenAI yêu cầu báo người nghe đây là giọng AI
   # price_per_1k_chars: 0.0   # sổ chi phí media (ADR-0016): USD / 1000 ký tự đọc, điền theo bảng giá hiện hành của
   #                           # provider; chỉ lượt gọi thật (cache trượt) bị tính; bỏ trống = không tính, `fake` luôn 0
   # instructions: "Giọng kể chuyện tiếng Việt tự nhiên, ấm, không đọc như máy"   # model hỗ trợ (gpt-4o-mini-tts)
   # voices: {alloy: coral, nova: sage}        # dịch voice_id của manifest → giọng provider; id không có trong bảng → `voice`
   #
-  # --- gemini: Gemini TTS (nhiều giọng, có tiếng Việt), trả PCM → WAV nên thời lượng đo chính xác. Key: GEMINI_API_KEY
+  # --- gemini: Gemini TTS 3.8 (Interactions API, 30 giọng + thư viện mở rộng, có tiếng Việt), trả WAV 24 kHz nên thời
+  #     lượng đo chính xác. Key: GEMINI_API_KEY. Model 2.5 `*-preview-tts` vẫn chạy theo đường cũ nhưng Google tắt 17/11/2026.
   # provider: gemini
-  # model: gemini-2.5-flash-preview-tts       # hoặc gemini-2.5-pro-preview-tts
-  # voice: Kore                               # Kore, Puck, Charon, Zephyr, Aoede, Leda…
-  # style: "Giọng kể chuyện ấm, tự nhiên"     # câu dẫn phong cách (Gemini điều khiển ngữ điệu bằng lời; pace slow/fast tự thêm)
+  # model: gemini-3.8-flash-lite-tts          # mặc định (rẻ, >100 ngôn ngữ) | gemini-3.8-flash-tts (biểu cảm nhất)
+  # voice: Kore                               # Kore, Puck, Charon, Zephyr, Aoede, Leda… hoặc id `voice_…` giọng tự thiết kế
+  # style: "warm, natural Vietnamese storyteller"   # đi trong speech_metadata.style (3.8 đọc `text` NGUYÊN VĂN, không nối
+  #                                           # câu dẫn vào text); pace slow/fast của manifest tự thêm vào style
+  # price_per_second: 0.0                     # Gemini tính theo token audio (25 token/giây): khai USD/giây audio, sổ ghi theo thời lượng thật
   #
   # --- elevenlabs: id giọng riêng của ElevenLabs — bắt buộc `voice` hoặc bảng `voices`. Key: ELEVENLABS_API_KEY
+  #     TIẾNG VIỆT: eleven_flash_v2_5 (mặc định, rẻ), eleven_v3, eleven_v4 có; eleven_multilingual_v2 KHÔNG có (docs 14/10/2026).
   # provider: elevenlabs
-  # model: eleven_multilingual_v2             # hoặc eleven_flash_v2_5 (rẻ, nhanh)
+  # model: eleven_flash_v2_5                  # hoặc eleven_v3 (biểu cảm, ≤ 5 000 ký tự/lượt), eleven_v4
   # voice: <voice_id>
   # voice_settings: {stability: 0.5, similarity_boost: 0.75}
   # output_format: mp3_44100_128
+  # timestamps: true                         # /with-timestamps: mốc từng từ → phụ đề theo lời đọc thật (giá như thường)
+  #
+  # --- edge: giọng Microsoft Edge qua thư viện edge-tts (đã cài sẵn), miễn phí, không cần key, có tiếng Việt và mốc
+  #     từng từ cho phụ đề. Không có SLA: Microsoft xoay token là vỡ (giữ edge-tts ≥ 7.3) — dùng thử/dự phòng.
+  # provider: edge
+  # voice: vi-VN-HoaiMyNeural                # hoặc vi-VN-NamMinhNeural; bảng `voices` như các provider khác
   #
   # --- azure: Azure AI Speech, giọng tiếng Việt vi-VN-HoaiMyNeural (nữ) / vi-VN-NamMinhNeural (nam). Key: AZURE_SPEECH_KEY
   # provider: azure
@@ -46,26 +57,30 @@ tts:
   # --- command: lệnh cục bộ, không tốn tiền, không gửi văn bản ra ngoài (Piper, Kokoro, edge-tts…). Không qua shell.
   #     Chỗ giữ: {text} {out} {voice} {lang} {pace}; văn bản cũng được đưa vào stdin. File {out} phải có sau khi lệnh xong.
   # provider: command
-  # command: "piper -m vi_VN-vais1000-medium.onnx -f {out}"
-  # command: "edge-tts --voice {voice} --text {text} --write-media {out}"
+  # command: "vieneu-tts --voice {voice} --out {out}"   # VieNeu-TTS v3 (Apache-2.0, 25 giọng Việt, CPU) — xem README repo đó
+  # command: "edge-tts --voice {voice} --text {text} --write-media {out}"   # tiện, nhưng Microsoft xoay token: giữ edge-tts ≥ 7.3
   # voice: vi-VN-HoaiMyNeural
   # suffix: .wav                              # edge-tts ghi mp3 → đặt .mp3
   # timeout_s: 300
 
 image:
   provider: openai          # openai | gemini | stability | replicate | command | fake
-  # --- openai: POST {base_url}/images/generations. KÍCH THƯỚC THEO MODEL: gpt-image-1 nhận 1024x1024 | 1536x1024 | 1024x1536
-  #     (sai kích thước → HTTP 400); dall-e-3 nhận 1792x1024 | 1024x1792. Bỏ trống `size` là an toàn nhất: code tự chọn
-  #     kích thước hợp lệ của model theo `aspect` của manifest (16:9 cho video dài, 9:16 cho Shorts), và sửa lại nếu khai sai.
+  # --- openai: POST {base_url}/images/generations. KÍCH THƯỚC THEO MODEL: gpt-image-1/1.5 nhận 1024x1024 | 1536x1024 |
+  #     1024x1536 (sai kích thước → HTTP 400); dall-e-3 nhận 1792x1024 | 1024x1792; gpt-image-2.5-* nhận thêm WIDTHxHEIGHT tuỳ ý
+  #     (bội số 16, cạnh ≤ 3840) nên có thể khai `size: 1920x1088`. Bỏ trống `size` là an toàn nhất: code tự chọn kích thước
+  #     hợp lệ của model theo `aspect` của manifest (16:9 cho video dài, 9:16 cho Shorts), và sửa lại nếu khai sai.
   base_url: https://api.openai.com/v1
   model: gpt-image-1
   # size: 1536x1024
   # price_per_image: 0.0      # USD mỗi ảnh (ảnh cảnh và nền thumbnail) — xem price_per_1k_chars ở trên
   #
-  # --- gemini: `gemini-2.5-flash-image` (generateContent) hoặc `imagen-4.0-generate-001` (predict) theo tên model;
-  #     `size` được đổi sang tỷ lệ gần nhất (16:9 / 9:16 / 1:1…). Key: GEMINI_API_KEY
+  # --- gemini (Nano Banana): `gemini-3.1-flash-lite-image` (mặc định, rẻ nhất, chỉ 1K), `gemini-nano-banana-2.1` (1K/2K/4K),
+  #     `gemini-3-pro-image` (phức tạp, chữ trong ảnh) qua generateContent; `imagen-*` qua predict (Imagen 4 trên Gemini API
+  #     đã tắt 17/8/2026, chỉ còn trên Vertex). `size` được đổi sang tỷ lệ gần nhất; `image_size` chọn độ phân giải.
+  #     `gemini-2.5-flash-image` cũ tắt 15/3/2027. Ảnh có SynthID. Key: GEMINI_API_KEY
   # provider: gemini
-  # model: gemini-2.5-flash-image
+  # model: gemini-3.1-flash-lite-image
+  # image_size: 1K                            # 1K | 2K | 4K (model lite chỉ 1K)
   #
   # --- stability: Stable Image `core` | `sd3` | `ultra` (đoạn đường dẫn); tham số thêm qua `extra`. Key: STABILITY_API_KEY
   # provider: stability
@@ -100,6 +115,8 @@ video:
   loudness_lufs: -14        # chuẩn hoá âm lượng về mức nền tảng phát lại (đỉnh ≤ -1 dBTP); `null` = giữ nguyên tiếng gốc
   # font: /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf   # font phủ chữ thumbnail (mặc định: tìm font đậm có sẵn trên máy;
   #                          không có font thì thumbnail vẫn ra 1280x720 nhưng KHÔNG có chữ, và audit `thumbnail.finish` nói rõ)
+  # burn_captions: true      # đốt cứng phụ đề vào hình (thêm một lượt encode); SRT vẫn đăng riêng lên YouTube
+  # karaoke: true            # khi đốt cứng VÀ TTS có mốc từng từ (edge, ElevenLabs timestamps): từ đổi màu đúng lúc đọc
   # binary: ffmpeg
 
 # Lệnh con của lượt render (ffmpeg, TTS cục bộ `provider: command`) chạy qua lớp `sandbox` — xem
@@ -131,9 +148,9 @@ output_dir: output
 # api key dùng chung cho tts/image khi cùng nhà cung cấp: STUDIO_MEDIA_API_KEY; khác nhà cung cấp → `api_key_env` từng kênh ở trên
 
 # Sinh clip cho phim/hoạt hình, độc lập video.provider (bộ ghép FFmpeg).
-# Cấu hình ComfyUI workflow/bindings và command: media.film.example.yaml.
+# Cấu hình ComfyUI workflow/bindings, command, Veo và Omni (thuê, ADR-0018): media.film.example.yaml.
 scene_video:
-  provider: none
+  provider: none              # none | fake | comfyui | command | veo | omni
   # price_per_second: 0.0     # USD mỗi giây clip được sinh (ComfyUI cục bộ: để trống; dịch vụ thuê GPU: tự quy đổi)
   duration_s: 5
   fps: 24

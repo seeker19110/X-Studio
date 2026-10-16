@@ -38,6 +38,7 @@ from xagents_core.llm import CODEX_EFFORT as CODEX_EFFORT
 from xagents_core.llm import TIERS as TIERS
 from xagents_core.llm import TRANSIENT_HTTP as TRANSIENT_HTTP
 from xagents_core.llm import AnthropicClient as AnthropicClient
+from xagents_core.llm import Attachment as Attachment
 
 # K3.3a: nền chung ở `xagents_core.llm`. Re-export TỪNG tên vì các module khác của studio nhập chúng từ
 # `studio.llm`. `CLI_ARGV_MAX` là tên cũ của studio cho cùng hằng số mà company gọi là `ARGV_LIMIT` — giữ cả hai
@@ -54,6 +55,7 @@ from xagents_core.llm import Refused as Refused
 from xagents_core.llm import TransientError as TransientError
 from xagents_core.llm import anthropic_input_tokens as anthropic_input_tokens
 from xagents_core.llm import check_argv as check_argv
+from xagents_core.llm import claude_stream_input as claude_stream_input
 from xagents_core.llm import cli_effort_args as cli_effort_args
 from xagents_core.llm import cli_env as cli_env
 from xagents_core.llm import cli_exit_error as cli_exit_error
@@ -125,7 +127,8 @@ def make_client(cfg: LLMConfig | None = None) -> ModelClient:
         for data in cfg.backends:
             bc = cfg.backend_config(data)
             bs.append(Backend(name=bc.name, client=_single_client(bc), tiers=bc.tiers_configured(),
-                              supports_tools=bool(data.get("supports_tools", bc.provider != "codex"))))
+                              supports_tools=bool(data.get("supports_tools", bc.provider != "codex")),
+                              supports_images=bool(data.get("supports_images", bc.provider != "codex"))))
         r = cfg.routing
         client = RoutingClient(bs, cooldown_s=float(r.get("cooldown_s", 3600)),
                                transient_cooldown_s=float(r.get("transient_cooldown_s", 60)),
@@ -169,7 +172,8 @@ class ClaudeCodeClient(CoreClaudeCodeClient):
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None,
+                 attachments: list[Attachment] | None = None) -> Completion:
         # `workdir` là của company (chạy CLI trong worktree khách); studio không có worktree nên bỏ qua.
         # Có mặt vì `ModelClient` nay là MỘT giao diện chung ở core — đặc tả K3.3 đã ghi đúng điều này.
         model = self.cfg.model_for(model_tier)
@@ -181,13 +185,17 @@ class ClaudeCodeClient(CoreClaudeCodeClient):
                      if tools else ["--tools", "", "--max-turns", str(CLI_NO_TOOL_TURNS)])
         # ADR-0026: schema đi CẢ HAI đường — `--json-schema` để CLI ép và kiểm, `hint` trong prompt để model thấy mô
         # tả từng trường. `--effort` theo tier, và không ghi transcript ra máy.
-        base = [self.binary, "-p", "--output-format", "json", "--model", model, *CLI_BASE_FLAGS,
+        # ADR-0020: lượt có ảnh đi `stream-json` (stdin một dòng user: ảnh base64 + chữ) — CLI nhìn ảnh mà model không
+        # cần tool đọc file nào; đầu ra stream-json, `_parse` lấy đúng dòng `result`.
+        io_args = (["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"] if attachments
+                   else ["--output-format", "json"])
+        base = [self.binary, "-p", *io_args, "--model", model, *CLI_BASE_FLAGS,
                 "--json-schema", json.dumps(schema, ensure_ascii=False), *cli_effort_args(self.cfg.effort, model_tier)]
         with system_prompt_args(system) as sp_args:
             args = [*base, *tool_args, *sp_args]
             if sum(len(a) + 1 for a in args) > CLI_ARGV_MAX:
                 raise LLMError(f"claude -p: argv vượt {CLI_ARGV_MAX} ký tự — rút gọn schema/prompt của agent")
-            out = self._run(args, user + hint)
+            out = self._run(args, claude_stream_input(user + hint, attachments) if attachments else user + hint)
         return self._parse(out, model)
 
 # ---------- provider: Codex CLI (gói ChatGPT Plus/Pro đã `codex login` trên máy, không cần API key) ----------

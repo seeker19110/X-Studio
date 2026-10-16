@@ -1,7 +1,7 @@
 ---
 name: scriptwriting
-version: 1
-standards: [Hook–Promise–Payoff, Plain language, Read-aloud test, 150 wpm pacing, Claims register]
+version: 2
+standards: [Hook–Promise–Payoff, Plain language, Read-aloud test, 150 wpm pacing, Claims register, YPP inauthentic content]
 ---
 # Skill: scriptwriting
 
@@ -22,6 +22,8 @@ standards: [Hook–Promise–Payoff, Plain language, Read-aloud test, 150 wpm pa
 - `visual_notes` mỗi mục: hình gì minh hoạ ý này (production-manager dùng), không mô tả kỹ thuật ảnh.
 - Claim không có nguồn trong dossier: bỏ, hoặc chuyển thành ý kiến có đánh dấu, hoặc giữ với `source: null` để fact-checker chặn.
 - Retry theo `hint`: đổi đúng chỗ, giữ phần đã pass, tăng `version`.
+- Kịch bản phải có phân tích, so sánh hoặc tổng hợp của kênh, không chỉ đọc lại một nguồn: YouTube không cho kiếm tiền
+  nội dung "không chân thực" (làm hàng loạt theo khuôn, lặp lại, ít giá trị riêng — YPP, 7/2025).
 
 ## Checklist (supervisor và human gate dùng để chấm)
 - [ ] Hook ≤ 15 từ, có lợi ích/câu hỏi
@@ -30,6 +32,7 @@ standards: [Hook–Promise–Payoff, Plain language, Read-aloud test, 150 wpm pa
 - [ ] word_count/150 ≈ estimated_minutes, khớp target ± 20%
 - [ ] CTA một hành động
 - [ ] Không vi phạm boundaries
+- [ ] Có giá trị riêng, không phải đọc lại một nguồn
 
 ## Ví dụ tốt
 Hook: "Một video 8 phút mất bạn 6 giờ? Hôm nay còn 30 phút." Mục 1 narration 60 từ, claim C1 "42% người mới bỏ sau 3 video" → nguồn report trang 14.

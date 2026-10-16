@@ -1,5 +1,29 @@
 # Xác minh bản nâng cấp factory
 
+## PR #9 hòa giải với main PR #19 và reviewers multimodal (2026-10-16)
+
+Đã tích hợp main `93a290a1705ee7c62669804b48cfb9e0f2690a9d` trong worktree
+`/tmp/xstudio-pr9-reconcile`, `.venv` và cache uv riêng; đã đọc `AGENTS.md` mới
+và `CLAUDE.md`, xác nhận đường dẫn import `studio` thuộc worktree. Giữ nguyên
+attachments/reviewers multimodal, hosted video, ASR narration QC, synthetic-media
+metadata, graphics, ledger và các workflow của main. Không sửa prompt hoặc
+provider của main. ADR mới nhất **0020**; checklist rà soát lịch sử đã đánh dấu
+LICENSE/AGENTS/SECURITY/Dependabot là có sẵn, không đề xuất tạo lại.
+
+`UV_CACHE_DIR=/tmp/xstudio-pr9-uv-cache make verify` đạt **1.205 Studio + 273
+Gateway + 486 core = 1.964 test**, không skip; coverage **100%** từng package
+(Studio **7.055** dòng thực thi, **70** file Python trong tests gồm conftest;
+core cả dòng/nhánh 100%). Ruff/mypy cả ba package, **32/32** strict eval replay,
+Node syntax và diff-check đạt. Gateway giữ warning runpy cũ. Log:
+`/tmp/pr9-oct16-verify.log`.
+
+Chỉ xác minh offline, không gọi provider/model CLI/website/upload live, không
+merge PR hoặc deploy. Chưa đối soát chi phí provider thực hoặc chứng minh chất
+lượng provider/multimodal/ASR live. Website jobs/export ngoài output/upload roots
+vẫn ngoài storage admission của `create`, xem [STORAGE.md](STORAGE.md). Scan không
+phải quota hoặc reservation và jobs đã có vẫn có thể tăng dung lượng. PR #7
+upload recovery vẫn là nhánh riêng.
+
 ## PR #9 hòa giải với scene graphics và rà soát docs trên main (2026-10-13)
 
 Đã tích hợp main `5f5afae4362d3ff82bd90c8745b7c105bda5637f` (PR #13 và #18)

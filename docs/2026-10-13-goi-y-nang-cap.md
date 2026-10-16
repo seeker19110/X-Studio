@@ -8,19 +8,12 @@
 |---|---|---|---|---|---|
 | `d7cb00d` (2026-10-13) | 3/3 | – | **không có** | không · không | 117 |
 
-## Cập nhật sau main 5f5afae (2026-10-13)
+## Cập nhật sau main 93a290a (2026-10-16)
 
-Main đã có `.github/dependabot.yml` cho `uv` và `github-actions`, cùng
-`SECURITY.md`. Không còn đề xuất tạo lại hai file này. Chưa xác minh Dependabot
-đã mở PR đầu tiên; chính sách cấp phép vẫn cần chủ sở hữu quyết định. Bảng HEAD
-ở trên là số liệu lịch sử, không phải hiện trạng của bản tích hợp.
-
-## Các mục còn lại (🟢 nhẹ)
-
-| # | Mức | Đề xuất | Bằng chứng | Kiểm xong khi |
-|---|---|---|---|---|
-| 2 | 🟢 | Chủ sở hữu xác định LICENSE hoặc tuyên bố quyền | `SECURITY.md` đã có; chưa có LICENSE | Quyết định cấp phép được ghi rõ |
-| 3 | 🟢 | Thêm `AGENTS.md` (tóm tắt luật cho Codex / Gemini), như X-Agents đã làm | Chỉ có CLAUDE.md (52 dòng) | Có file |
+Main đã có `.github/dependabot.yml` cho `uv` và `github-actions`, `SECURITY.md`,
+`LICENSE` Apache-2.0 và `AGENTS.md`. Cả ba đề xuất vệ sinh ban đầu đã được xử lý;
+không đề xuất tạo lại các file này. Chưa xác minh Dependabot đã mở PR đầu tiên.
+Bảng HEAD ở trên là số liệu lịch sử, không phải hiện trạng của bản tích hợp.
 
 ## Giữ nguyên (điểm mạnh)
 
@@ -34,3 +27,5 @@ Main đã có `.github/dependabot.yml` cho `uv` và `github-actions`, cùng
 
 - Ghim action theo SHA bằng [pinact](https://github.com/suzuki-shunsuke/pinact) hoặc [ratchet](https://github.com/sethvargo/ratchet), giữ comment tag (`# v7.0.1`), rồi để Dependabot `github-actions` tự nâng SHA. Đây là cách projects-template, xboss và Sales-Hunter đang làm.
 - Chuẩn tham chiếu là `seeker19110/projects-template`: 25/25 action ghim SHA, mọi workflow có `permissions:` cấp đầu, Dependabot cho npm, github-actions và pip.
+
+> Cập nhật 14/10/2026: #1 xong, #2 xong (LICENSE Apache-2.0 theo repo nguồn `X-Agents`), #3 xong (`AGENTS.md`) — xem [nghiên cứu nâng cấp 14/10](2026-10-14-nghien-cuu-nang-cap.md) §4.

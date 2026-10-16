@@ -1,9 +1,10 @@
 {
  "agent": "editor",
- "prompt_version": 1,
- "recorded_at": "2026-09-02T14:29:10.280207+00:00",
+ "prompt_version": 2,
+ "recorded_at": "2026-10-14T13:00:13.316451+00:00",
  "models": [
-  "claude-haiku-4-5-20251001"
+  "claude-haiku-4-5-20251001",
+  "claude-sonnet-5-5"
  ],
  "cases": {
   "85a4ab663813c3e767bd429e": {
@@ -17,6 +18,30 @@
    "model": "claude-haiku-4-5-20251001",
    "input_tokens": 4287,
    "output_tokens": 278
+  },
+  "4f5729ed77c3b79b072c92a0": {
+   "text": "{\"video_id\": \"CH1-V1\", \"manifest_version\": 1, \"decision\": \"approve\", \"repairs\": [], \"order\": [\"S1\", \"S2\"], \"notes\": \"Đã dùng hết vòng sửa (3/3) nên phải chốt. Phần chưa xác nhận được, nhờ quality-reviewer kiểm: (1) scene_assets chỉ liệt kê scene_image của S1 và S2. Không có mục scene_audio, dù manifest có asset_refs a.wav và b.wav, nên chưa xác nhận được file audio có thật. (2) Tổng thời lượng theo manifest là 10s. Đầu vào không có target_minutes nên chưa kiểm được mức ±20%. Nếu lệch xa target thì nhiều khả năng manifest sai từ gốc, đề nghị production-manager làm lại. (3) Không có lưới ảnh đính kèm nên chưa so ảnh với visual_prompt. Prompt 'p' và 'q' cùng narration 'a' và 'b' quá ngắn, trông như dữ liệu giữ chỗ. Chưa có cảnh nào được lock.\"}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 15978,
+   "output_tokens": 1019,
+   "score": 1.0,
+   "runs": 1
+  },
+  "58f57a242d65f3ee2bd0090b": {
+   "text": "{\"video_id\": \"CH1-V2\", \"manifest_version\": 1, \"decision\": \"repair\", \"repairs\": [{\"scene_id\": \"S2\", \"action\": \"regenerate_image\", \"reason\": \"Ảnh gần như đen, không thấy sơ đồ (scene_qc), lệch visual_prompt 'sơ đồ tối'; prompt cũ gây ảnh quá tối.\", \"new_visual_prompt\": \"Sơ đồ khối đơn giản trên nền sáng, các hộp và mũi tên nét đậm rõ ràng, ánh sáng đều, bố cục cân đối ở giữa khung 16:9, phong cách phẳng theo brand; không chữ, không logo, không người thật, không watermark.\"}, {\"scene_id\": \"S1\", \"action\": \"lock\", \"reason\": \"Cảnh đạt: đủ scene_audio và scene_image, không có lỗi được ghi nhận.\"}], \"order\": [\"S1\", \"S2\"], \"notes\": \"Vòng sửa 1/3. Chỉ sửa ảnh S2; S1 được khoá. Tổng thời lượng 10s theo manifest, cần kiểm tra khớp target_minutes ở vòng sau vì không có target_minutes trong đầu vào.\"}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 7709,
+   "output_tokens": 539,
+   "score": 1.0,
+   "runs": 1
+  },
+  "d36cd40b898d539ba6420851": {
+   "text": "{\"video_id\": \"CH1-V3\", \"manifest_version\": 1, \"decision\": \"repair\", \"repairs\": [{\"scene_id\": \"S1\", \"action\": \"lock\", \"reason\": \"Ảnh biểu đồ cột 2023-2025 tăng dần, nền sáng, phong cách phẳng, khớp visual_prompt và narration 'doanh thu tăng đều'.\"}, {\"scene_id\": \"S2\", \"action\": \"regenerate_image\", \"reason\": \"Ảnh là banner đỏ 'SALE 50% - Mua ngay hôm nay!' có chữ quảng cáo lạ, hoàn toàn lệch prompt (sơ đồ quy trình ba bước nối bằng mũi tên) và narration về thu thập, phân tích, hành động.\", \"new_visual_prompt\": \"Sơ đồ quy trình ba bước nằm ngang nối bằng mũi tên: ba khối biểu tượng đơn giản (thu thập dữ liệu, phân tích, hành động) trên nền sáng, nét đậm, phong cách phẳng đồng nhất với cảnh biểu đồ, bố cục cân đối trong vùng an toàn, tỷ lệ 16:9. Không chữ quảng cáo, không logo, không watermark, không người thật.\"}], \"order\": [\"S1\", \"S2\"], \"notes\": \"Vòng sửa 1/3. S1 đạt và được khoá. S2 sai chủ thể (banner sale thay vì sơ đồ quy trình) nên chỉ sinh lại ảnh S2; audio giữ nguyên. Thời lượng 12s tổng, chưa đối chiếu target_minutes vì không có số liệu trong đầu vào.\"}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 8414,
+   "output_tokens": 699,
+   "score": 1.0,
+   "runs": 1
   }
  }
 }

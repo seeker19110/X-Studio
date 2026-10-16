@@ -10,6 +10,8 @@ quá hạn KHÔNG tự đi tiếp. Lệnh: `python -m studio.gate_cli list | app
 - [ ] `risk_tags` đúng cho chủ đề nhạy cảm (health/finance/legal/minors/politics/music/footage/brand/person)
 - [ ] Số brief không vượt nhịp đăng đã cam kết; brief bắt trend có hạn dùng
 - [ ] priority hợp lý (deadline/trend = 1)
+- [ ] Kế hoạch không phải loạt video cùng một khuôn chỉ đổi chủ đề: mỗi brief có giá trị riêng của kênh (YouTube YPP
+      "inauthentic content" không kiếm tiền nội dung làm hàng loạt — skill `channel-strategy` v2)
 Kết quả: approve (desk dispatch) / request_changes / reject
 
 ## Gate `publish` — Duyệt gói nội dung trước khi lên lịch (PUB-\<video\>)
@@ -24,10 +26,16 @@ Kết quả: approve (desk dispatch) / request_changes / reject
       (hình đứng yên ≥ 8 s) có lý do giữ hoặc yêu cầu sửa
 - [ ] Cảnh đồ họa (`stat`/`bars`) trên contact sheet: nhãn đi đúng con số (code chỉ kiểm con số có trong claim có nguồn, không kiểm nghĩa nhãn — ADR-0017); audit `graphic.unverified` cho biết graphic nào đã bị bỏ
 - [ ] Nếu có dòng `media_cost:`: chi phí media ước tính hợp lý so với kế hoạch (ADR-0016)
+- [ ] Dòng `synthetic_media:` (ADR-0018): `True` khi cảnh người/nơi/sự kiện trông như thật nhưng do AI sinh (phim
+      `generated_video`, Veo…) — code tự điền khi chắc; `(chưa khai)` thì người duyệt quyết, YouTube vẫn tự gắn nhãn
+      khi phát hiện; không khai sai để né nhãn
+- [ ] Dòng `paid_product_placement:` (ADR-0018): video có quảng cáo/tài trợ trả tiền thì phải là `True`; `(chưa khai)` mà
+      có tài trợ → request_changes và đặt `production.paid_product_placement`
 - [ ] Không vi phạm `boundaries` và content-policy (YMYL có miễn trừ)
 - [ ] Lịch đăng theo chiến lược (`strategy`) hoặc nêu trong reason
 - [ ] Người duyệt ≠ người tạo (desk)
-- [ ] Nếu `STUDIO_PLATFORM=youtube`: `python -m studio.youtube status` còn token; quota ngày còn đủ (~1 600 đơn vị/upload)
+- [ ] Nếu `STUDIO_PLATFORM=youtube`: `python -m studio.youtube status` còn token; quota ngày còn đủ (YouTube tính theo rổ từ 2026: ~100 lượt `videos.insert`/ngày/project,
+      không còn 1 600 đơn vị/upload)
 Kết quả: approve (publisher quyết định lịch → CODE upload private + thumbnail chosen + publishAt qua adapter; `publish-events`
 mang id/url thật, lỗi adapter → `failed` có evidence) / request_changes(lý do → làm lại với hint) / hold / reject(đóng video)
 

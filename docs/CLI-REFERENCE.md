@@ -82,8 +82,12 @@ make lint                                  # ruff (make fix = ruff --fix); make 
 #   Media (media.yaml: tts.model/voice/base_url, image.model/size, video.fps/resolution, output_dir, platform; mặc định cả ba `fake`):
 #   STUDIO_MEDIA_TTS_PROVIDER=openai STUDIO_MEDIA_IMAGE_PROVIDER=openai STUDIO_MEDIA_VIDEO_PROVIDER=ffmpeg STUDIO_MEDIA_API_KEY=...
 #   (fallback OPENAI_API_KEY) STUDIO_MEDIA_BASE_URL=... (chỉ cho provider openai) STUDIO_MEDIA_OUTPUT_DIR=output
-#   TTS: openai | gemini | elevenlabs | azure (vi-VN-HoaiMyNeural) | google (vi-VN-Neural2) | command (Piper/Kokoro/edge-tts cục bộ) | fake
-#   Ảnh: openai | gemini (gemini-2.5-flash-image hoặc imagen-*) | stability | replicate (Flux, SDXL…) | fake — mẫu đủ tham số ở media.example.yaml
+#   TTS: openai | gemini | elevenlabs (tts.timestamps: mốc từng từ) | azure (vi-VN-HoaiMyNeural) | google (vi-VN-Neural2)
+#        | edge (edge-tts, miễn phí, mốc từng từ, không SLA) | command (VieNeu-TTS/Piper cục bộ) | fake
+#   Ảnh: openai | gemini (gemini-3.1-flash-lite-image, gemini-nano-banana-2.1, gemini-3-pro-image hoặc imagen-* trên Vertex) | stability | replicate (Flux, SDXL…) | fake — mẫu đủ tham số ở media.example.yaml
+#   Clip phim (scene_video): none | fake | comfyui | command | veo (Veo 3.1) | omni (Gemini Omni) — cùng GEMINI_API_KEY, ADR-0018 — media.film.example.yaml
+#   QC nghe lại lời đọc (ADR-0019): STUDIO_QC_ASR_MODEL=/path/ggml-base.bin STUDIO_QC_ASR_LANGUAGE=vi (cần ffmpeg ≥ 8 có filter whisper;
+#   thiếu thì QC im lặng). Thời gian đo: STUDIO_QC_TIMEOUT_S=300; hình đứng yên: STUDIO_QC_MAX_STATIC_S=8.
 #   Key từng kênh: <kênh>.api_key_env, hoặc biến quen thuộc GEMINI_API_KEY / ELEVENLABS_API_KEY / AZURE_SPEECH_KEY / GOOGLE_API_KEY /
 #   STABILITY_API_KEY / REPLICATE_API_TOKEN; `tts.voices: {alloy: vi-VN-HoaiMyNeural}` dịch voice_id của manifest sang giọng provider.
 #   Tool web cho trend-researcher / fact-checker (ADR-0007): STUDIO_SEARCH_URL=http://localhost:8080/search  (SearXNG JSON;
@@ -115,7 +119,10 @@ uv run python -m studio.youtube login --client-secrets client_secret.json [--por
 uv run python -m studio.youtube status                                          # có token? hết hạn? scopes? (không in secret)
 #   Gate publish approve → publisher quyết định lịch, CODE upload private + thumbnail chosen + publishAt → publish-events có id thật.
 #   Gate replies approve → CODE đăng từng reply đã duyệt (comments.insert) → publish-events kind=reply có id thật.
+# Quota Data API (6/2026): rổ riêng ~100 videos.insert/ngày/project; commentThreads và lệnh khác dùng rổ 10 000 đơn vị.
+# sync-comments đánh dấu has_image cho bình luận kèm ảnh (ảnh/URL không vào bus).
 STUDIO_PLATFORM=youtube uv run python -m studio.youtube sync-comments CH1-V1 [--ref YT_ID] [--since 2026-09-01T00:00:00Z]  # → audience-comments
+# sync-metrics: Analytics cho số theo cửa sổ; thời lượng + số đếm công khai trọn đời (chỉ evidence) qua videos:batchGetStats.
 STUDIO_PLATFORM=youtube uv run python -m studio.youtube sync-metrics CH1-V1 --window 7 [--variant A] [--ref] [--channel]  # → performance-snapshots
 uv run python -m studio.orchestrator status              # hoặc: make status
 uv run python -m studio.orchestrator report
@@ -183,7 +190,7 @@ Asset sinh ra nằm ở `output/<video_id>/` (bị gitignore): `S1.wav`, `S1.png
   cắt theo số từ chia 2,5) và ảnh lấp đầy khung (`fit: cover`). File trung gian của ffmpeg nằm trong thư mục tạm.
 - **Thumbnail do CODE hoàn thiện**: model ảnh chỉ vẽ nền không chữ (nó viết sai dấu tiếng Việt), code phủ `overlay_text`
   bằng `drawtext` (viết hoa, ngắt ≤ 3 dòng, viền đen, tránh góc phải dưới nơi nền tảng đè thời lượng), thu về 1280x720,
-  nén JPEG ≤ 2 MB; adapter YouTube từ chối trước khi gọi API nếu file vẫn quá nặng. Không có font thì vẫn ra ảnh đúng
+  nén JPEG ≤ 2 MB (mục tiêu; YouTube nhận tới 50 MB từ 9/2026, vượt 2 MB chỉ là QC warn); adapter YouTube từ chối trước khi gọi API nếu file > 50 MB. Không có font thì vẫn ra ảnh đúng
   kích thước và audit `thumbnail.finish` nói rõ là thiếu chữ.
 - **Scene repair** (`renderer.apply_cutlist`, ADR-0004): sinh lại đúng cảnh, khoá cảnh, thay asset, đổi thứ tự, ≤ 3 vòng.
 - **Preflight** (`preflight.py`, ADR-0005): giới hạn nền tảng (block: tiêu đề ≤ 100, mô tả ≤ 5000, tag ≤ 500 ký tự, cụm cấm)

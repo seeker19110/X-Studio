@@ -101,7 +101,11 @@ def finish(video: VideoAssembler, src: Path, captions: Path | None, music: Path 
             args += ["-filter_complex", graph, "-map", "0:v:0", "-map", "[mix]"]
         else:
             args += ["-map", "0:v:0", "-map", "0:a:0"]
-        if captions:
+        if captions and captions.suffix == ".ass":
+            # Phụ đề karaoke: ASS tự mang style/kích thước theo khung (timeline.karaoke_ass), libass vẽ nguyên.
+            shutil.copyfile(captions, root / "captions.ass")
+            args += ["-vf", "ass=captions.ass", "-c:v", "libx264", "-crf", "20", "-preset", "medium"]
+        elif captions:
             shutil.copyfile(captions, root / "captions.srt")
             args += ["-vf", "subtitles=captions.srt:force_style='FontName=DejaVu Sans,FontSize=20,"
                      "Outline=2,Shadow=0,MarginV=24,Alignment=2'", "-c:v", "libx264", "-crf", "20",

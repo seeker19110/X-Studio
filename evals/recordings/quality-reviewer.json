@@ -1,9 +1,10 @@
 {
  "agent": "quality-reviewer",
- "prompt_version": 1,
- "recorded_at": "2026-09-02T15:26:31.373471+00:00",
+ "prompt_version": 2,
+ "recorded_at": "2026-10-14T13:01:12.104427+00:00",
  "models": [
-  "claude-opus-5"
+  "claude-opus-5",
+  "claude-sonnet-5-5"
  ],
  "cases": {
   "804fdf9d64a063d20060f39b": {
@@ -17,6 +18,62 @@
    "model": "claude-opus-5",
    "input_tokens": 4001,
    "output_tokens": 657
+  },
+  "3fe870982b03255a6329813a": {
+   "text": "{\"video_id\": \"CH1-V1\", \"source\": \"quality\", \"verdict\": \"pass\", \"findings\": [{\"level\": \"warn\", \"location\": \"S1\", \"text\": \"Hook có khoảng 22 từ trong 5s (~260 từ/phút), nhanh gần gấp đôi nhịp của phần còn lại (~105–130 từ/phút). Hoặc giọng đọc hook bị ép quá nhanh, khiến phụ đề tự động và người xem khó theo, hoặc duration_s của cảnh không được đo từ audio TTS. Nếu giọng đọc thật ở nhịp tự nhiên thì lời hứa '30 phút' sẽ tới sau 5s. Gate nên đối chiếu thời lượng audio thật của S1.\"}, {\"level\": \"warn\", \"location\": \"S7\", \"text\": \"CTA có khoảng 19 từ nhưng chiếm 19s (~1 từ/giây). Nhịp chậm hơn hẳn các cảnh khác, nhiều khả năng có khoảng lặng hoặc giữ nguyên một hình ở cuối video. Nên rút cảnh hoặc bổ sung nội dung và đối chiếu thời lượng audio thật.\"}, {\"level\": \"nit\", \"location\": \"S3, S5\", \"text\": \"Hai cảnh dài 20s, đúng ngưỡng (không vượt) mà chỉ có một hình tĩnh. Cùng S2, S4, S6, S7 (18–19s), 6 trên 7 cảnh giữ một hình 18–20s nên ít điểm ngắt mẫu. Cân nhắc thêm một hình đổi giữa cảnh.\"}, {\"level\": \"nit\", \"location\": \"thumbnails A/B\", \"text\": \"Chỉ kiểm được overlay_text, chưa xem được ảnh thumb-A.png/thumb-B.png. Chữ '6 GIỜ → 30 PHÚT' và '30 PHÚT / 1 VIDEO' được nội dung chứng minh: S2 nêu 6 giờ, S3–S5 nêu 10+5+15 = 30 phút, S6 nêu rõ giới hạn.\"}, {\"level\": \"nit\", \"location\": \"script.estimated_minutes\", \"text\": \"Package không có target_minutes. Dùng estimated_minutes = 2 (120s) làm chuẩn và tổng thời lượng khớp (lệch 0%). Gate nên đối chiếu với target_minutes của brief nếu có.\"}], \"root_cause\": null, \"metrics\": {\"hook_seconds\": 5, \"total_seconds\": 120, \"scenes\": 7, \"longest_scene_s\": 20, \"manifest_scene_sum_s\": 120, \"duration_deviation_pct\": 0, \"narration_matches_manifest\": true, \"chapters_match_scene_timing\": true, \"cta_present\": true, \"preflight_blocks\": 0, \"findings\": {\"block\": 0, \"warn\": 2, \"nit\": 3}}}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 24017,
+   "output_tokens": 5891,
+   "score": 1.0,
+   "runs": 1
+  },
+  "a99ac2e2a36cd85549021224": {
+   "text": "{\"video_id\": \"CH1-V2\", \"source\": \"quality\", \"verdict\": \"block\", \"findings\": [{\"level\": \"block\", \"location\": \"preflight:title\", \"text\": \"Finding block của preflight ('cụm bị cấm' ở tiêu đề) vẫn còn trong package. Tiêu đề chưa được sửa.\"}, {\"level\": \"block\", \"location\": \"metadata.title\", \"text\": \"Tiêu đề 'BÍ MẬT X10 VIEW TRONG 1 ĐÊM' hứa tăng gấp 10 lượt xem trong một đêm. Kịch bản (hook 'Hôm nay mình giới thiệu công cụ', section 'giới thiệu tính năng') chỉ giới thiệu công cụ, không có bí mật nào và không đo hay chứng minh mức tăng view. Khán giả bị lừa.\"}, {\"level\": \"block\", \"location\": \"thumbnails[A].overlay_text\", \"text\": \"Thumbnail 'X10 VIEW 1 ĐÊM' đưa ra cùng lời hứa không được chứng minh, và nội dung video không có số liệu nào đỡ nó.\"}, {\"level\": \"block\", \"location\": \"S1\", \"text\": \"Narration trong manifest là 'n' và visual_prompt là 'p', tức là giá trị giữ chỗ. Chúng không khớp kịch bản (hook và section 'giới thiệu tính năng'), nên cảnh thực chất trống nội dung. Khó có phụ đề đúng và khó kiểm hình khớp prompt.\"}, {\"level\": \"warn\", \"location\": \"S1\", \"text\": \"Một cảnh duy nhất kéo dài 40s với một hình, vượt ngưỡng 20s. Không có ngắt mẫu bằng hình mới.\"}, {\"level\": \"warn\", \"location\": \"script.hook\", \"text\": \"Hook 'Hôm nay mình giới thiệu công cụ' không nêu lời hứa và không mở vòng mở. Không thể tính hook tới lời hứa trong 5s vì lời hứa của tiêu đề không có trong nội dung.\"}, {\"level\": \"warn\", \"location\": \"script\", \"text\": \"Kịch bản không có CTA (không có một hành động kêu gọi nào).\"}, {\"level\": \"nit\", \"location\": \"metadata.description\", \"text\": \"Mô tả chỉ là 'd', là giá trị giữ chỗ và không có thông tin cho người xem.\"}], \"root_cause\": \"Kịch bản và manifest chỉ là bản nháp giữ chỗ, nội dung giới thiệu công cụ chung chung không chứng minh lời hứa 'X10 view trong 1 đêm' của tiêu đề và thumbnail; cần sửa từ giai đoạn script (và tiêu đề/thumbnail) rồi dựng lại cảnh.\", \"metrics\": {\"hook_seconds\": null, \"total_seconds\": 40, \"scenes\": 1, \"longest_scene_s\": 40, \"target_minutes\": null, \"findings\": {\"block\": 4, \"warn\": 3, \"nit\": 1}}}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 7149,
+   "output_tokens": 2740,
+   "score": 1.0,
+   "runs": 1
+  },
+  "583af34c040c36b2ff694532": {
+   "text": "{\"video_id\": \"CH1-V1\", \"source\": \"quality\", \"verdict\": \"pass\", \"findings\": [{\"level\": \"warn\", \"location\": \"S1\", \"text\": \"Hook dài khoảng 24 âm tiết nhưng chỉ có 5s, nhanh hơn rõ so với các cảnh khác (khoảng 2 âm tiết/s). Đây là ước lượng từ văn bản, chưa đo từ audio. Lời hứa 6 giờ → 30 phút có thể bị đọc dồn hoặc lố sang S2. Nên đo lại thời lượng TTS của S1.\"}, {\"level\": \"warn\", \"location\": \"S7\", \"text\": \"Cảnh CTA kéo dài 19s trên một hình tĩnh (ô bình luận), trong khi narration chỉ khoảng 22 âm tiết. Dễ có khoảng lặng cuối video, làm người xem rời đi trước khi bình luận. Nên rút cảnh hoặc bổ sung nội dung/hình.\"}, {\"level\": \"warn\", \"location\": \"S1\", \"text\": \"Ảnh sinh mô tả bàn làm việc, đồng hồ bấm giờ và laptop trông như cảnh thật, trong khi narration nói \\\"mình vừa bấm giờ\\\". Package không có trường synthetic_media. Chuyển cho gate publish quyết định việc khai báo nội dung tổng hợp.\"}, {\"level\": \"nit\", \"location\": \"S3, S5\", \"text\": \"Hai cảnh dài đúng 20s, ở sát ngưỡng và cùng một hình. Chưa vi phạm, nhưng nên thêm một lần đổi hình trong cảnh nếu sửa lần sau.\"}, {\"level\": \"nit\", \"location\": \"package.target_minutes\", \"text\": \"Package không có target_minutes. Chỉ đối chiếu được với script.estimated_minutes = 2 và tổng manifest = 120s, khớp 0%. Gate cần đối chiếu với brief.\"}], \"root_cause\": null, \"metrics\": {\"hook_seconds\": 5, \"total_seconds\": 120, \"scenes\": 7, \"longest_scene_s\": 20, \"preflight_blocks\": 0, \"findings\": {\"block\": 0, \"warn\": 3, \"nit\": 2}}}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 22056,
+   "output_tokens": 3577,
+   "score": 1.0,
+   "runs": 1
+  },
+  "4aa521e69c0d1e7f3d5a0fce": {
+   "text": "{\"video_id\": \"CH1-V2\", \"source\": \"quality\", \"verdict\": \"block\", \"root_cause\": \"Kịch bản chỉ là giới thiệu công cụ chung chung, không có nội dung chứng minh lời hứa \\\"X10 view trong 1 đêm\\\" ở tiêu đề/thumbnail, nên cần sửa ở giai đoạn script (rồi dựng lại narration/manifest).\", \"findings\": [{\"level\": \"block\", \"location\": \"title\", \"text\": \"Tiêu đề \\\"BÍ MẬT X10 VIEW TRONG 1 ĐÊM\\\" hứa kết quả mà kịch bản (giới thiệu công cụ/tính năng) không chứng minh bằng số liệu hay trình diễn nào; khán giả bị lừa.\"}, {\"level\": \"block\", \"location\": \"thumbnails[A].overlay_text\", \"text\": \"Thumbnail \\\"X10 VIEW 1 ĐÊM\\\" có cùng lời hứa không được nội dung chứng minh.\"}, {\"level\": \"block\", \"location\": \"script.hook\", \"text\": \"Hook \\\"Hôm nay mình giới thiệu công cụ\\\" không nêu lời hứa nào, không có vòng mở và không khớp lời hứa tiêu đề; video không tới được lời hứa trong ≤ 5s.\"}, {\"level\": \"block\", \"location\": \"preflight.title\", \"text\": \"Finding block của preflight (\\\"cụm bị cấm\\\" ở tiêu đề) vẫn còn tồn tại, chưa được xử lý.\"}, {\"level\": \"block\", \"location\": \"S1\", \"text\": \"Narration trong manifest là \\\"n\\\" (placeholder) và visual_prompt là \\\"p\\\" cho cảnh 40s: không khớp kịch bản (hook + section) và không đủ nội dung để lồng tiếng/phụ đề cho cả cảnh; cảnh coi như trống nội dung.\"}, {\"level\": \"warn\", \"location\": \"S1\", \"text\": \"Cả video chỉ có một cảnh dài 40s trên một hình, vượt ngưỡng 20s không đổi hình.\"}, {\"level\": \"warn\", \"location\": \"script.sections\", \"text\": \"Không thấy CTA một hành động trong kịch bản; kết video không có lời kêu gọi.\"}, {\"level\": \"warn\", \"location\": \"script.sections[0]\", \"text\": \"Nội dung chỉ là \\\"giới thiệu tính năng\\\", chưa có góc nhìn/giá trị riêng hay payoff, có rủi ro bị coi là nội dung thiếu độc đáo (YPP).\"}, {\"level\": \"warn\", \"location\": \"package.final_video.duration_s\", \"text\": \"Gói không có target_minutes nên không kiểm được độ lệch ±20%; chỉ xác nhận duration video 40s khớp tổng manifest 40s.\"}], \"metrics\": {\"hook_seconds\": null, \"total_seconds\": 40, \"scenes\": 1, \"longest_scene_s\": 40, \"findings\": {\"block\": 5, \"warn\": 4, \"nit\": 0}}}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 7208,
+   "output_tokens": 1832,
+   "score": 1.0,
+   "runs": 1
+  },
+  "6464831ffa36c93171265e9b": {
+   "text": "{\"video_id\": \"CH1-V1\", \"source\": \"quality\", \"verdict\": \"pass\", \"findings\": [{\"level\": \"warn\", \"location\": \"S7\", \"text\": \"Cảnh CTA dài 19s nhưng lời đọc chỉ khoảng 19 từ, và hình là một ô bình luận tĩnh. Nhiều khả năng có khoảng lặng hoặc một hình đứng yên gần hết cảnh. Nên rút cảnh lại, hoặc thêm hình hay chuyển động để giữ nhịp cuối video. Đây là phỏng đoán từ số từ so với thời lượng manifest, chưa đo trên bản TTS thật.\"}, {\"level\": \"nit\", \"location\": \"S1\", \"text\": \"Hook 5s đúng ngưỡng, nhưng lời hứa '30 phút' đứng sau khoảng 20 từ trong 5s nên khá dày. Cần xác nhận thời lượng TTS thật không làm hook vượt 5s. Chưa phải block, vì manifest ghi 5s và còn thấp hơn ngưỡng block 8s.\"}, {\"level\": \"nit\", \"location\": \"S6\", \"text\": \"Prompt yêu cầu 'tấm biển nhỏ ghi kiểm tra số liệu' nhưng khung giữa chỉ có nhãn 'chỉn chu vs đơn giản'. Phần nhắc tự kiểm số liệu chỉ có trong lời đọc, không có trên hình.\"}, {\"level\": \"nit\", \"location\": \"thumbnail A\", \"text\": \"Chữ '6 GIỜ → 30 PHÚT' khớp overlay_text và được narration S2–S5 chứng minh (2+1+3=6 giờ; 10+5+15=30 phút). Tuy vậy chữ chạy sát mép phải, lệch trái, và nền là một màu phẳng không có hình. Nên thêm lề phải và một hình nhấn để dễ đọc khi thu nhỏ.\"}], \"root_cause\": null, \"metrics\": {\"hook_seconds\": 5, \"total_seconds\": 120, \"scenes\": 7, \"longest_scene_s\": 20, \"target_deviation_pct\": 0, \"target_basis\": \"script.estimated_minutes=2 (không có target_minutes trong package)\", \"manifest_sum_matches_asset\": true, \"preflight_blocks\": 0, \"cta_present\": true, \"findings\": {\"block\": 0, \"warn\": 1, \"nit\": 3}}}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 26443,
+   "output_tokens": 4714,
+   "score": 1.0,
+   "runs": 1
+  },
+  "9249b845afcf55af8ab43ee4": {
+   "text": "{\"video_id\": \"CH1-V2\", \"source\": \"quality\", \"verdict\": \"block\", \"findings\": [{\"level\": \"block\", \"location\": \"title\", \"text\": \"Preflight vẫn còn finding block ở tiêu đề (\\\"cụm bị cấm\\\") và chưa được xử lý. Tiêu đề \\\"BÍ MẬT X10 VIEW TRONG 1 ĐÊM\\\" vẫn như cũ.\"}, {\"level\": \"block\", \"location\": \"title\", \"text\": \"Tiêu đề hứa \\\"bí mật x10 view trong 1 đêm\\\", nhưng kịch bản chỉ \\\"giới thiệu công cụ / tính năng\\\". Không có nội dung nào chứng minh mức tăng view hay khung thời gian 1 đêm, nên khán giả bị đánh lừa.\"}, {\"level\": \"block\", \"location\": \"thumbnail A\", \"text\": \"Chữ trên thumbnail (overlay_text \\\"X10 VIEW 1 ĐÊM\\\") là lời hứa mà video không chứng minh được, vì không có phần nào đo hay chỉ ra x10 view hoặc 1 đêm. Không có ảnh đính kèm, nên chỉ đối chiếu được overlay_text với nội dung.\"}, {\"level\": \"block\", \"location\": \"S1\", \"text\": \"Manifest chỉ có một cảnh, narration là \\\"n\\\" và visual_prompt là \\\"p\\\" (placeholder). Một ký tự không thể là 40 giây thoại. Narration trong manifest cũng không khớp kịch bản (\\\"giới thiệu tính năng\\\"), nên coi như cảnh trống và lệch đồng bộ.\"}, {\"level\": \"warn\", \"location\": \"S1\", \"text\": \"Một cảnh 40s với một hình duy nhất, vượt ngưỡng 20s không đổi hình, nên không có ngắt mẫu hay chuyển cảnh.\"}, {\"level\": \"warn\", \"location\": \"script.hook\", \"text\": \"Hook \\\"Hôm nay mình giới thiệu công cụ\\\" là câu mở chung chung, không nêu lời hứa hay vòng mở nào. Nội dung hook cũng không khớp lời hứa của tiêu đề, nên không đạt ≤ 5s tới lời hứa.\"}, {\"level\": \"warn\", \"location\": \"script.sections\", \"text\": \"Kịch bản không có CTA và không có payoff trả lời lời hứa của tiêu đề. Chỉ có một mục \\\"giới thiệu tính năng\\\", không thấy góc nhìn riêng hay giá trị gia tăng.\"}, {\"level\": \"warn\", \"location\": \"final_video.duration_s\", \"text\": \"Gói không có target_minutes nên chưa đối chiếu được thời lượng ±20%. Thời lượng 40s lấy từ asset và khớp tổng manifest. Cần bổ sung target_minutes để kiểm.\"}], \"root_cause\": \"Giai đoạn script/production: kịch bản và manifest chỉ là placeholder (một cảnh, narration \\\"n\\\") và không chứng minh lời hứa \\\"X10 VIEW 1 ĐÊM\\\" của tiêu đề/thumbnail. Preflight block ở tiêu đề cũng chưa được sửa.\", \"metrics\": {\"hook_seconds\": null, \"total_seconds\": 40, \"scenes\": 1, \"longest_scene_s\": 40, \"findings\": {\"block\": 4, \"warn\": 4, \"nit\": 0}}}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 16667,
+   "output_tokens": 3030,
+   "score": 1.0,
+   "runs": 1
+  },
+  "879e1bbef254098b791cd8bf": {
+   "text": "{\"video_id\": \"CH1-V1\", \"source\": \"quality\", \"verdict\": \"block\", \"findings\": [{\"level\": \"block\", \"location\": \"thumbnail A\", \"text\": \"Chữ trên ảnh thumbnail là 'KIẾM 100 TRIỆU MỖI THÁNG NHỜ AI / KHÔNG CẦN LÀM GÌ', không phải overlay_text '6 GIỜ → 30 PHÚT'. Video không nói tới thu nhập, 100 triệu hay việc không cần làm gì. S6 còn nói 'Không phải phép màu' và 'bạn vẫn phải tự kiểm số liệu'. Thumbnail hứa điều nội dung không chứng minh và mâu thuẫn với nội dung, nên khán giả bị lừa.\"}, {\"level\": \"nit\", \"location\": \"S3\", \"text\": \"Cảnh dài đúng 20s với một hình, sát ngưỡng 20s. Nên thêm một nhịp đổi hình, ví dụ cắt giữa dàn ý và kịch bản.\"}, {\"level\": \"nit\", \"location\": \"S5\", \"text\": \"Cảnh dài đúng 20s với một hình (lưới 6 ảnh), sát ngưỡng 20s. Nên thêm một nhịp đổi hình.\"}], \"root_cause\": \"Giai đoạn production: ảnh thumbnail A được dựng với chữ 'kiếm 100 triệu… không cần làm gì' không khớp overlay_text '6 GIỜ → 30 PHÚT' và không được video chứng minh. Cần dựng lại thumbnail đúng overlay_text.\", \"metrics\": {\"hook_seconds\": 5, \"total_seconds\": 120, \"scenes\": 7, \"longest_scene_s\": 20, \"target_minutes\": 2, \"duration_deviation_pct\": 0, \"preflight_blocks\": 0, \"findings\": {\"block\": 1, \"warn\": 0, \"nit\": 2}}}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 25132,
+   "output_tokens": 3227,
+   "score": 1.0,
+   "runs": 1
   }
  }
 }

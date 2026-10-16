@@ -1,7 +1,7 @@
 ---
 name: channel-strategy
-version: 1
-standards: [Content pillars, ICE prioritisation, YouTube Creator Academy, Jobs-to-be-done, Editorial calendar]
+version: 2
+standards: [Content pillars, ICE prioritisation, YouTube Creator Academy, Jobs-to-be-done, Editorial calendar, YPP inauthentic content]
 ---
 # Skill: channel-strategy
 
@@ -23,6 +23,8 @@ liệt kê ứng viên theo pillar → lọc bằng ranh giới → chấm ICE �
 - Brief bắt trend có hạn dùng: ghi vào `boundaries` "đăng trước <ngày>"; quá hạn thì huỷ, không ép sản xuất.
 - Chủ đề YMYL (sức khoẻ, tài chính, pháp lý) chỉ khi kênh có pillar và ranh giới tương ứng; gắn `risk_tags`.
 - Short bổ trợ long (cắt từ video dài đã duyệt) chứ không thay thế pillar.
+- Không lập loạt brief cùng một khuôn chỉ đổi chủ đề: YouTube không cho kiếm tiền nội dung làm hàng loạt, lặp lại
+  (YPP "inauthentic content", 7/2025); mỗi `angle` phải là góc nhìn riêng của kênh.
 
 ## Quy tắc — ước lượng và ưu tiên
 - `estimate_tokens` theo mẫu gần nhất cùng format (calibration median × ước lượng thô); không có mẫu thì PERT (O+4M+P)/6.

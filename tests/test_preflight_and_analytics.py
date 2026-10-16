@@ -1,6 +1,7 @@
 from studio.analytics import judge_experiment, retention_drops, scene_at
 from studio.events import Chapter, MetadataPackage, PerformanceSnapshot, RetentionPoint, Scene, SceneManifest
-from studio.preflight import preflight
+from studio.film import CinemaSpec
+from studio.preflight import preflight, synthetic_media_of
 
 
 def _meta(**kw):
@@ -36,6 +37,36 @@ def test_advisory_warns_do_not_block():
     rep = preflight(_meta(title="AI DỰNG VIDEO CHO NGƯỜI MỚI 6 GIỜ XUỐNG 30 PHÚT", description="ngắn"))
     assert not rep.blocked and len(rep.findings) >= 2
     assert rep.checklist()
+
+
+def test_synthetic_media_flag_is_advisory_until_decided():
+    """ADR-0018: YouTube tự gắn nhãn AI (5/2026) nếu kênh không khai `containsSyntheticMedia`. Chưa quyết → warn
+    cho người duyệt; đã quyết (True/False) → không còn finding."""
+    rep = preflight(_meta())
+    assert MetadataPackage.model_fields["synthetic_media"].default is None
+    assert [f.level for f in rep.findings if f.location == "synthetic_media"] == ["warn"] and not rep.blocked
+    for decided in (True, False):
+        assert all(f.location != "synthetic_media" for f in preflight(_meta(synthetic_media=decided)).findings)
+
+
+def _asset(path: str, license: str = "generated", by: str = "gemini:veo") -> dict:
+    return {"path": path, "kind": "scene_video", "provenance": {"generated_by": by, "license": license}}
+
+
+def test_synthetic_media_of_is_decided_by_code_from_manifest_and_provenance():
+    film = SceneManifest(video_id="V1", cinema=CinemaSpec(production_type="film", visual_mode="generated_video"),
+                         scenes=[Scene(scene_id="S1", order=0, narration="a", visual_prompt="p", duration_s=5, asset_refs={"scene_video": "/o/S1.mp4"})])
+    assert synthetic_media_of(film, [_asset("/o/S1.mp4")]) is True            # clip AI thực tế → phải khai
+    assert synthetic_media_of(film, [_asset("/o/S1.mp4", "licensed", "human-upload")]) is None  # footage có bản quyền, không sinh
+    anim = film.model_copy(update={"cinema": CinemaSpec(production_type="animation", visual_mode="generated_video")})
+    assert synthetic_media_of(anim, [_asset("/o/S1.mp4")]) is None           # hoạt hình: YouTube không đòi nhãn nổi bật → người quyết
+    expl = SceneManifest(video_id="V1", scenes=[Scene(scene_id="S1", order=0, narration="a", visual_prompt="p", duration_s=5, asset_refs={"scene_image": "/o/S1.png"})])
+    assert synthetic_media_of(expl, [_asset("/o/S1.png", by="openai:gpt-image-1")]) is None  # minh hoạ explainer: code không đoán
+    cine_img = SceneManifest(video_id="V1", cinema=CinemaSpec(production_type="film"),
+                             scenes=[Scene(scene_id="S1", order=0, narration="a", visual_prompt="p", duration_s=5, asset_refs={"scene_image": "/o/S1.png"})])
+    assert synthetic_media_of(cine_img, [_asset("/o/S1.png", by="openai:gpt-image-1")]) is True  # phim bằng ảnh AI điện ảnh
+    assert synthetic_media_of(film, [_asset("/o/S1.mp4")], policy=False) is False  # chính sách kênh khai tường minh thắng
+    assert synthetic_media_of(expl, [], policy=True) is True
 
 
 def _manifest():

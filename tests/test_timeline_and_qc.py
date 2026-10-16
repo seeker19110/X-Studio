@@ -135,7 +135,13 @@ def test_qc_blocks_a_broken_render_and_warns_on_soft_problems(tmp_path, monkeypa
     assert rep.metrics["black_spans"] == [1.2] and rep.metrics["silence_spans"] == [2.5]
 
 
-def test_qc_checks_the_thumbnail_against_platform_limits(tmp_path, monkeypatch):
+@pytest.mark.parametrize("size_bytes, level, text", [
+    # 3 MB: trên mục tiêu 2 MB của renderer (warn, nền tảng nhận ≤ 50 MB) nhưng không chặn đăng
+    (3_000_000, "warn", "3.0 MB vượt mục tiêu 2 MB"),
+    # 51 MB: YouTube từ chối → chặn
+    (51_000_000, "block", "51.0 MB vượt giới hạn nền tảng 50 MB"),
+])
+def test_qc_checks_the_thumbnail_against_platform_limits(tmp_path, monkeypatch, size_bytes, level, text):
     f = tmp_path / "final.mp4"; f.write_bytes(b"x")
     thumb = tmp_path / "A.jpg"; thumb.write_bytes(b"y")
     probe = dict(_OK_PROBE)
@@ -147,15 +153,16 @@ def test_qc_checks_the_thumbnail_against_platform_limits(tmp_path, monkeypatch):
             calls["n"] += 1
             if calls["n"] == 1: return subprocess.CompletedProcess(argv, 0, json.dumps(probe), "")
             big = {"streams": [{"codec_type": "video", "width": 640, "height": 360, "r_frame_rate": "0/0"}],
-                   "format": {"duration": "0", "size": str(3_000_000)}}
+                   "format": {"duration": "0", "size": str(size_bytes)}}
             return subprocess.CompletedProcess(argv, 0, json.dumps(big), "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(qc, "qc_sandbox", lambda: SubprocessSandbox(runner=run))
     rep = qc_video(f, thumbnail=thumb)
     texts = " | ".join(x.text for x in rep.findings)
-    assert rep.blocked and "3.0 MB vượt giới hạn" in texts and "640x360 khác chuẩn 1280x720" in texts
-    assert rep.metrics["thumbnail"] == {"resolution": "640x360", "bytes": 3_000_000}
+    assert text in texts and "640x360 khác chuẩn 1280x720" in texts
+    assert rep.metrics["thumbnail"] == {"resolution": "640x360", "bytes": size_bytes}
+    assert {x.level for x in rep.findings if x.location == "thumbnail"} == {level, "warn"}
 
 
 def test_qc_survives_unreadable_output(tmp_path, monkeypatch):
@@ -412,3 +419,97 @@ def test_qc_catches_a_real_still_image_slideshow_but_not_ken_burns(tmp_path, mon
         rep = qc_video(Path(final.path), expected_duration_s=final.duration_s or 0.0)
         assert bool(rep.metrics["freeze_spans"]) is frozen, (motion, rep.metrics)
         assert any(x.location == "motion" for x in rep.findings) is frozen
+
+
+# ---------- ASR đối chiếu lời đọc (FFmpeg ≥ 8 filter `whisper`, ADR-0019) ----------
+
+SRT_HEARD = ("1\n00:00:00,000 --> 00:00:03,500\nCâu của cảnh một.\n\n"
+             "2\n00:00:04.500 --> 00:00:09.000\nhoàn toàn\nkhác hẳn rồi\n\n"
+             "3\nkhông có mốc\n\n4\n00:00:12,000 --> 00:00:14,000\n\n")
+NARRATION = [("S1", 0.0, 4.0, "Câu của cảnh một"), ("S2", 4.0, 10.0, "Câu của cảnh hai"), ("S3", 10.0, 15.0, "  ")]
+
+
+def test_wer_and_srt_parsing():
+    assert qc.wer("Xin chào các bạn", "xin chào, các bạn!") == 0.0
+    assert qc.wer("a b c d", "a c d") == 0.25 and qc.wer("a b", "x y z w") == 1.0
+    assert qc.wer("", "x") == 1.0 and qc.wer("", "") == 0.0
+    assert qc.parse_srt(SRT_HEARD) == [(0.0, 3.5, "Câu của cảnh một."), (4.5, 9.0, "hoàn toàn khác hẳn rồi")]
+    assert qc.narration_wer(qc.parse_srt(SRT_HEARD), NARRATION) == {"S1": 0.0, "S2": 1.0}
+
+
+def _asr_tools(monkeypatch, tmp_path, *, filters: str = "  ... whisper           A->A       Transcribe audio\n",
+               whisper_code: int = 0):
+    model = tmp_path / "ggml-base.bin"; model.write_bytes(b"ggml")
+    monkeypatch.setenv("STUDIO_QC_ASR_MODEL", str(model))
+    monkeypatch.setenv("STUDIO_QC_ASR_LANGUAGE", "vi")
+    monkeypatch.setattr(qc.shutil, "which", lambda b: f"/usr/bin/{b}")
+    calls: list[list[str]] = []
+
+    def run(argv, *a, **k):
+        calls.append(argv)
+        if "ffprobe" in argv[0]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(_OK_PROBE), "")
+        if argv[-1] == "-filters":
+            return subprocess.CompletedProcess(argv, 0, filters, "")
+        if any(arg.startswith("whisper=") for arg in argv):
+            return subprocess.CompletedProcess(argv, whisper_code, SRT_HEARD, "")
+        return subprocess.CompletedProcess(argv, 0, "", "  I:         -14.1 LUFS\n  Peak:       -1.2 dBFS\n")
+
+    monkeypatch.setattr(qc, "qc_sandbox", lambda: SubprocessSandbox(runner=run))
+    return calls, model
+
+
+def test_qc_asr_compares_narration_per_scene(tmp_path, monkeypatch):
+    f = tmp_path / "final.mp4"; f.write_bytes(b"x")
+    calls, model = _asr_tools(monkeypatch, tmp_path)
+    rep = qc_video(f, narration=NARRATION)
+    assert rep.metrics["asr"] == {"model": "ggml-base.bin", "language": "vi", "wer": 0.5, "segments": 2,
+                                  "scenes": {"S1": 0.0, "S2": 1.0}}
+    bad = [x for x in rep.findings if x.location == "narration"]
+    assert [x.level for x in bad] == ["warn"] and "cảnh S2" in bad[0].text and "0%" in bad[0].text
+    assert not rep.blocked
+    assert any("asr_wer=0.5" in line for line in rep.checklist())
+    argv = next(a for a in calls if any(arg.startswith("whisper=") for arg in a))
+    spec = next(arg for arg in argv if arg.startswith("whisper="))
+    assert f"model={model}" in spec and ":language=vi:" in spec and "format=srt" in spec
+    assert spec.endswith("destination=pipe\\:1") and "-vn" in argv and argv[-2:] == ["null", "-"]
+
+
+def test_qc_asr_is_silent_without_model_or_filter_and_warns_when_ffmpeg_fails(tmp_path, monkeypatch):
+    f = tmp_path / "final.mp4"; f.write_bytes(b"x")
+    monkeypatch.delenv("STUDIO_QC_ASR_MODEL", raising=False)
+    _fake_tools(monkeypatch, _OK_PROBE, "  I:         -14.1 LUFS\n  Peak:       -1.2 dBFS\n")
+    rep = qc_video(f, narration=NARRATION)
+    assert "asr" not in rep.metrics and not [x for x in rep.findings if x.location == "narration"]
+    # FFmpeg 6/7: không có filter whisper → im lặng, không phải warn
+    calls, _ = _asr_tools(monkeypatch, tmp_path, filters="  ... silencedetect  A->A\n")
+    rep = qc_video(f, narration=NARRATION)
+    assert "asr" not in rep.metrics and not any(any(a.startswith("whisper=") for a in c) for c in calls)
+    # model khai nhưng file không có → im lặng
+    monkeypatch.setenv("STUDIO_QC_ASR_MODEL", str(tmp_path / "missing.bin"))
+    assert "asr" not in qc_video(f, narration=NARRATION).metrics
+    # filter có, lượt chạy lỗi → warn, không chặn
+    _asr_tools(monkeypatch, tmp_path, whisper_code=1)
+    rep = qc_video(f, narration=NARRATION)
+    assert [x.text for x in rep.findings if x.location == "narration"] == ["ASR (ffmpeg whisper) thất bại; chưa đối chiếu lời đọc"]
+    assert "asr" not in rep.metrics and not rep.blocked
+    # không có lời đọc nào để so (narration rỗng) → không gọi ASR
+    calls, _ = _asr_tools(monkeypatch, tmp_path)
+    qc_video(f, narration=[])
+    assert not any(a[-1] == "-filters" for a in calls)
+
+
+def test_orchestrator_hands_narration_cues_to_qc(tmp_path, monkeypatch):
+    from studio import orchestrator
+    from studio.events import MediaAsset
+    from studio.orchestrator import StepResult
+    from test_orchestrator import _to_publish_gate
+    bus, o = _to_publish_gate(tmp_path)
+    vid = "CH1-V1"
+    seen: dict = {}
+    monkeypatch.setattr(orchestrator, "qc_video", lambda path, **kw: seen.update(kw) or qc.QCReport())
+    m = SceneManifest.model_validate(bus.latest("scene-manifests", vid).payload)
+    final = next(a for a in reversed([e.payload for e in bus.replay("media-assets", vid)]) if a["kind"] == "final_video")
+    o._after_final(m, None, MediaAsset.model_validate(final), StepResult("e1", "media-assets", vid))
+    cues = o.renderer.cues(m, None)
+    assert seen["narration"] == [(c.scene_id, c.start, c.end, c.text) for c in cues] and len(cues) == len(m.scenes)

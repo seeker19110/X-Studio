@@ -1,9 +1,10 @@
 {
  "agent": "analytics-analyst",
  "prompt_version": 1,
- "recorded_at": "2026-09-02T14:27:53.236989+00:00",
+ "recorded_at": "2026-10-14T12:15:44.347719+00:00",
  "models": [
-  "claude-haiku-4-5-20251001"
+  "claude-haiku-4-5-20251001",
+  "claude-sonnet-5-5"
  ],
  "cases": {
   "a5498256e651d9dfbe9a6dc8": {
@@ -17,6 +18,22 @@
    "model": "claude-haiku-4-5-20251001",
    "input_tokens": 4841,
    "output_tokens": 817
+  },
+  "23af85b76ec10ad8d6259cc8": {
+   "text": "{\"payload\": {\"channel_id\": \"CH1\", \"video_id\": \"CH1-V1\", \"insights\": [{\"text\": \"Khán giả rơi mạnh nhất ở S2, cảnh giải thích dài 18s. Cảnh này vượt ngưỡng 20s của quy tắc nhịp, và điểm rơi nằm đúng đầu cảnh. Đây là tương quan trên một video, chưa chứng minh nguyên nhân.\", \"evidence\": \"retention_drops: -12.0 điểm tại t=6s, scene S2 (duration_s=18, narration 'giải thích dài'). Đường giữ chân: 90% tại 3s, 78% tại 6s.\", \"action\": \"editor: chia S2 thành 2–3 cảnh ngắn hơn và thêm hình mới (so sánh/minh hoạ) ngay quanh giây 6. script-writer: rút gọn hoặc chia nhỏ đoạn 'giải thích dài' và thêm câu chuyển.\"}, {\"text\": \"Hook S1 (5s) giữ được phần lớn khán giả, nhưng AVD chỉ 7s, tức khán giả rời sớm sau điểm rơi ở S2. Chưa đủ dữ liệu để đọc đuôi video vì đường giữ chân chỉ có 3 điểm (0–6s).\", \"evidence\": \"avg_view_duration_s=7; views=1200; retention_curve: 100% (0s) → 90% (3s) → 78% (6s); S1 duration_s=5.\", \"action\": \"script-writer: giữ cấu trúc hook S1, đặt vòng mở và đổi nhịp trước giây 6. editor: thêm ngắt mẫu bằng hình mới trước giây 6.\"}, {\"text\": \"CTR 6% trên mẫu đủ lớn nhưng chưa có trung bình kênh trong `insights` để so sánh, nên chưa kết luận cao hay thấp. Chưa có thí nghiệm A/B, nên chưa kết luận được tiêu đề hay thumbnail nào hiệu quả hơn.\", \"evidence\": \"ctr=0.06; impressions=20000 (≥1000); shared-context trống (không có baseline kênh); không có experiment. Tiêu đề hiện tại: 'AI dựng video', phương án khác: 'Dựng video bằng AI'.\", \"action\": \"seo-optimizer: chạy thí nghiệm một biến (tiêu đề 'AI dựng video' vs 'Dựng video bằng AI'), mỗi nhánh ≥1000 impressions. thumbnail-designer: chưa đổi thumbnail trong lúc chạy thí nghiệm tiêu đề.\"}], \"retention_drops\": [{\"t\": 6, \"drop_pct\": 12, \"scene_id\": \"S2\"}], \"experiments\": [], \"recommendations\": [\"Sửa S2 trước: chia cảnh 18s thành các cảnh ≤ 8s kèm hình mới quanh giây 6, rồi đọc lại retention_drops ở bản sửa.\", \"Ghi baseline CTR của kênh vào `insights` để các video sau có cái so sánh.\", \"Chạy A/B tiêu đề, mỗi lần một biến, và chỉ chọn winner khi confidence ≥ 0.95 và retention_guard_ok = true.\", \"Lấy thêm đường giữ chân sau giây 6 để đọc phần giữa và phần đuôi video.\"]}, \"context_writes\": []}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 18812,
+   "output_tokens": 2837,
+   "score": 1.0,
+   "runs": 1
+  },
+  "b847aadebb56abf285633c71": {
+   "text": "{\"payload\": {\"channel_id\": \"CH1\", \"video_id\": \"CH1-V1\", \"insights\": [{\"text\": \"Chưa đủ dữ liệu để kết luận CTR: mẫu dưới ngưỡng 1000 impressions nên không đọc CTR 5% là tốt hay xấu và không so với trung bình kênh.\", \"evidence\": \"impressions=800 (<1000), ctr=0.05, variant_id=B\", \"action\": \"seo-optimizer / thumbnail-designer: chưa đổi tiêu đề hay thumbnail; chờ đủ ≥1000 impressions rồi đọc lại.\"}, {\"text\": \"Thí nghiệm thumbnail EXP-1 chưa kết luận: độ tin cậy dưới 0.95 nên không có biến thể thắng (winner null là chưa kết luận, không phải hoà).\", \"evidence\": \"EXP-1: confidence=0.71 (<0.95), ctr_lift=0.05, retention_guard_ok=true, winner=null\", \"action\": \"thumbnail-designer: giữ nguyên cả hai biến thể A/B, tiếp tục chạy đến đủ mẫu ≥1000 impressions mỗi nhánh.\"}, {\"text\": \"Chưa có điểm rơi giữ chân nào được code map vào cảnh. AVD 6s trên 300 views đủ để đọc retention (≥100 views), nhưng chưa có số về độ dài video hay % giữ chân nên không đánh giá AVD cao hay thấp.\", \"evidence\": \"retention_drops=[] ; avg_view_duration_s=6; views=300\", \"action\": \"editor / script-writer: chưa có cảnh hay giây cần sửa; đợi snapshot có retention_drops và độ dài video để đánh giá hook.\"}], \"retention_drops\": [], \"experiments\": [{\"experiment_id\": \"EXP-1\", \"kind\": \"thumbnail\", \"variants\": [\"A\", \"B\"], \"winner\": null, \"ctr_lift\": 0.05, \"confidence\": 0.71, \"retention_guard_ok\": true}], \"recommendations\": [\"Chưa đủ dữ liệu (800 impressions): không đổi tiêu đề/thumbnail, không kết luận CTR.\", \"Tiếp tục chạy EXP-1 đến ≥1000 impressions mỗi nhánh; chỉ chọn winner khi confidence ≥ 0.95 và retention_guard_ok = true.\", \"Sync snapshot lại sau khi có thêm dữ liệu để code map retention_drops vào cảnh.\"]}, \"context_writes\": []}",
+   "model": "claude-sonnet-5-5",
+   "input_tokens": 8423,
+   "output_tokens": 929,
+   "score": 1.0,
+   "runs": 1
   }
  }
 }

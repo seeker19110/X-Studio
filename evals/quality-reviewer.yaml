@@ -5,7 +5,7 @@ cases:
     # hook 5s, không cảnh > 20s, tổng 120s = estimated_minutes 2, có CTA, preflight sạch.
     topic_out: review-results
     extra:
-      package:
+      package: &goi_dat
         script:
           video_id: CH1-V1
           version: 1
@@ -42,8 +42,8 @@ cases:
           chapters: [{time: "00:00", label: "6 giờ đi đâu"}, {time: "00:24", label: "Kịch bản 10 phút"}, {time: "00:44", label: "Giọng đọc 5 phút"}, {time: "01:02", label: "Hình và dựng 15 phút"}, {time: "01:22", label: "Cái giá phải trả"}]
           primary_keyword: "ai dựng video"
         thumbnails:
-          - {variant_id: A, path: thumb-A.png, overlay_text: "6 GIỜ → 30 PHÚT"}
-          - {variant_id: B, path: thumb-B.png, overlay_text: "30 PHÚT / 1 VIDEO"}
+          - {kind: thumbnail, variant_id: A, path: evals/fixtures/thumb-6-gio-30-phut.png, overlay_text: "6 GIỜ → 30 PHÚT"}
+        contact_sheet: {kind: contact_sheet, path: evals/fixtures/contact-sheet-goi-dat.png, manifest_version: 1}
         final_video: {path: final.mp4, duration_s: 120, manifest_version: 1}
         preflight: []
     input:
@@ -71,5 +71,24 @@ cases:
       payload: {video_id: CH1-V2, kind: final_video, path: final.mp4, provenance: {generated_by: "fake:video"}}
     expect:
       equals: {video_id: CH1-V2, source: quality}
+      one_of: {verdict: [block, fail]}
+      min_len: {findings: 1}
+
+  - name: chu-tren-anh-thumbnail-hua-dieu-phai-block
+    # ADR-0020: gói y hệt gói đạt, overlay_text khai trung thực, nhưng ẢNH thumbnail thật in "KIẾM 100 TRIỆU MỖI THÁNG
+    # NHỜ AI" — video không chứng minh → phải block. Chỉ thấy được khi nhìn ảnh.
+    topic_out: review-results
+    extra:
+      package:
+        <<: *goi_dat
+        thumbnails:
+          - {kind: thumbnail, variant_id: A, path: evals/fixtures/thumb-hua-hen-thu-nhap.png, overlay_text: "6 GIỜ → 30 PHÚT"}
+    input:
+      topic: media-assets
+      key: CH1-V1
+      actor: renderer
+      payload: {video_id: CH1-V1, kind: final_video, path: final.mp4, duration_s: 120, provenance: {generated_by: "fake:video", prompt_ref: "manifest:v1", license: generated}}
+    expect:
+      equals: {video_id: CH1-V1, source: quality}
       one_of: {verdict: [block, fail]}
       min_len: {findings: 1}
