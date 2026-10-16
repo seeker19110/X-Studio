@@ -22,6 +22,7 @@ Ba chỗ studio **được nâng** ở đây, đều tương thích ngược (AD
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -222,6 +223,56 @@ def object_in_prose(raw: str) -> dict[str, Any] | None:
         try: return cast("dict[str, Any]", json.loads(raw[start:end + 1]))
         except json.JSONDecodeError: end = raw.rfind("}", start, end)
     return None
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """Một ảnh gửi KÈM lượt user đầu (studio ADR-0020): đầu vào để model nhìn, không phải tool — model vẫn chỉ trả
+    JSON. `sha256` là băm của FILE NGUỒN (người gọi đặt), không phải của `data` đã thu nhỏ: khoá eval dùng nó nên phát
+    lại không đổi khi Pillow khác phiên bản nén ra bytes khác."""
+    media_type: str
+    data: bytes
+    sha256: str
+    label: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.media_type.startswith("image/"):
+            raise LLMError(f"attachment chỉ nhận image/*, không nhận {self.media_type}")
+        if not self.data:
+            raise LLMError("attachment rỗng")
+
+    def b64(self) -> str:
+        return base64.b64encode(self.data).decode("ascii")
+
+    def data_url(self) -> str:
+        return f"data:{self.media_type};base64,{self.b64()}"
+
+
+def anthropic_image_blocks(attachments: list[Attachment]) -> list[dict[str, Any]]:
+    """Định dạng content block ảnh của Anthropic Messages (cũng là định dạng `claude -p --input-format stream-json`)."""
+    return [{"type": "image", "source": {"type": "base64", "media_type": a.media_type, "data": a.b64()}}
+            for a in attachments]
+
+
+def claude_stream_input(text: str, attachments: list[Attachment]) -> str:
+    """Một dòng stdin cho `claude -p --input-format stream-json`: ảnh trước, chữ sau — đo thật 14/10/2026, CLI đọc
+    đúng chữ và màu trong ảnh mà không cần mở tool đọc file nào cho model."""
+    content = [*anthropic_image_blocks(attachments), {"type": "text", "text": text}]
+    return json.dumps({"type": "user", "message": {"role": "user", "content": content}}, ensure_ascii=False)
+
+
+def stream_result(out: str) -> str:
+    """Dòng `{"type": "result", ...}` của `--output-format stream-json`; đầu ra `json` thường thì trả nguyên."""
+    for line in reversed(out.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"): continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "result":
+            return line
+    return out
 
 
 @dataclass
@@ -505,7 +556,8 @@ class ModelClient(Protocol):
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion: ...  # pragma: no cover
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None,
+                 attachments: list[Attachment] | None = None) -> Completion: ...  # pragma: no cover
     # `pragma: no cover` như các stub Protocol ở `evals.py`: thân `...` là KHAI BÁO KIỂU, không có đường chạy
     # nào tới nó (mọi lời gọi đi vào hiện thực cụ thể). Đây là miễn trừ cho thứ không thực thi được, không
     # phải cho thứ chưa được test — đừng dùng khuôn này cho code có nhánh thật.
@@ -577,13 +629,23 @@ class AnthropicClient:
                 out.append({"role": "user", "content": m["content"]})
         return out
 
+    @staticmethod
+    def _with_images(msgs: list[dict[str, Any]], attachments: list[Attachment]) -> list[dict[str, Any]]:
+        """Ảnh đi trước chữ trong lượt user ĐẦU; các lượt sau (vòng tool) giữ nguyên."""
+        if not attachments: return msgs
+        i = next(k for k, m in enumerate(msgs) if m["role"] == "user")
+        out = list(msgs)
+        out[i] = {"role": "user", "content": [*anthropic_image_blocks(attachments), {"type": "text", "text": msgs[i]["content"]}]}
+        return out
+
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None,
+                 attachments: list[Attachment] | None = None) -> Completion:
         kwargs: dict[str, Any] = dict(
             model=self.cfg.model_for(model_tier), max_tokens=self.cfg.max_tokens,
             system=[{"type": "text", "text": system, "cache_control": cache_control(self.cfg.cache_ttl)}],
-            messages=self._messages(neutral_messages(user, messages)),
+            messages=self._with_images(self._messages(neutral_messages(user, messages)), attachments or []),
             thinking={"type": "adaptive"},
             output_config={"effort": self.cfg.effort.get(model_tier, "medium"),
                            "format": {"type": "json_schema", "schema": strict_schema(schema)}},
@@ -663,9 +725,12 @@ class CodexClient:
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None,
+                 attachments: list[Attachment] | None = None) -> Completion:
         if tools:
             raise LLMError("codex không hỗ trợ tool-use của công ty; agent cần tool phải đi backend anthropic/openai")
+        if attachments:
+            raise LLMError("codex không nhận ảnh đính kèm; agent xem ảnh phải đi backend anthropic/openai/claude-code")
         model = self.cfg.model_for(model_tier)
         msgs = neutral_messages(user, messages)
         body = msgs[0]["content"] if len(msgs) == 1 else "\n\n".join(f"[{m['role']}]\n{m.get('content') or ''}" for m in msgs)
@@ -720,7 +785,8 @@ class FakeClient:
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None,
+                 attachments: list[Attachment] | None = None) -> Completion:
         msgs = neutral_messages(user, messages)
         # Hai thứ KHÁC NHAU khi có `messages`, và cả hai đều cần:
         #   `user`     = lượt user thật sự gửi đi (lấy từ `messages`) — bản company, thứ model đọc.
@@ -729,7 +795,8 @@ class FakeClient:
         # K3.3c2 giữ cả hai thay vì chọn một: bản cũ của mỗi bên đều mất đúng thông tin mà bên kia dùng.
         self.calls.append({"system": system, "user": next(m["content"] for m in msgs if m["role"] == "user"),
                            "user_arg": user, "schema": schema, "model_tier": model_tier,
-                           "cache_key": cache_key, "tools": [t.name for t in tools or []], "messages": msgs})
+                           "cache_key": cache_key, "tools": [t.name for t in tools or []], "messages": msgs,
+                           "attachments": [a.sha256 for a in attachments or []]})
         if tools and self.tool_handler:
             wanted = self.tool_handler(msgs, tools)
             if wanted:
@@ -820,6 +887,16 @@ class OpenAICompatClient:
         return data
 
     @staticmethod
+    def _with_images(msgs: list[dict[str, Any]], attachments: list[Attachment]) -> list[dict[str, Any]]:
+        """Lượt user ĐẦU thành [chữ, image_url (data URL)…]; các lượt khác giữ nguyên."""
+        if not attachments: return msgs
+        i = next(k for k, m in enumerate(msgs) if m["role"] == "user")
+        out = list(msgs)
+        out[i] = {"role": "user", "content": [{"type": "text", "text": msgs[i]["content"]},
+                                              *({"type": "image_url", "image_url": {"url": a.data_url()}} for a in attachments)]}
+        return out
+
+    @staticmethod
     def _messages(system: str, msgs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = [{"role": "system", "content": system}]
         for m in msgs:
@@ -837,10 +914,13 @@ class OpenAICompatClient:
 
     def complete(self, *, system: str, user: str, schema: dict[str, Any], model_tier: str,
                  cache_key: str | None = None, tools: list[ToolSpec] | None = None,
-                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None) -> Completion:
+                 messages: list[dict[str, Any]] | None = None, workdir: str | None = None,
+                 attachments: list[Attachment] | None = None) -> Completion:
         model = self.cfg.model_for(model_tier)
         msgs = self._messages(system, neutral_messages(user, messages))
-        base: dict[str, Any] = {"model": model, "max_tokens": self.cfg.max_tokens, **self.cfg.extra, "messages": msgs}
+        images = attachments or []
+        base: dict[str, Any] = {"model": model, "max_tokens": self.cfg.max_tokens, **self.cfg.extra,
+                                "messages": self._with_images(msgs, images)}
         if tools:
             base["tools"] = [{"type": "function", "function": {"name": t.name, "description": t.description,
                                                                "parameters": t.parameters}} for t in tools]
@@ -862,7 +942,8 @@ class OpenAICompatClient:
             fb = [*msgs]; i = max(k for k, m in enumerate(fb) if m["role"] == "user")
             fb[i] = {**fb[i], "content": fb[i]["content"] + hint}
             # json_object ép mọi lượt là JSON, kể cả lượt model muốn gọi tool → có tool thì không ép; runner chốt JSON sau
-            data = self._post_cacheable({**base, "messages": fb, **({} if tools else {"response_format": {"type": "json_object"}})})
+            data = self._post_cacheable({**base, "messages": self._with_images(fb, images),
+                                         **({} if tools else {"response_format": {"type": "json_object"}})})
         choice = (data.get("choices") or [{}])[0]
         finish = choice.get("finish_reason") or "stop"
         if finish == "content_filter":
@@ -1026,6 +1107,7 @@ class ClaudeCodeClient:
 
     def _parse(self, out: str, model: str, tool_mode: str = "") -> Completion:
         """JSON của `claude -p` → Completion (dùng chung cho cả ba chế độ tool)."""
+        out = stream_result(out)   # `--output-format stream-json` (lượt có ảnh): chỉ dòng `result` mang kết quả
         try:
             data = json.loads(out[out.index("{"):]) if "{" in out else {}
         except json.JSONDecodeError as e:

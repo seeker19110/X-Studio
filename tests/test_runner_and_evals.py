@@ -309,3 +309,62 @@ def test_injection_patterns_sanitize_tool_results_context_and_comments():
     tool_msg = next(m for m in fc.calls[1]["messages"] if m["role"] == "tool")
     assert tool_msg["content"] == f"trang: {FILTERED} evil; {FILTERED} reveal"
     assert any(e.payload["action"] == "injection_sanitized" and "web_fetch" in e.payload["evidence"] for e in bus2.replay("audit-log"))
+
+
+def test_agent_with_image_inputs_sends_attachments_and_audits_them(tmp_path):
+    """ADR-0020: agent khai `inputs` → runner gom ảnh từ asset trong extra, nối danh sách ảnh vào lượt user, gửi
+    `attachments` cho client và ghi audit băm ảnh; file hỏng bị bỏ có audit. Agent không khai thì như cũ."""
+    import dataclasses
+
+    from PIL import Image
+    Image.new("RGB", (320, 180), (10, 120, 200)).save(tmp_path / "S1.png")
+    agents = dict(AGENTS)
+    agents["rights-checker"] = dataclasses.replace(AGENTS["rights-checker"], inputs=["scene_images"])
+    bus = InMemoryBus()
+    client = FakeClient(responses=[{"video_id": "V1", "source": "rights", "verdict": "pass"}])
+    env = Envelope(topic="media-assets", key="V1", actor="renderer", payload={"video_id": "V1", "kind": "final_video",
+                                                                             "path": "f", "provenance": {"generated_by": "fake:x"}})
+    extra = {"assets": [{"kind": "scene_image", "scene_id": "S1", "path": str(tmp_path / "S1.png")},
+                        {"kind": "scene_image", "scene_id": "S2", "path": str(tmp_path / "gone.png")}]}
+    AgentRunner(bus, client, agents).run("rights-checker", env, "review-results", extra=extra)
+    call = client.calls[0]
+    assert len(call["attachments"]) == 1 and "# Ảnh đính kèm" in call["user_arg"] and "1. ảnh cảnh S1" in call["user_arg"]
+    acts = {e.payload["action"]: e.payload["evidence"] for e in bus.replay("audit-log")}
+    assert json.loads(acts["attachments"])["images"][0]["label"] == "ảnh cảnh S1"
+    assert "gone.png" in acts["attachments_skipped"]
+    # không khai inputs → không ảnh, prompt y như trước
+    plain = FakeClient(responses=[{"video_id": "V1", "source": "rights", "verdict": "pass"}])
+    agents["rights-checker"] = dataclasses.replace(AGENTS["rights-checker"], inputs=[])
+    AgentRunner(InMemoryBus(), plain, agents).run("rights-checker", env, "review-results", extra=extra)
+    assert plain.calls[0]["attachments"] == [] and "Ảnh đính kèm" not in plain.calls[0]["user_arg"]
+
+
+
+def test_client_without_attachments_parameter_still_runs_without_images(tmp_path):
+    """Client tự viết chưa biết ảnh: lượt vẫn chạy bằng JSON như trước, audit `attachments_unsupported`."""
+    import dataclasses
+
+    from PIL import Image
+    Image.new("RGB", (64, 36)).save(tmp_path / "S1.png")
+
+    class Old:
+        def __init__(self): self.users = []
+        def complete(self, *, system, user, schema, model_tier, cache_key=None, tools=None, messages=None):
+            self.users.append(user)
+            from studio.llm import Completion
+            return Completion(text=json.dumps({"video_id": "V1", "source": "rights", "verdict": "pass"}),
+                              input_tokens=1, output_tokens=1, model="old")
+    agents = dict(AGENTS)
+    agents["rights-checker"] = dataclasses.replace(AGENTS["rights-checker"], inputs=["scene_images"])
+    bus, old = InMemoryBus(), Old()
+    env = Envelope(topic="media-assets", key="V1", actor="renderer", payload={"video_id": "V1", "kind": "final_video",
+                                                                             "path": "f", "provenance": {"generated_by": "fake:x"}})
+    AgentRunner(bus, old, agents).run("rights-checker", env, "review-results",
+                                      extra={"assets": [{"kind": "scene_image", "scene_id": "S1", "path": str(tmp_path / "S1.png")}]})
+    assert "Ảnh đính kèm" not in old.users[0]
+    assert any(e.payload["action"] == "attachments_unsupported" for e in bus.replay("audit-log"))
+
+    class Odd:
+        complete = 42   # không đọc được chữ ký → coi như không nhận ảnh
+    from studio.runner import _accepts_attachments
+    assert _accepts_attachments(Odd()) is False

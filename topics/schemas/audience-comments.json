@@ -59,6 +59,10 @@
               },
               "likes": {
                 "type": "integer"
+              },
+              "has_image": {
+                "type": "boolean",
+                "description": "Bình luận kèm ảnh/GIF (YouTube 11/2026). Chỉ cờ: ảnh và URL không vào bus (ADR-0007)."
               }
             },
             "required": [

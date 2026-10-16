@@ -89,6 +89,22 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "synthetic_media": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "description": "ADR-0018: khai `containsSyntheticMedia` khi đăng; code điền từ manifest/provenance hoặc production.synthetic_media; null = chưa quyết"
+        },
+        "paid_product_placement": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null,
+          "description": "ADR-0018: khai `paidProductPlacementDetails.hasPaidProductPlacement` khi đăng; code điền từ production.paid_product_placement; null = chưa khai"
         }
       },
       "required": [

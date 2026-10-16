@@ -115,6 +115,36 @@ def test_youtube_resumable_upload_two_steps_then_thumbnail_and_schedule(tmp_path
     assert not any(TOKEN_URL in u for u in http.urls())  # token còn hạn → không refresh
 
 
+def test_youtube_upload_declares_synthetic_media_when_decided(tmp_path):
+    """ADR-0018: `status.containsSyntheticMedia` (Data API) chỉ gửi khi code/người đã quyết; YouTube tự gắn nhãn từ 5/2026."""
+    f = tmp_path / "final.mp4"; f.write_bytes(b"v" * 10)
+    http = FakeHTTP()
+    http.on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session/1"}, b""))
+    http.on("PUT", "https://www.googleapis.com/upload/session/1", (200, {}, {"id": "yt9", "status": {"privacyStatus": "private"}}))
+    yt = YouTubePlatform(_store(tmp_path), fetcher=http, now=lambda: NOW)
+    yt.upload_video(f, META.model_copy(update={"synthetic_media": True}))
+    assert json.loads(next(c for c in http.calls if c[0] == "POST")[3])["status"]["containsSyntheticMedia"] is True
+    fake = FakePlatform(); up = fake.upload_video(f, META.model_copy(update={"synthetic_media": False}))
+    assert fake.videos[up.platform_ref]["synthetic_media"] is False and "synthetic_media=False" in up.evidence
+
+
+def test_youtube_upload_declares_paid_product_placement_only_when_decided(tmp_path):
+    """Data API 7/2026: `paidProductPlacementDetails.hasPaidProductPlacement` — part riêng, chỉ gửi khi đã khai."""
+    f = tmp_path / "final.mp4"; f.write_bytes(b"v" * 10)
+    for value, part in ((True, True), (False, True), (None, False)):
+        http = FakeHTTP()
+        http.on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session/1"}, b""))
+        http.on("PUT", "https://www.googleapis.com/upload/session/1", (200, {}, {"id": "yt9", "status": {"privacyStatus": "private"}}))
+        YouTubePlatform(_store(tmp_path / str(value)), fetcher=http, now=lambda: NOW).upload_video(
+            f, META.model_copy(update={"paid_product_placement": value}))
+        post = next(c for c in http.calls if c[0] == "POST")
+        body, url = json.loads(post[3]), post[1]
+        assert ("paidProductPlacementDetails" in url) is part
+        assert body.get("paidProductPlacementDetails") == ({"hasPaidProductPlacement": value} if part else None)
+    fake = FakePlatform(); up = fake.upload_video(f, META.model_copy(update={"paid_product_placement": True}))
+    assert fake.videos[up.platform_ref]["paid_product_placement"] is True and "paid_product_placement=True" in up.evidence
+
+
 def test_youtube_upload_missing_location_or_id_is_clear_error(tmp_path):
     f = tmp_path / "f.mp4"; f.write_bytes(b"v")
     http = FakeHTTP().on("POST", UPLOAD_URL, (200, {}, b""))
@@ -788,3 +818,111 @@ def test_upload_completed_corrupt_evidence_cannot_expose_session_url(tmp_path):
     journal.write_text(json.dumps(state))
     with pytest.raises(PlatformError, match='corrupt completed result'):
         YouTubePlatform(store, FakeHTTP(), lambda: NOW).upload_video(video, META)
+
+
+def test_comments_with_an_image_are_flagged_but_the_image_never_reaches_the_bus(tmp_path):
+    """YouTube 11/2026: bình luận có `snippet.imageUrl`. community-manager cần biết bình luận kèm ảnh (lời có thể chỉ
+    là "như hình"), nhưng ảnh/URL không bao giờ vào bus cho model (ADR-0007): chỉ cờ `has_image`."""
+    item = _thread("c9", "nhìn này", "2026-11-02T10:00:00Z")
+    item["snippet"]["topLevelComment"]["snippet"]["imageUrl"] = "https://yt3.ggpht.com/img.png"
+    http = FakeHTTP().on("GET", f"{API_URL}/commentThreads", (200, {}, {"items": [item, _thread("c8", "chữ", "2026-11-01T10:00:00Z")]}))
+    got = YouTubePlatform(_store(tmp_path), http, lambda: NOW).list_comments("yt1")
+    assert [c.has_image for c in got] == [True, False]
+    bus = InMemoryBus(); p = FakePlatform(); p.comments["yt1"] = got
+    env = sync_comments(bus, p, "V1", ref="yt1")
+    assert env.payload["comments"][0]["has_image"] is True and "has_image" not in env.payload["comments"][1]
+    assert "ggpht" not in json.dumps(env.payload)
+
+
+def test_youtube_snapshot_reads_duration_from_batch_get_stats_and_keeps_lifetime_counts_apart(tmp_path):
+    """videos:batchGetStats (6/2026): 1 đơn vị ở rổ riêng, thời lượng tới mili-giây. Số đếm công khai TRỌN ĐỜI chỉ vào
+    evidence — không trộn vào views/likes theo cửa sổ ngày của Analytics. Lệnh mới lỗi thì quay về videos.list."""
+    def reports(method, url, headers, body):
+        m = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["metrics"][0]
+        if m.startswith("views"):
+            return 200, {}, {"columnHeaders": [{"name": n} for n in m.split(",")], "rows": [[120, 95.5, 7.3, 4, 1]]}
+        if m.startswith("impressions"):
+            return 403, {}, {"error": {"message": "no"}}
+        return 200, {}, {"columnHeaders": [{"name": "elapsedVideoTimeRatio"}, {"name": "audienceWatchRatio"}], "rows": [[1.0, 0.5]]}
+    batch = {"kind": "youtube#batchGetStatsResponse", "items": [{"id": "yt1", "contentDetails": {"duration": "PT1M40S", "durationMillis": "100500"},
+             "statistics": {"viewCount": "5000", "likeCount": "300", "commentCount": "12"}}],
+             "summary": {"requestedVideoCount": "1", "succeededVideoCount": "1", "failedVideoCount": "0"}}
+    http = FakeHTTP().on("GET", ANALYTICS_URL, reports).on("GET", f"{API_URL}/videos:batchGetStats", (200, {}, batch))
+    r = YouTubePlatform(_store(tmp_path), http, lambda: NOW).snapshot("yt1", 7, channel_id="CH1")
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(next(u for u in http.urls() if "batchGetStats" in u)).query)
+    assert q == {"part": ["contentDetails,statistics"], "id": ["yt1"]}
+    assert not any(u.startswith(f"{API_URL}/videos?") for u in http.urls())
+    assert (r.snapshot.views, r.snapshot.likes, r.snapshot.comments) == (120, 4, 1)   # cửa sổ 7 ngày, không phải 5000
+    assert [(p.t, p.pct) for p in r.snapshot.retention_curve] == [(100.5, 50.0)]
+    ev = json.loads(r.evidence)
+    assert ev["duration_s"] == 100.5 and ev["duration_source"] == "videos.batchGetStats"
+    assert ev["public_lifetime"] == {"views": 5000, "likes": 300, "comments": 12}
+    # lệnh mới lỗi (chưa bật / video riêng tư bị từ chối) → videos.list như trước, evidence ghi lý do
+    http2 = FakeHTTP().on("GET", ANALYTICS_URL, reports).on("GET", f"{API_URL}/videos:batchGetStats", (404, {}, {"error": {"message": "x"}}))
+    http2.on("GET", f"{API_URL}/videos?", (200, {}, {"items": [{"contentDetails": {"duration": "PT1M40S"}}]}))
+    ev2 = json.loads(YouTubePlatform(_store(tmp_path), http2, lambda: NOW).snapshot("yt1").evidence)
+    assert ev2["duration_s"] == 100.0 and ev2["duration_source"] == "videos.list" and ev2["batch_stats"]["status"] == 404
+    assert "public_lifetime" not in ev2
+    # video không có trong kết quả batch (failedVideoIds) → cũng quay về videos.list
+    http3 = FakeHTTP().on("GET", ANALYTICS_URL, reports).on("GET", f"{API_URL}/videos:batchGetStats", (200, {}, {"items": []}))
+    http3.on("GET", f"{API_URL}/videos?", (200, {}, {"items": [{"contentDetails": {"duration": "PT10S"}}]}))
+    assert json.loads(YouTubePlatform(_store(tmp_path), http3, lambda: NOW).snapshot("yt1").evidence)["duration_s"] == 10.0
+
+
+@pytest.mark.parametrize('synthetic', [None, False, True])
+@pytest.mark.parametrize('paid', [None, False, True])
+def test_disclosure_identity_survives_active_and_completed_recovery(tmp_path, synthetic, paid):
+    video = tmp_path / 'flags.mp4'; video.write_bytes(b'approved')
+    store = _store(tmp_path)
+    metadata = META.model_copy(update={'synthetic_media': synthetic, 'paid_product_placement': paid})
+    location = 'https://www.googleapis.com/upload/disclosure-session'
+    http = FakeHTTP().on('POST', UPLOAD_URL, (200, {'location': location}, b''))
+    def interrupted(*args): raise SystemExit('process interrupted')
+    http.on('PUT', location, interrupted)
+    with pytest.raises(SystemExit): YouTubePlatform(store, http, lambda: NOW).upload_video(video, metadata)
+    post = next(call for call in http.calls if call[0] == 'POST')
+    request = json.loads(post[3])
+    assert request['status'].get('containsSyntheticMedia') is synthetic
+    assert ('containsSyntheticMedia' in request['status']) is (synthetic is not None)
+    assert request.get('paidProductPlacementDetails') == (
+        {'hasPaidProductPlacement': paid} if paid is not None else None)
+    assert ('paidProductPlacementDetails' in post[1]) is (paid is not None)
+    journal = next(store.path.parent.glob('youtube-uploads/*.json'))
+    assert json.loads(journal.read_text())['identity']['request'] == request
+    recovery = FakeHTTP().on('PUT', location, (201, {}, {
+        'id': 'confirmed-video', 'status': {'privacyStatus': 'private', 'uploadStatus': 'processed'}}))
+    resumed = YouTubePlatform(store, recovery, lambda: NOW).upload_video(video, metadata, require_existing=True)
+    assert resumed.platform_ref == 'confirmed-video'
+    assert json.loads(resumed.evidence)['uploadStatus'] == 'processed'
+    # None and omitted legacy defaults normalize to the same request, including completed journals.
+    default_or_same = META if synthetic is None and paid is None else metadata
+    completed = FakeHTTP()
+    result = YouTubePlatform(store, completed, lambda: NOW).upload_video(video, default_or_same, require_existing=True)
+    assert result == resumed
+    assert not any(call[0] == 'POST' for call in recovery.calls + completed.calls)
+    assert not any(call[0] == 'PUT' for call in completed.calls)
+
+
+@pytest.mark.parametrize('field', ['synthetic_media', 'paid_product_placement'])
+@pytest.mark.parametrize('before,after', [(None, False), (None, True), (False, None), (False, True), (True, None), (True, False)])
+@pytest.mark.parametrize('completed', [False, True])
+def test_changed_disclosure_requires_reconciliation_without_new_insert(tmp_path, field, before, after, completed):
+    video = tmp_path / 'flags.mp4'; video.write_bytes(b'approved')
+    store = _store(tmp_path)
+    metadata = META.model_copy(update={field: before})
+    location = 'https://www.googleapis.com/upload/disclosure-session'
+    http = FakeHTTP().on('POST', UPLOAD_URL, (200, {'location': location}, b''))
+    def upload(*args):
+        if not completed: raise SystemExit('process interrupted')
+        return 201, {}, {'id': 'confirmed-video'}
+    http.on('PUT', location, upload)
+    if completed: YouTubePlatform(store, http, lambda: NOW).upload_video(video, metadata)
+    else:
+        with pytest.raises(SystemExit): YouTubePlatform(store, http, lambda: NOW).upload_video(video, metadata)
+    recovery = FakeHTTP()
+    with pytest.raises(PlatformError, match='identity changed'):
+        YouTubePlatform(store, recovery, lambda: NOW).upload_video(
+            video, metadata.model_copy(update={field: after}), require_existing=True)
+    assert not any(call[0] in {'POST', 'PUT'} for call in recovery.calls)
+    journal = next(store.path.parent.glob('youtube-uploads/*.json'))
+    assert json.loads(journal.read_text())['state'] == 'reconciliation_needed'

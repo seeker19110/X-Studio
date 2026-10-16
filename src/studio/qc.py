@@ -20,6 +20,7 @@ from typing import Any
 
 from .events import Finding
 from .media import (
+    PLATFORM_THUMBNAIL_MAX_BYTES,
     TARGET_LUFS,
     THUMBNAIL_MAX_BYTES,
     THUMBNAIL_SIZE,
@@ -39,6 +40,10 @@ SILENCE_MIN_S = 1.5         # khoảng lặng dài hơn đệm chuyển cảnh: 
 MAX_STATIC_S = max(0.0, float(os.environ.get("STUDIO_QC_MAX_STATIC_S", "8")))
 QC_MAX_OUTPUT = 1_000_000
 TIMEOUT_S = max(30, float(os.environ.get("STUDIO_QC_TIMEOUT_S", "300")))
+# Đối chiếu lời đọc (ADR-0019): FFmpeg ≥ 8 có filter `whisper` (whisper.cpp). Chỉ bật khi chủ xưởng trỏ
+# STUDIO_QC_ASR_MODEL vào file ggml; thiếu model hay ffmpeg cũ thì im lặng — không phải lỗi, không phải warn.
+ASR_MODEL_ENV, ASR_LANGUAGE_ENV = "STUDIO_QC_ASR_MODEL", "STUDIO_QC_ASR_LANGUAGE"
+ASR_WER_WARN = 0.35          # cảnh có > 35 % từ nghe sai/thiếu: nghi TTS đọc sai, bỏ đoạn hoặc nhạc át tiếng
 
 
 @dataclass
@@ -59,6 +64,7 @@ class QCReport:
         m = self.metrics
         head = (f"qc:{m.get('resolution', '?')} {m.get('fps', '?')}fps {m.get('duration_s', '?')}s "
                 f"{m.get('lufs', '?')} LUFS audio={'có' if m.get('has_audio') else 'KHÔNG'}")
+        if "asr" in m: head += f" asr_wer={m['asr']['wer']}"
         return [head] + [f"qc:{f.level}:{f.location or '-'}:{f.text}" for f in self.findings]
 
 
@@ -161,8 +167,10 @@ def measure(path: Path, duration_s: float = 0.0) -> dict[str, Any]:
 
 
 def qc_video(path: Path, expected_duration_s: float = 0.0, expected_resolution: str = "", expected_fps: int = 0,
-             thumbnail: Path | None = None, captions: Path | None = None) -> QCReport:
-    """Đo bản dựng cuối và so với những gì manifest hứa. `block` = thứ không được phép lên nền tảng."""
+             thumbnail: Path | None = None, captions: Path | None = None,
+             narration: list[tuple[str, float, float, str]] | None = None) -> QCReport:
+    """Đo bản dựng cuối và so với những gì manifest hứa. `block` = thứ không được phép lên nền tảng.
+    `narration` = (scene_id, start, end, lời đọc) theo timeline để ASR đối chiếu khi có model whisper."""
     info = probe(Path(path))
     if info is None:
         return QCReport(available=False, metrics={"file": str(path)})
@@ -209,7 +217,94 @@ def qc_video(path: Path, expected_duration_s: float = 0.0, expected_resolution: 
     m["captions"] = str(captions) if captions and Path(captions).is_file() else None
     if captions is None or not Path(captions).is_file():
         f.append(Finding(level="warn", text="không có phụ đề đi kèm", location="captions"))
+    if narration:
+        f += _qc_narration(Path(path), narration, m)
     return QCReport(available=True, metrics=m, findings=f)
+
+
+# ---------- ASR đối chiếu lời đọc ----------
+
+def asr_model() -> Path | None:
+    """File model whisper (ggml) khi QC lời đọc được bật và ffmpeg trên máy có filter `whisper`; None = bỏ qua."""
+    model, ffmpeg = os.environ.get(ASR_MODEL_ENV, ""), shutil.which("ffmpeg")
+    if not model or not ffmpeg or not Path(model).is_file(): return None
+    code, out, _ = _run([ffmpeg, "-hide_banner", "-filters"])
+    return Path(model) if code == 0 and re.search(r"^\s*\S*\s+whisper\s", out, re.MULTILINE) else None
+
+
+def _filter_escape(value: str) -> str:
+    return re.sub(r"([\\:,;'\[\]])", r"\\\1", value)
+
+
+def transcribe(path: Path, model: Path, language: str = "auto") -> list[tuple[float, float, str]] | None:
+    """Chạy whisper.cpp qua ffmpeg, SRT ra stdout (`destination=pipe:1`), không ghi file. None khi ffmpeg lỗi."""
+    ffmpeg = shutil.which("ffmpeg")
+    spec = (f"whisper=model={_filter_escape(str(model))}:language={_filter_escape(language)}:queue=10"
+            f":format=srt:destination=pipe\\:1")
+    code, out, _ = _run([str(ffmpeg), "-hide_banner", "-nostats", "-loglevel", "error", "-threads", "1",
+                         "-i", str(path), "-vn", "-af", spec, "-f", "null", "-"])
+    return parse_srt(out) if code == 0 else None
+
+
+_SRT_TIME = re.compile(r"(\d+):(\d\d):(\d\d)[,.](\d{1,3})\s*-->\s*(\d+):(\d\d):(\d\d)[,.](\d{1,3})")
+
+
+def parse_srt(text: str) -> list[tuple[float, float, str]]:
+    """Các đoạn (start, end, lời) của một SRT; bỏ khối thiếu mốc giờ hoặc không có chữ."""
+    out: list[tuple[float, float, str]] = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        found = next(((i, mt) for i, mt in ((i, _SRT_TIME.match(line)) for i, line in enumerate(lines[:2])) if mt), None)
+        if found is None: continue
+        times, g = found[0], [int(x) for x in found[1].groups()]
+        start = g[0] * 3600 + g[1] * 60 + g[2] + g[3] / 1000
+        end = g[4] * 3600 + g[5] * 60 + g[6] + g[7] / 1000
+        words = " ".join(lines[times + 1:])
+        if words: out.append((start, end, words))
+    return out
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"\w+", text.lower())
+
+
+def wer(expected: str, heard: str) -> float:
+    """Tỷ lệ lỗi từ (Levenshtein trên từ, bỏ dấu câu và hoa/thường), kẹp 0..1."""
+    a, b = _words(expected), _words(heard)
+    if not a: return 0.0 if not b else 1.0
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return round(min(1.0, prev[-1] / len(a)), 3)
+
+
+def narration_wer(heard: list[tuple[float, float, str]],
+                  narration: list[tuple[str, float, float, str]]) -> dict[str, float]:
+    """WER từng cảnh: đoạn ASR thuộc cảnh chứa điểm giữa của nó. Cảnh không có lời thì không chấm."""
+    out: dict[str, float] = {}
+    for sid, start, end, text in narration:
+        if not text.strip(): continue
+        spoken = " ".join(t for s, e, t in heard if start <= (s + e) / 2 < end)
+        out[sid] = wer(text, spoken)
+    return out
+
+
+def _qc_narration(path: Path, narration: list[tuple[str, float, float, str]], m: dict[str, Any]) -> list[Finding]:
+    model = asr_model()
+    if model is None: return []
+    language = os.environ.get(ASR_LANGUAGE_ENV, "auto")
+    heard = transcribe(path, model, language)
+    if heard is None:
+        return [Finding(level="warn", text="ASR (ffmpeg whisper) thất bại; chưa đối chiếu lời đọc", location="narration")]
+    scenes = narration_wer(heard, narration)
+    total = round(sum(scenes.values()) / len(scenes), 3) if scenes else 0.0
+    m["asr"] = {"model": model.name, "language": language, "wer": total, "segments": len(heard), "scenes": scenes}
+    return [Finding(level="warn", text=f"cảnh {sid}: ASR nghe khớp {1 - w:.0%} lời đọc (nghi TTS đọc sai, bỏ đoạn "
+                                       f"hoặc nhạc át tiếng; ngưỡng {1 - ASR_WER_WARN:.0%})", location="narration")
+            for sid, w in scenes.items() if w > ASR_WER_WARN]
 
 
 def _qc_thumbnail(path: Path, m: dict[str, Any]) -> list[Finding]:
@@ -219,8 +314,12 @@ def _qc_thumbnail(path: Path, m: dict[str, Any]) -> list[Finding]:
     size = f"{info['width']}x{info['height']}"
     m["thumbnail"] = {"resolution": size, "bytes": info["bytes"]}
     f: list[Finding] = []
-    if info["bytes"] > THUMBNAIL_MAX_BYTES:
-        f.append(Finding(level="block", text=f"thumbnail {info['bytes'] / 1e6:.1f} MB vượt giới hạn nền tảng 2 MB",
+    if info["bytes"] > PLATFORM_THUMBNAIL_MAX_BYTES:
+        f.append(Finding(level="block", text=f"thumbnail {info['bytes'] / 1e6:.1f} MB vượt giới hạn nền tảng "
+                                             f"{PLATFORM_THUMBNAIL_MAX_BYTES // 1_000_000} MB", location="thumbnail"))
+    elif info["bytes"] > THUMBNAIL_MAX_BYTES:
+        f.append(Finding(level="warn", text=f"thumbnail {info['bytes'] / 1e6:.1f} MB vượt mục tiêu 2 MB của renderer "
+                                            f"(YouTube nhận ≤ {PLATFORM_THUMBNAIL_MAX_BYTES // 1_000_000} MB; file nặng tải chậm)",
                          location="thumbnail"))
     if size != THUMBNAIL_SIZE:
         f.append(Finding(level="warn", text=f"thumbnail {size} khác chuẩn {THUMBNAIL_SIZE}", location="thumbnail"))

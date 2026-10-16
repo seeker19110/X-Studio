@@ -31,3 +31,21 @@ cases:
     expect:
       equals: {video_id: CH1-V2}
       one_of: {decision: [approve, repair]}
+
+  - name: anh-canh-lech-prompt-chi-thay-trong-anh-phai-sua
+    # ADR-0020: không có ghi chú nào; chỉ lưới ảnh cho thấy S2 là banner "SALE 50%" thay vì sơ đồ quy trình.
+    topic_out: cut-lists
+    extra:
+      manifest: {video_id: CH1-V3, version: 1, scenes: [{scene_id: S1, order: 0, narration: "Doanh thu ba năm qua tăng đều.", visual_prompt: "Biểu đồ cột doanh thu 2023 2024 2025 tăng dần, phong cách phẳng", duration_s: 6, asset_refs: {scene_audio: a.wav, scene_image: evals/fixtures/canh-bieu-do-cot.png}}, {scene_id: S2, order: 1, narration: "Quy trình gồm ba bước: thu thập, phân tích, hành động.", visual_prompt: "Sơ đồ quy trình ba bước nối bằng mũi tên: thu thập, phân tích, hành động", duration_s: 6, asset_refs: {scene_audio: b.wav, scene_image: evals/fixtures/canh-banner-sale.png}}]}
+      scene_assets: [{kind: scene_image, scene_id: S1, path: evals/fixtures/canh-bieu-do-cot.png}, {kind: scene_image, scene_id: S2, path: evals/fixtures/canh-banner-sale.png}]
+      scene_qc: []
+      repair_rounds_used: 0
+      repair_rounds_max: 3
+    input:
+      topic: media-assets
+      key: CH1-V3
+      actor: renderer
+      payload: {video_id: CH1-V3, kind: draft_video, path: draft.mp4, manifest_version: 1, provenance: {generated_by: "fake:video"}}
+    expect:
+      equals: {video_id: CH1-V3, decision: repair}
+      min_len: {repairs: 1}

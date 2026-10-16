@@ -1,4 +1,4 @@
-# ADR-0018: Phiên upload YouTube bền vững và đối soát khi kết quả không rõ
+# ADR-0021: Phiên upload YouTube bền vững và đối soát khi kết quả không rõ
 
 Trạng thái: Accepted · Ngày: 2026-10-11
 
@@ -49,3 +49,12 @@ Lịch sử `published` sai từ phiên bản trước không được tự sử
 trạng thái nền tảng nên không thể phân biệt chắc chắn với video đã public thật.
 Người vận hành cần đối soát lịch sử này với YouTube Studio; bản mới ngăn tạo thêm
 event sai, không suy diễn hoặc tự công khai video để khớp lịch sử.
+
+## Hợp nhất khai báo nội dung và tài trợ (2026-10-16)
+
+`containsSyntheticMedia` và `paidProductPlacementDetails.hasPaidProductPlacement` nằm trong cùng
+request chuẩn hóa dùng để gửi API và định danh journal. `None` bỏ trường/part; `False` gửi false
+tường minh. Vì vậy journal cũ không có khai báo vẫn tương thích khi metadata chưa khai (`None`),
+nhưng thay đổi bất kỳ khai báo nào ở phiên đang chạy hoặc đã hoàn tất đều yêu cầu đối soát,
+không tạo upload mới. Danh sách `part` được dựng từ chính các phần trong request.
+Bằng chứng hoàn tất giữ `uploadStatus` do adapter nhận được, không suy đoán từ model.

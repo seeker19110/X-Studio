@@ -33,6 +33,8 @@ AGENTS_DIR, SKILLS_DIR = CORE.agents_dir, CORE.skills_dir
 @dataclass
 class AgentSpec(CoreAgentSpec):
     tools: list[str] = field(default_factory=list)  # toolset chỉ đọc được bật cho agent (ADR-0007): hiện chỉ `web`
+    # ADR-0020: ảnh agent được XEM (đầu vào, không phải tool): scene_images | contact_sheet | thumbnails
+    inputs: list[str] = field(default_factory=list)
 
 
 def load_skill(name: str, core_only: bool = False) -> str:

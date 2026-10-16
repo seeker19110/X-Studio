@@ -15,6 +15,7 @@ video:
   tail_pad_s: 0.35
   loudness_lufs: -14
   burn_captions: true
+  karaoke: false  # true: từ đổi màu đúng lúc đọc (cần TTS có mốc từng từ: edge, ElevenLabs timestamps)
   caption_max_chars: 42
 render:
   mode: bounded
@@ -30,6 +31,9 @@ production:
   duration_tolerance: 0.20
   allow_qc_warnings: false
   media_budget_usd: 0  # trần chi phí media MỖI video (USD ước tính theo tts/image/scene_video.price_*); 0 = không trần
+  # ADR-0018: chính sách kênh khi đăng YouTube. Bỏ trống = code tự quyết khi chắc (synthetic_media) / không khai.
+  # synthetic_media: true          # kênh phim/cảnh AI trông như thật → containsSyntheticMedia
+  # paid_product_placement: true   # video có quảng cáo/tài trợ trả tiền → paidProductPlacementDetails
   style: "Cinematic documentary, natural light, coherent color palette, uncluttered composition."
   music_volume: 0.12
   library: library.yaml
