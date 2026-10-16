@@ -138,9 +138,9 @@ CI Linux cài FFmpeg/font, khóa phiên bản GitHub Actions và chạy cùng l�
 - `src/studio/web/`: HTML/CSS/JavaScript native, đóng gói cùng Python.
 - `agents/`, `skills/`, `topics/`: 14 vai, 24 skill và schema sự kiện; giữ prompt hiện có.
 - `gateway/`, `xagents-core/`: thành viên uv workspace có test/coverage riêng.
-- `tests/`: pytest 1173 ca / 69 file.
-- Test: 1173 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
-- `docs/adr/`: ADR 0001–0020; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình.
+- `tests/`: pytest 1247 ca / 70 file.
+- Test: 1247 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
+- `docs/adr/`: ADR 0001–0021; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình, [ADR-0021](docs/adr/0021-durable-youtube-upload-reconciliation.md) phục hồi upload YouTube.
 
 Giấy phép: [Apache-2.0](LICENSE), cùng giấy phép với repo nguồn [`X-Agents`](https://github.com/seeker19110/X-Agents) mà `xagents-core/` và `gateway/` được vendor về.
 

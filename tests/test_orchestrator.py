@@ -240,7 +240,7 @@ def test_captions_are_uploaded_after_the_video_and_never_block_publishing(tmp_pa
     assert "platform.captions_failed" in _audit_actions(bus, "orchestrator") and o.desk.state["CH1-V1"] == "scheduled"
 
 
-def test_publish_without_scheduled_at_keeps_platform_status(tmp_path):
+def test_private_upload_without_schedule_is_not_reported_published(tmp_path):
     from studio.fakes import scripted
     bus, o = _to_publish_gate(tmp_path)
     # model quyết định "published" không kèm scheduled_at → code không tự khai "scheduled", không gọi schedule
@@ -248,7 +248,16 @@ def test_publish_without_scheduled_at_keeps_platform_status(tmp_path):
         __import__("studio.fakes", fromlist=["_inputs"])._inputs(user)[0]) if "# publisher" in system else None
     o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
     ev = [e.payload for e in bus.replay("publish-events", "CH1-V1")]
-    assert [c[0] for c in o.platform.calls] == ["upload_video", "set_thumbnail", "upload_captions"] and ev[-1]["status"] == "published"
+    assert [c[0] for c in o.platform.calls] == ["upload_video", "set_thumbnail", "upload_captions"] and ev[-1]["status"] == "failed"
+    assert "private" in ev[-1]["evidence"] and "scheduled_at" in ev[-1]["evidence"]
+    assert o.desk.state["CH1-V1"] == "approved"
+    assert o._prior_upload("CH1-V1")["upload_status"] == "private"
+    o.gate.request(GateRequest(kind="publish", subject_id="PUB-CH1-V1", created_by="desk", checklist=["retry"]))
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    assert [e.payload for e in bus.replay("publish-events", "CH1-V1")][-1]["status"] == "failed"
+    assert sum(c[0] == "upload_video" for c in o.platform.calls) == 1
+    assert "platform.skipped_live" not in _audit_actions(bus, "orchestrator")
+
 
 
 def test_hold_keeps_gate_pending_and_rollback_emits_rolled_back(tmp_path):
@@ -378,3 +387,97 @@ def test_tick_periodic_sync_pulls_metrics_and_comments_once_per_interval(tmp_pat
     o.sync_every = 0; o.tick(t0 + timedelta(hours=1)); assert len(list(bus.replay("performance-snapshots", "CH1-V1"))) == 2
     o.platform.fail.add("snapshot"); o.sync_every = 60; o.tick(t0 + timedelta(hours=2))
     assert any(e.payload["action"] == "sync.failed" for e in bus.replay("audit-log"))
+
+
+def test_legacy_upload_without_status_stays_unconfirmed_after_restart(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    bus, original = _to_publish_gate(tmp_path)
+    original._audit("platform.upload", {"video_id": "CH1-V1", "platform_ref": "legacy-private"}, video_id="CH1-V1")
+    path = tmp_path / "legacy.sqlite"
+    saved = SQLiteBus(path)
+    for event in bus.replay(): saved.publish(event)
+    saved.close()
+    resumed_bus = SQLiteBus(path)
+    o = _orch(resumed_bus, tmp_path)
+    o.platform.videos["legacy-private"] = {"privacy": "private"}
+    monkeypatch.setattr(o, "_decide", lambda *args, **kwargs: (
+        {"video_id": "CH1-V1", "kind": "video", "status": "published"},
+        SimpleNamespace(tokens=0, model="fake", context_writes=[], cache_hit_ratio=0)))
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    result = list(resumed_bus.replay("publish-events", "CH1-V1"))[-1].payload
+    assert result["status"] == "failed" and result["platform_ref"] == "legacy-private"
+    assert "unknown" in result["evidence"]
+    assert o.desk.state["CH1-V1"] == "approved"
+    assert "upload_video" not in [call[0] for call in o.platform.calls]
+    assert "schedule" not in [call[0] for call in o.platform.calls]
+    resumed_bus.close()
+
+
+def test_unscheduled_public_upload_uses_adapter_confirmation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from studio.platform import UploadResult
+
+    bus, o = _to_publish_gate(tmp_path)
+    original_upload = o.platform.upload_video
+
+    def public_upload(*args, **kwargs):
+        result = original_upload(*args, **kwargs)
+        return UploadResult(result.platform_ref, result.url, "public", evidence="adapter confirms public")
+
+    monkeypatch.setattr(o.platform, "upload_video", public_upload)
+    monkeypatch.setattr(o, "_decide", lambda *args, **kwargs: (
+        {"video_id": "CH1-V1", "kind": "video", "status": "published"},
+        SimpleNamespace(tokens=0, model="fake", context_writes=[], cache_hit_ratio=0)))
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    assert list(bus.replay("publish-events", "CH1-V1"))[-1].payload["status"] == "published"
+    assert o._prior_upload("CH1-V1")["upload_status"] == "public"
+    assert "schedule" not in [call[0] for call in o.platform.calls]
+
+
+def test_youtube_prior_upload_requires_durable_identity_reconciliation(tmp_path, monkeypatch):
+    from studio.platform import PlatformError, TokenStore, UploadResult, YouTubePlatform
+
+    bus, o = _to_publish_gate(tmp_path)
+    o._audit("platform.upload", {"video_id": "CH1-V1", "platform_ref": "existing", "upload_status": "private"}, video_id="CH1-V1")
+    youtube = YouTubePlatform(TokenStore(tmp_path / "unused-tokens.json"))
+    calls = []
+    outcome = ["missing"]
+
+    def reconcile(path, metadata, **kwargs):
+        calls.append(("upload", kwargs))
+        assert kwargs["require_existing"] is True
+        if outcome[0] == "missing": raise PlatformError("upload reconciliation required")
+        return UploadResult("wrong" if outcome[0] == "mismatch" else "existing", "https://youtu.be/existing", "private")
+
+    monkeypatch.setattr(youtube, "upload_video", reconcile)
+    monkeypatch.setattr(youtube, "set_thumbnail", lambda *args: calls.append(("thumbnail", {})) or "ok")
+    monkeypatch.setattr(youtube, "schedule", lambda *args: calls.append(("schedule", {})) or "ok")
+    monkeypatch.setattr(youtube, "upload_captions", lambda *args, **kwargs: calls.append(("captions", {})) or "ok")
+    o.platform = youtube
+    for attempt in ("missing", "mismatch", "matching"):
+        outcome[0] = attempt
+        if attempt != "missing":
+            o.gate.request(GateRequest(kind="publish", subject_id="PUB-CH1-V1", created_by="desk", checklist=["reconciled"]))
+        o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+        latest = list(bus.replay("publish-events", "CH1-V1"))[-1].payload
+        if attempt != "matching":
+            assert latest["status"] == "failed"
+            assert all(name == "upload" for name, _ in calls)
+        else:
+            assert latest["status"] == "scheduled" and latest["platform_ref"] == "existing"
+    assert [name for name, _ in calls] == ["upload", "upload", "upload", "thumbnail", "schedule", "captions"]
+
+
+def test_youtube_prior_upload_without_current_final_blocks_reconciliation(tmp_path, monkeypatch):
+    from studio.platform import TokenStore, YouTubePlatform
+
+    bus, o = _to_publish_gate(tmp_path)
+    o._audit("platform.upload", {"video_id": "CH1-V1", "platform_ref": "existing"}, video_id="CH1-V1")
+    o.platform = YouTubePlatform(TokenStore(tmp_path / "unused-tokens.json"))
+    monkeypatch.setattr("studio.orchestrator._assets_of", lambda *args: [])
+    o.gate.decide("PUB-CH1-V1", "approve", by="human:editor"); o.run()
+    result = list(bus.replay("publish-events", "CH1-V1"))[-1].payload
+    assert result["status"] == "failed" and result["platform_ref"] == "existing"
+    assert "final_video" in result["evidence"]

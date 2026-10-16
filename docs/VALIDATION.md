@@ -1,5 +1,78 @@
 # Xác minh bản nâng cấp factory
 
+## PR #7 hòa giải với main sau PR #10 (2026-10-11)
+
+Đã kết hợp main `d9272224709af08e2fe5bdcba90de290fc6fa650` với PR #7,
+giữ CLI/publishing preview được merge bên ngoài và upload recovery/status của PR #7.
+Hòa giải số liệu README; ADR upload vẫn `0014`. Không đưa storage của PR #9 vào nhánh này.
+
+Trên working tree kết hợp: `make verify` đạt **992 Studio + 273 Gateway + 478 core
+= 1.743 test**, không skip, coverage **100%** từng package (Studio 5.520 dòng thực
+thi, 65 file test). Ruff/mypy cả ba package và **28/28 eval replay** đạt; Gateway
+còn RuntimeWarning runpy cũ. Review độc lập + 158 test platform/orchestrator/factory/CLI
+đạt; journal, đối soát identity và private/unknown → failed vẫn nguyên vẹn.
+
+`publishing-smoke.cjs` chạy Chromium với server demo/DB fake riêng trên bản kết hợp:
+trạng thái publication, filters, gate focus, reload, escaping và 56 kiểm tra
+responsive/navigation đạt; không phát sinh publish command. Node syntax checks
+đạt. Không sửa credential, chạy provider/CLI live hoặc upload thật. PR #9 giữ nguyên
+ở `3b20e2c`; cả hai PR chờ phê duyệt, tài liệu cần hòa giải theo thứ tự merge.
+
+## Tích hợp PR #7 với main sau PR #8 (2026-10-11)
+
+Đối chiếu main `4350abfc1742d756494fe718a344101cc66ff2e1`, giữ tính năng
+phim/hoạt hình được merge bên ngoài cùng bảo vệ upload của PR #7. Hòa giải README
+và lịch sử xác minh; giữ ADR phim/hoạt hình `0013`, đổi ADR upload thành `0014`.
+Không merge PR #7, không triển khai thêm phần admission dung lượng trong bản này.
+
+`make verify` trên bản kết hợp đạt **947 Studio + 273 Gateway + 478 core = 1.698 test**,
+không skip, coverage **100%** mỗi package (Studio 5.388 dòng thực thi, 64 file test).
+Ruff/mypy cả ba package và **28/28 eval replay** đạt. Gateway giữ RuntimeWarning
+runpy có sẵn. Review độc lập và 187 test kết hợp cinema/video_gen/orchestrator/retry
+xác nhận giữ CinemaSpec, storyboard/render và require_existing/private-status.
+`node --check src/studio/web/app.js` và `git diff --check` đạt.
+
+Không chạy lại browser smoke trong lượt hòa giải; báo cáo PR #8 bên dưới là bằng
+chứng của bên thực hiện PR #8. Không gọi YouTube/provider live, không chạy model GPU;
+chưa chứng minh chất lượng nhân vật, continuity, lip-sync hay Windows end-to-end.
+
+## Upload YouTube bền vững và trạng thái xuất bản (2026-10-11)
+
+Base `07b242f50d4d95b4c03b9430ed577da54058fd21`, sau PR #5 và PR #6 được
+merge bên ngoài. Giữ nguyên dashboard/ý tưởng/Kanban và hardening của PR #6;
+không nhận các thay đổi đó là công việc của đợt này.
+
+Sửa lỗi upload private không có lịch nhưng event báo published: trạng thái không
+được xác nhận trở thành failed, giữ platform_ref và gate hiện có. Không thêm thao
+tác tự chuyển public. Receipt YouTube cũ phải đối soát qua journal cùng danh tính;
+thiếu journal hoặc lệch video ID không được đi tiếp tới schedule/thumbnail.
+
+Journal upload riêng ghi intent trước POST, Location trước PUT và kết quả trước
+return; khóa theo video dùng chung giữa các factory. Test transport giả bao phủ
+restart, offset server, completion mất phản hồi, hết hạn 404/410, response thiếu ID,
+danh tính file/request/account/channel đổi, journal hỏng, khóa đồng thời và URL
+nhạy cảm không xuất hiện trong exception chain/evidence. Chặn token/journal trong
+output_dir, chặn Location ngoài host upload Google.
+
+`make verify` đạt **819 Studio + 273 Gateway + 478 core = 1.570 test**, không
+skip; coverage **100%** từng package (Studio 5.017 dòng thực thi). Ruff/mypy cả
+ba package và **28/28 eval replay** đạt. Có 41 ca mới so với main PR #6, 62 file
+test Studio. Gateway giữ một RuntimeWarning runpy có sẵn.
+
+`tests/test_upload_process_restart.py` chạy tiến trình Python riêng, dùng
+`os._exit(23)` sau khi mock server nhận chunk đầu hoặc byte cuối. Cả hai ca đạt:
+restart probe đúng phiên, chỉ một POST khởi tạo; lần chạy thứ ba dùng kết quả đã
+lưu, không PUT lại. Chạy cùng test với platform.py từ main cũ trong bản sao tạm:
+cả hai fail đúng lỗi `duplicate session init after process restart`.
+
+Giới hạn: transport hoàn toàn giả, không có upload/login/API trả phí thật. Chưa
+chứng minh YouTube live hoặc Windows. Mất journal, phiên hết hạn hoặc intent mất
+Location cần đối soát thủ công; không có lệnh tự reset hay đoán video ID. Receipt
+published sai từ lịch sử cũ cũng cần đối soát, vì thiếu trạng thái để tự sửa chắc
+chắn. SHA-256 đọc file theo block 1 MiB, upload giữ chunk tối đa 8 MiB như PR #6;
+file đầu vào cần bất biến trong lúc gửi. Kiểm tra size/mtime hỗ trợ phát hiện thay
+đổi, không thay snapshot filesystem. Xem [ADR-0021](adr/0021-durable-youtube-upload-reconciliation.md).
+
 ## Website → Video và hai video Đồng Hành 4K (2026-10-11)
 
 Luồng mới của [ADR-0015](adr/0015-website-to-local-video.md) đã chạy qua form thật,
@@ -346,3 +419,87 @@ hoặc YouTube upload thật. Giới hạn thread không phải quota RAM; graph
 số cảnh. Staging bảo vệ lỗi dựng trước commit, không tạo transaction chung cho nhiều
 filesystem replace và SQLite publish. Không thay prompt, quyền đăng công khai hay
 các giới hạn đã ghi ở ADR-0011/0012.
+
+
+## Hòa giải PR #7 với main sau PR #11 — 2026-10-11
+
+Tích hợp main `13ab96abe9709dcd52876cae2b95a59c677f0625` vào nhánh upload recovery,
+giữ Website → Video, live-export, ExitStack cleanup và thumbnail staging của main.
+ADR upload chuyển sang [0021](adr/0021-durable-youtube-upload-reconciliation.md)
+để giữ nguyên ADR 0014/0015 của PR #11. PR #9 về storage vẫn là thay đổi độc lập.
+
+`UV_CACHE_DIR=/tmp/xstudio-uv-cache make verify` trên Linux/Python 3.12.14 đạt:
+Studio **1.071 passed** (6.096 dòng, 100%, 66 tệp Python trong tests gồm conftest),
+Gateway **273 passed** (1.617 dòng, 100%), core **478 passed** (2.285 dòng,
+638 nhánh, 100%). Tổng **1.822 test**, Ruff/mypy cả ba package và **28/28** eval
+replay strict đạt. Gateway còn RuntimeWarning runpy đã có; không có lỗi test.
+Review độc lập cũng chạy 231 test platform/orchestrator/factory/website/renderer
+và không tìm thấy regression trong phần kết hợp. Log local: `/tmp/pr7-pr11-final.log`.
+
+Các báo cáo video thật và Windows/WSL được giữ từ PR #11 là bằng chứng do bên
+thực hiện cung cấp, không phải lần xác minh live trong đợt hòa giải này. Không chạy
+provider trả phí, upload YouTube, website capture live hoặc xuất lại video 4K.
+Các giới hạn upload recovery, render 12 giờ và Windows native vẫn còn hiệu lực.
+
+
+## Hòa giải PR #7 với PR #12 — 2026-10-13
+
+Tích hợp main `d7cb00d507a4e5c3f1208c906ad1195a2e67b8c8`, giữ ledger media,
+budget pause, contact sheet từ MP4 cuối và freeze/slideshow QC. Upload ADR chuyển
+sang [0021](adr/0021-durable-youtube-upload-reconciliation.md); ADR 0016 của main giữ nguyên.
+`UV_CACHE_DIR=/tmp/xstudio-uv-cache make verify` đạt **1.092 Studio + 273 Gateway
++ 478 core = 1.843 tests**, không skip; coverage 100% cả ba package (core cả nhánh),
+Studio 6.224 dòng thực thi/68 file test. Ruff/mypy và 28/28 strict eval replay đạt.
+Review độc lập thêm 89 test budget/contact-sheet/recovery/factory đạt. Node syntax
+và git diff-check đạt. Log local `/tmp/pr7-pr12-verify.log`; warning runpy Gateway cũ còn.
+
+Không kiểm chi phí/hóa đơn provider thật, paid calls, upload, deployment hoặc render
+12 giờ/Windows native. Ledger vẫn là ước tính theo giá cấu hình, không phải hóa đơn.
+PR #9 storage độc lập; Website jobs/export riêng vẫn ngoài storage admission.
+
+
+## Hòa giải PR #7 với graphics PR #13 và docs #18 — 2026-10-13
+
+Main `5f5afae4362d3ff82bd90c8745b7c105bda5637f` được tích hợp; giữ graphics
+model chọn dạng dữ liệu, đối chiếu số claim, safe layout/fallback và cache identity.
+Upload ADR hiện là [0021](adr/0021-durable-youtube-upload-reconciliation.md), giữ ADR
+0017 graphics của main; số ADR trong lịch sử bên trên là số tại thời điểm đó.
+Dependabot/SECURITY đã có trên main; không thực hiện lại đề xuất cũ của docs #18.
+
+`make verify` đạt **1.136 Studio + 273 Gateway + 478 core = 1.887 tests**, không skip,
+coverage 100% từng package (core cả nhánh); Studio 6.400 dòng thực thi/69 file test.
+Ruff/mypy cả ba package, 29/29 replay, Node syntax/diff-check đạt. Review độc lập
+và 101 test graphics/motion/budget/orchestrator đạt. Log `/tmp/pr7-pr13-verify.log`.
+Gateway còn warning runpy cũ. Không đổi prompt và không nhận các bản ghi eval
+của main là lần chạy model live của đợt này.
+
+Kiểm số graphics chỉ đối chiếu số trong claim có nguồn, chưa kiểm quan hệ ngữ nghĩa
+nhãn–giá trị–nguồn. Chưa xác minh paid/live spend, upload thật, render 12 giờ hoặc
+Windows native. Website jobs/export riêng vẫn ngoài storage admission của PR #9.
+
+## PR #7 hợp nhất main 93a290a — 2026-10-16
+
+Đã giữ toàn bộ phần main về khai báo synthetic media/tài trợ, hosted video, ASR QC và multimodal reviewers;
+không sửa thêm prompt hoặc gọi provider thật. ADR upload chuyển sang
+[0021](adr/0021-durable-youtube-upload-reconciliation.md), giữ ADR 0018–0020 của main.
+
+Request YouTube chuẩn hóa giờ chứa `containsSyntheticMedia` và
+`paidProductPlacementDetails.hasPaidProductPlacement`, dùng chung cho HTTP body và identity journal.
+`None` bỏ trường/part; `False` gửi false tường minh. Part tài trợ xuất hiện đúng khi có khai báo.
+Thay đổi cờ ở journal active hoặc completed chặn để đối soát, không POST/PUT lại.
+Metadata mặc định chưa khai vẫn tương thích với request journal cũ không có hai cờ.
+Bằng chứng hoàn tất giữ `uploadStatus` từ API.
+
+- TDD: 33 ca disclosure đỏ trước sửa; 9 tổ hợp chưa khai/false/true phục hồi active/completed,
+  cùng 24 chuyển đổi cờ ở active/completed đều xanh sau sửa.
+- Focused platform/orchestrator/preflight: **145 passed**.
+- `UV_CACHE_DIR=/tmp/uv-cache make verify`: **1.247 Studio + 273 Gateway + 486 core = 2.006 tests**,
+  coverage **100% từng package**, Ruff/mypy và **32/32 eval replay** đạt. Studio 77,37 giây,
+  Gateway 8,57 giây, core 2,97 giây. Gateway còn một runpy warning đã có trước.
+- `node --check src/studio/web/app.js` và `git diff --check`: đạt.
+- README hiện ghi 1.247 ca / 70 file test; không có test bỏ qua trong lần xác minh này.
+
+Log cục bộ: `/tmp/pr7-verify-93a290a.log`. Không gọi paid provider, CLI model thật hoặc YouTube thật;
+chưa chứng minh Windows native, render 12 giờ hay chất lượng/chi phí provider thật.
+Không thay đổi giới hạn cũ: mất/expired journal hoặc lịch sử published sai cần đối soát thủ công;
+không cam kết exactly-once khi mất trạng thái hoặc file đang bị thay đổi.

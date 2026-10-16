@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat as st_
 import urllib.parse
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,6 +57,8 @@ class FakeHTTP:
                 r = resp(method, url, headers, body) if callable(resp) else resp
                 st, h, b = r
                 return st, h, (json.dumps(b).encode() if isinstance(b, dict) else b)
+        if method == "GET" and url == f"{API_URL}/channels?part=id&mine=true":
+            return 200, {}, json.dumps({"items": [{"id": "channel-1"}]}).encode()
         raise AssertionError(f"không có route giả cho {method} {url}")
 
     def urls(self, method=None):
@@ -92,23 +95,23 @@ def test_make_platform_defaults_to_fake_and_reads_env(tmp_path, monkeypatch):
 def test_youtube_resumable_upload_two_steps_then_thumbnail_and_schedule(tmp_path):
     f = tmp_path / "final.mp4"; f.write_bytes(b"v" * 100); t = tmp_path / "A.png"; t.write_bytes(b"\x89PNG")
     http = FakeHTTP()
-    http.on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session/1"}, b""))
-    http.on("PUT", "https://upload.example/session/1", (200, {}, {"id": "yt123", "status": {"privacyStatus": "private", "uploadStatus": "uploaded"}}))
+    http.on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session/1"}, b""))
+    http.on("PUT", "https://www.googleapis.com/upload/session/1", (200, {}, {"id": "yt123", "status": {"privacyStatus": "private", "uploadStatus": "uploaded"}}))
     http.on("POST", "https://www.googleapis.com/upload/youtube/v3/thumbnails/set", (200, {}, {"items": []}))
     http.on("PUT", f"{API_URL}/videos", (200, {}, {"id": "yt123", "status": {"privacyStatus": "private", "publishAt": "2026-09-05T12:00:00Z"}}))
     yt = YouTubePlatform(_store(tmp_path), fetcher=http, now=lambda: NOW)
     up = yt.upload_video(f, META)
     assert (up.platform_ref, up.url, up.status) == ("yt123", "https://youtu.be/yt123", "private")
-    init = http.calls[0]; body = json.loads(init[3])
+    init = http.calls[1]; body = json.loads(init[3])
     assert "uploadType=resumable" in init[1] and init[2]["X-Upload-Content-Length"] == "100" and init[2]["Authorization"] == "Bearer tok-1"
     assert body["snippet"]["title"] == "AI dựng video" and "00:00 Mở đầu" in body["snippet"]["description"] and body["snippet"]["categoryId"] == "27"
-    assert body["status"] == {"privacyStatus": "private", "selfDeclaredMadeForKids": False}  # chưa quyết → không gửi cờ
-    put = http.calls[1]; assert put[0] == "PUT" and put[3] == b"v" * 100 and put[2]["Content-Length"] == "100"
+    assert body["status"] == {"privacyStatus": "private", "selfDeclaredMadeForKids": False}
+    put = http.calls[2]; assert put[0] == "PUT" and put[3] == b"v" * 100 and put[2]["Content-Length"] == "100"
     ev = json.loads(up.evidence); assert ev["init"] == 200 and ev["put"] == 200 and ev["id"] == "yt123" and ev["bytes"] == 100
     th = yt.set_thumbnail("yt123", t); assert json.loads(th)["thumbnails.set"] == 200
-    assert "videoId=yt123" in http.calls[2][1] and http.calls[2][2]["Content-Type"] == "image/png"
+    assert "videoId=yt123" in http.calls[3][1] and http.calls[3][2]["Content-Type"] == "image/png"
     sc = yt.schedule("yt123", "2026-09-05T12:00:00Z"); assert json.loads(sc)["publishAt"] == "2026-09-05T12:00:00Z"
-    assert json.loads(http.calls[3][3]) == {"id": "yt123", "status": {"privacyStatus": "private", "publishAt": "2026-09-05T12:00:00Z"}}
+    assert json.loads(http.calls[4][3]) == {"id": "yt123", "status": {"privacyStatus": "private", "publishAt": "2026-09-05T12:00:00Z"}}
     assert not any(TOKEN_URL in u for u in http.urls())  # token còn hạn → không refresh
 
 
@@ -116,11 +119,11 @@ def test_youtube_upload_declares_synthetic_media_when_decided(tmp_path):
     """ADR-0018: `status.containsSyntheticMedia` (Data API) chỉ gửi khi code/người đã quyết; YouTube tự gắn nhãn từ 5/2026."""
     f = tmp_path / "final.mp4"; f.write_bytes(b"v" * 10)
     http = FakeHTTP()
-    http.on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session/1"}, b""))
-    http.on("PUT", "https://upload.example/session/1", (200, {}, {"id": "yt9", "status": {"privacyStatus": "private"}}))
+    http.on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session/1"}, b""))
+    http.on("PUT", "https://www.googleapis.com/upload/session/1", (200, {}, {"id": "yt9", "status": {"privacyStatus": "private"}}))
     yt = YouTubePlatform(_store(tmp_path), fetcher=http, now=lambda: NOW)
     yt.upload_video(f, META.model_copy(update={"synthetic_media": True}))
-    assert json.loads(http.calls[0][3])["status"]["containsSyntheticMedia"] is True
+    assert json.loads(next(c for c in http.calls if c[0] == "POST")[3])["status"]["containsSyntheticMedia"] is True
     fake = FakePlatform(); up = fake.upload_video(f, META.model_copy(update={"synthetic_media": False}))
     assert fake.videos[up.platform_ref]["synthetic_media"] is False and "synthetic_media=False" in up.evidence
 
@@ -130,11 +133,12 @@ def test_youtube_upload_declares_paid_product_placement_only_when_decided(tmp_pa
     f = tmp_path / "final.mp4"; f.write_bytes(b"v" * 10)
     for value, part in ((True, True), (False, True), (None, False)):
         http = FakeHTTP()
-        http.on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session/1"}, b""))
-        http.on("PUT", "https://upload.example/session/1", (200, {}, {"id": "yt9", "status": {"privacyStatus": "private"}}))
-        YouTubePlatform(_store(tmp_path), fetcher=http, now=lambda: NOW).upload_video(
+        http.on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session/1"}, b""))
+        http.on("PUT", "https://www.googleapis.com/upload/session/1", (200, {}, {"id": "yt9", "status": {"privacyStatus": "private"}}))
+        YouTubePlatform(_store(tmp_path / str(value)), fetcher=http, now=lambda: NOW).upload_video(
             f, META.model_copy(update={"paid_product_placement": value}))
-        body, url = json.loads(http.calls[0][3]), http.calls[0][1]
+        post = next(c for c in http.calls if c[0] == "POST")
+        body, url = json.loads(post[3]), post[1]
         assert ("paidProductPlacementDetails" in url) is part
         assert body.get("paidProductPlacementDetails") == ({"hasPaidProductPlacement": value} if part else None)
     fake = FakePlatform(); up = fake.upload_video(f, META.model_copy(update={"paid_product_placement": True}))
@@ -145,8 +149,8 @@ def test_youtube_upload_missing_location_or_id_is_clear_error(tmp_path):
     f = tmp_path / "f.mp4"; f.write_bytes(b"v")
     http = FakeHTTP().on("POST", UPLOAD_URL, (200, {}, b""))
     with pytest.raises(PlatformError, match="Location"): YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(f, META)
-    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://u/1"}, b"")).on("PUT", "https://u/1", (200, {}, {"kind": "x"}))
-    with pytest.raises(PlatformError, match="không có id"): YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(f, META)
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/1"}, b"")).on("PUT", "https://www.googleapis.com/upload/1", (200, {}, {"kind": "x"}))
+    with pytest.raises(PlatformError, match="không có id"): YouTubePlatform(_store(tmp_path / "second"), http, lambda: NOW).upload_video(f, META)
 
 
 def test_youtube_large_upload_reads_bounded_chunks_and_honors_308_range(tmp_path, monkeypatch):
@@ -155,7 +159,7 @@ def test_youtube_large_upload_reads_bounded_chunks_and_honors_308_range(tmp_path
     video.write_bytes(b"a" * chunk_size + b"tail")
     store = _store(tmp_path)
     monkeypatch.setattr(Path, "read_bytes", lambda _path: pytest.fail("video upload must not read the entire file"))
-    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session"}, b""))
 
     def receive(_method, _url, headers, body):
         assert len(body) <= chunk_size
@@ -167,16 +171,16 @@ def test_youtube_large_upload_reads_bounded_chunks_and_honors_308_range(tmp_path
         assert headers["Content-Range"] == f"bytes {chunk_size}-{chunk_size + 3}/{chunk_size + 4}"
         return 201, {}, {"id": "chunked-video"}
 
-    http.on("PUT", "https://upload.example/session", receive)
+    http.on("PUT", "https://www.googleapis.com/upload/session", receive)
     result = YouTubePlatform(store, http, lambda: NOW).upload_video(video, META)
     assert result.platform_ref == "chunked-video"
-    assert len(http.calls) == 3
+    assert len(http.calls) == 4
 
 
 def test_youtube_upload_probes_accepted_bytes_before_resuming_after_timeout(tmp_path):
     video = tmp_path / "partial.mp4"
     video.write_bytes(bytes(range(100)))
-    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session"}, b""))
     sequence = []
 
     def receive(_method, _url, headers, body):
@@ -191,7 +195,7 @@ def test_youtube_upload_probes_accepted_bytes_before_resuming_after_timeout(tmp_
         assert headers["Content-Range"] == "bytes 40-99/100"
         return 201, {}, {"id": "resumed-video"}
 
-    http.on("PUT", "https://upload.example/session", receive)
+    http.on("PUT", "https://www.googleapis.com/upload/session", receive)
     result = YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=lambda _seconds: None).upload_video(video, META)
     assert result.platform_ref == "resumed-video" and len(sequence) == 3
 
@@ -390,8 +394,8 @@ def test_token_file_created_with_0600_from_the_start(tmp_path, monkeypatch):
 def test_youtube_upload_rejects_invalid_or_impossible_acknowledgements(tmp_path, received, message):
     video = tmp_path / "video.mp4"
     video.write_bytes(b"v" * 100)
-    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
-    http.on("PUT", "https://upload.example/session", (308, {"range": received}, b""))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session"}, b""))
+    http.on("PUT", "https://www.googleapis.com/upload/session", (308, {"range": received}, b""))
     with pytest.raises(PlatformError, match=message):
         YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META)
 
@@ -399,32 +403,32 @@ def test_youtube_upload_rejects_invalid_or_impossible_acknowledgements(tmp_path,
 def test_youtube_upload_does_not_loop_forever_when_server_accepts_no_bytes(tmp_path):
     video = tmp_path / "video.mp4"
     video.write_bytes(b"v" * 100)
-    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
-    http.on("PUT", "https://upload.example/session", (308, {}, b""))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session"}, b""))
+    http.on("PUT", "https://www.googleapis.com/upload/session", (308, {}, b""))
     with pytest.raises(PlatformError, match="không nhận thêm byte"):
         YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META)
-    assert len(http.calls) == 4  # init + tối đa 3 chunk không tiến triển
+    assert len(http.calls) == 5  # channel + init + tối đa 3 chunk không tiến triển
 
 
 def test_youtube_upload_status_probe_recovers_already_completed_upload(tmp_path):
     video = tmp_path / "video.mp4"
     video.write_bytes(b"video")
-    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session"}, b""))
 
     def receive(_method, _url, _headers, body):
         if body: return 503, {}, b""
         return 201, {}, {"id": "already-completed"}
 
-    http.on("PUT", "https://upload.example/session", receive)
+    http.on("PUT", "https://www.googleapis.com/upload/session", receive)
     result = YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=lambda _seconds: None).upload_video(video, META)
-    assert result.platform_ref == "already-completed" and len(http.calls) == 3
+    assert result.platform_ref == "already-completed" and len(http.calls) == 4
 
 
 def test_youtube_upload_checks_completion_after_last_uncertain_attempt(tmp_path):
     video = tmp_path / "video.mp4"
     video.write_bytes(b"video")
     chunks = []
-    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session"}, b""))
 
     def receive(_method, _url, _headers, body):
         if body:
@@ -433,10 +437,10 @@ def test_youtube_upload_checks_completion_after_last_uncertain_attempt(tmp_path)
         if len(chunks) < 3: return 308, {}, b""
         return 201, {}, {"id": "committed-on-final-attempt"}
 
-    http.on("PUT", "https://upload.example/session", receive)
+    http.on("PUT", "https://www.googleapis.com/upload/session", receive)
     result = YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=lambda _seconds: None).upload_video(video, META)
     assert result.platform_ref == "committed-on-final-attempt"
-    assert len(http.calls) == 7
+    assert len(http.calls) == 8
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows prevents atomic replacement of an open file")
@@ -449,13 +453,13 @@ def test_youtube_upload_pins_approved_file_before_initializing_session(tmp_path)
     def initialize(_method, _url, headers, _body):
         assert headers["X-Upload-Content-Length"] == "8"
         os.replace(replacement, video)
-        return 200, {"location": "https://upload.example/session"}, b""
+        return 200, {"location": "https://www.googleapis.com/upload/session"}, b""
 
     def receive(_method, _url, _headers, body):
         assert body == b"approved", "atomic replacement during session init cannot substitute uploaded bytes"
         return 201, {}, {"id": "approved-video"}
 
-    http = FakeHTTP().on("POST", UPLOAD_URL, initialize).on("PUT", "https://upload.example/session", receive)
+    http = FakeHTTP().on("POST", UPLOAD_URL, initialize).on("PUT", "https://www.googleapis.com/upload/session", receive)
     assert YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META).platform_ref == "approved-video"
 
 
@@ -463,7 +467,7 @@ def test_youtube_upload_uses_progress_reported_by_last_transient_probe(tmp_path)
     video = tmp_path / "video.mp4"
     video.write_bytes(b"0123456789")
     chunks = []
-    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session"}, b""))
 
     def receive(_method, _url, headers, body):
         if body:
@@ -473,7 +477,7 @@ def test_youtube_upload_uses_progress_reported_by_last_transient_probe(tmp_path)
             return 201, {}, {"id": "resumed-after-progress"}
         return 308, ({"range": "bytes=0-4"} if len(chunks) == 3 else {}), b""
 
-    http.on("PUT", "https://upload.example/session", receive)
+    http.on("PUT", "https://www.googleapis.com/upload/session", receive)
     result = YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=lambda _seconds: None).upload_video(video, META)
     assert result.platform_ref == "resumed-after-progress" and len(chunks) == 4
 
@@ -482,12 +486,12 @@ def test_youtube_upload_uses_progress_reported_by_last_transient_probe(tmp_path)
 def test_youtube_upload_stops_on_permanent_error_or_repeated_transient_errors(tmp_path, status):
     video = tmp_path / "video.mp4"
     video.write_bytes(b"video")
-    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
-    http.on("PUT", "https://upload.example/session", lambda _m, _u, _h, body: (status, {}, b"") if body else (308, {}, b""))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session"}, b""))
+    http.on("PUT", "https://www.googleapis.com/upload/session", lambda _m, _u, _h, body: (status, {}, b"") if body else (308, {}, b""))
     with pytest.raises(PlatformError) as error:
         YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=lambda _seconds: None).upload_video(video, META)
     assert error.value.status == status
-    assert len(http.calls) == (2 if status == 403 else 7)
+    assert len(http.calls) == (3 if status == 403 else 8)
 
 
 def test_youtube_upload_rejects_empty_or_missing_file_before_initializing(tmp_path):
@@ -508,7 +512,7 @@ def test_youtube_upload_detects_file_truncated_after_session_started(tmp_path):
 
     def initiate(_m, _u, _h, _body):
         video.write_bytes(b"")
-        return 200, {"location": "https://upload.example/session"}, b""
+        return 200, {"location": "https://www.googleapis.com/upload/session"}, b""
 
     http = FakeHTTP().on("POST", UPLOAD_URL, initiate)
     with pytest.raises(PlatformError, match="file đã thay đổi"):
@@ -521,16 +525,16 @@ def test_youtube_upload_honors_resume_delay_and_rejects_premature_completion(tmp
     video = tmp_path / "video.mp4"
     video.write_bytes(b"v" * (256 * 1024 + 1))
     slept = []
-    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
-    http.on("PUT", "https://upload.example/session", (308, {"range": "bytes=0-262143", "retry-after": retry_after}, b""))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session"}, b""))
+    http.on("PUT", "https://www.googleapis.com/upload/session", (308, {"range": "bytes=0-262143", "retry-after": retry_after}, b""))
     # Sau chunk đầu, Range không tăng thì giới hạn số lượt để tránh vòng lặp vô hạn.
     with pytest.raises(PlatformError, match="không nhận thêm byte"):
         YouTubePlatform(_store(tmp_path), http, lambda: NOW, sleep=slept.append).upload_video(video, META)
     assert slept == ([2.0] * 3 if retry_after == "2" else [])
-    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session"}, b""))
-    http.on("PUT", "https://upload.example/session", (201, {}, {"id": "premature"}))
+    http = FakeHTTP().on("POST", UPLOAD_URL, (200, {"location": "https://www.googleapis.com/upload/session"}, b""))
+    http.on("PUT", "https://www.googleapis.com/upload/session", (201, {}, {"id": "premature"}))
     with pytest.raises(PlatformError, match="trước khi nhận đủ file"):
-        YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META)
+        YouTubePlatform(_store(tmp_path / "second"), http, lambda: NOW).upload_video(video, META)
 
 
 def test_youtube_retries_5xx_429_and_network_with_backoff_but_not_403(tmp_path):
@@ -606,6 +610,216 @@ def test_youtube_captions_error_surfaces_as_platform_error(tmp_path):
     assert e.value.status == 403 and e.value.reason == "quotaExceeded"
 
 
+@pytest.mark.parametrize('remote_completed', [False, True])
+def test_upload_restart_recovers_private_session_without_second_insert(tmp_path, remote_completed):
+    video = tmp_path / 'resume.mp4'; video.write_bytes(b'abcdefgh')
+    store = _store(tmp_path)
+    session = 'https://www.googleapis.com/upload/private-session?secret=do-not-log'
+    http = FakeHTTP().on('GET', f'{API_URL}/channels', (200, {}, {'items': [{'id': 'channel-1'}]}))
+    http.on('POST', UPLOAD_URL, (200, {'location': session}, b''))
+    def crash(_m, _u, _h, _body):
+        journals = list(store.path.parent.glob('youtube-uploads/*.json'))
+        assert len(journals) == 1
+        assert json.loads(journals[0].read_text())['location'] == session
+        if os.name == 'posix': assert st_.S_IMODE(journals[0].stat().st_mode) == 0o600
+        raise SystemExit('process stopped after remote acknowledgement')
+    http.on('PUT', session, crash)
+    with pytest.raises(SystemExit): YouTubePlatform(store, http, lambda: NOW).upload_video(video, META)
+    resumed_http = FakeHTTP().on('GET', f'{API_URL}/channels', (200, {}, {'items': [{'id': 'channel-1'}]}))
+    def recover(_m, _u, headers, body):
+        if not body:
+            assert headers['Content-Range'] == 'bytes */8'
+            return (201, {}, {'id': 'stable-video'}) if remote_completed else (308, {'range': 'bytes=0-3'}, b'')
+        assert body == b'efgh' and headers['Content-Range'] == 'bytes 4-7/8'
+        return 201, {}, {'id': 'stable-video'}
+    resumed_http.on('PUT', session, recover)
+    result = YouTubePlatform(store, resumed_http, lambda: NOW).upload_video(video, META)
+    assert result.platform_ref == 'stable-video' and session not in result.evidence
+    assert not resumed_http.urls('POST')
+    completed = json.loads(next(store.path.parent.glob('youtube-uploads/*.json')).read_text())
+    assert completed['state'] == 'completed'
+    # A new process receives the same persisted result, no media request.
+    again = FakeHTTP().on('GET', f'{API_URL}/channels', (200, {}, {'items': [{'id': 'channel-1'}]}))
+    assert YouTubePlatform(store, again, lambda: NOW).upload_video(video, META) == result
+    assert not again.urls('PUT') and not again.urls('POST')
+
+
+def test_upload_lost_initialization_and_expired_session_require_reconciliation(tmp_path):
+    video = tmp_path / 'v.mp4'; video.write_bytes(b'video')
+    store = _store(tmp_path)
+    session = 'https://www.googleapis.com/upload/private-secret'
+    http = FakeHTTP().on('GET', f'{API_URL}/channels', (200, {}, {'items': [{'id': 'channel-1'}]}))
+    def lost(*args): raise PlatformError(session)
+    http.on('POST', UPLOAD_URL, lost)
+    with pytest.raises(PlatformError, match='reconciliation_needed') as err:
+        YouTubePlatform(store, http, lambda: NOW, sleep=lambda _: None).upload_video(video, META)
+    assert session not in str(err.value) and err.value.__cause__ is None
+    assert len(http.urls('POST')) == 1
+    with pytest.raises(PlatformError, match='reconciliation_needed'):
+        YouTubePlatform(store, http, lambda: NOW).upload_video(video, META)
+    assert len(http.urls('POST')) == 1
+
+
+def _abandoned_upload(tmp_path):
+    video = tmp_path / 'abandoned.mp4'; video.write_bytes(b'video')
+    store = _store(tmp_path)
+    http = FakeHTTP().on('POST', UPLOAD_URL, (200, {'location': 'https://www.googleapis.com/upload/secret-session'}, b''))
+    def crash(*args): raise SystemExit('crash')
+    http.on('PUT', 'https://www.googleapis.com/upload/secret-session', crash)
+    with pytest.raises(SystemExit): YouTubePlatform(store, http, lambda: NOW).upload_video(video, META)
+    return video, store, next(store.path.parent.glob('youtube-uploads/*.json'))
+
+
+@pytest.mark.parametrize('change', ['file', 'metadata', 'credentials', 'channel'])
+def test_upload_changed_identity_blocks_any_second_upload(tmp_path, change):
+    video, store, journal = _abandoned_upload(tmp_path)
+    metadata = META.model_copy(deep=True)
+    http = FakeHTTP()
+    if change == 'file': video.write_bytes(b'other')  # same length, different hash
+    if change == 'metadata': metadata.title = 'different'
+    if change == 'credentials':
+        tokens = store.load(); tokens.refresh_token = 'different-account'; store.save(tokens)
+    if change == 'channel': http.on('GET', f'{API_URL}/channels', (200, {}, {'items': [{'id': 'different-channel'}]}))
+    with pytest.raises(PlatformError, match='identity changed'):
+        YouTubePlatform(store, http, lambda: NOW).upload_video(video, metadata)
+    assert json.loads(journal.read_text())['state'] == 'reconciliation_needed'
+    assert not http.urls('PUT') and not http.urls('POST')
+
+
+@pytest.mark.parametrize('mutation', ['invalid_json', 'list', 'schema', 'location', 'result', 'init_status'])
+def test_upload_corrupt_journal_never_initializes_again(tmp_path, mutation):
+    video, store, journal = _abandoned_upload(tmp_path)
+    state = json.loads(journal.read_text())
+    if mutation == 'invalid_json': journal.write_text('{secret-url:')
+    elif mutation == 'list': journal.write_text('[]')
+    else:
+        if mutation == 'schema': state['schema'] = 99
+        if mutation == 'location': state.pop('location')
+        if mutation == 'init_status': state.pop('init_status')
+        if mutation == 'result': state.update(state='completed', result={})
+        journal.write_text(json.dumps(state))
+    http = FakeHTTP()
+    with pytest.raises(PlatformError, match='reconciliation_needed'):
+        YouTubePlatform(store, http, lambda: NOW).upload_video(video, META)
+    assert json.loads(journal.read_text())['state'] == 'reconciliation_needed'
+    assert not http.urls('POST') and not http.urls('PUT')
+
+
+@pytest.mark.parametrize('response', [(404, {}, b'secret-session'), (410, {}, b''), (308, {'range': 'bad'}, b''),
+                                     (308, {'range': 'bytes=0-4'}, b''), (200, {}, {'id': 'https://secret-session'})])
+def test_upload_expired_or_ambiguous_resume_blocks_instead_of_inserting(tmp_path, response):
+    import traceback
+
+    video, store, journal = _abandoned_upload(tmp_path)
+    http = FakeHTTP().on('PUT', 'https://www.googleapis.com/upload/secret-session', response)
+    with pytest.raises(PlatformError, match='reconciliation_needed') as caught:
+        YouTubePlatform(store, http, lambda: NOW).upload_video(video, META)
+    assert 'secret-session' not in ''.join(traceback.format_exception(caught.value))
+    assert json.loads(journal.read_text())['state'] == 'reconciliation_needed'
+    with pytest.raises(PlatformError, match='reconciliation_needed'):
+        YouTubePlatform(store, http, lambda: NOW).upload_video(video, META)
+    assert not http.urls('POST') and len(http.urls('PUT')) == 1
+
+
+@pytest.mark.parametrize('channels', [[], [{'id': 'one'}, {'id': 'two'}], [{'id': 'https://secret'}], None])
+def test_upload_requires_one_authenticated_channel(tmp_path, channels):
+    video = tmp_path / 'v.mp4'; video.write_bytes(b'v')
+    http = FakeHTTP().on('GET', f'{API_URL}/channels', (200, {}, {'items': channels}))
+    with pytest.raises(PlatformError, match='exactly one authenticated channel'):
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META)
+    assert not http.urls('POST') and not http.urls('PUT')
+
+
+def test_upload_require_existing_blocks_legacy_receipt_without_session(tmp_path):
+    http = FakeHTTP()
+    with pytest.raises(PlatformError, match='prior receipt has no durable session'):
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(tmp_path / 'v.mp4', META, require_existing=True)
+    assert not http.calls
+
+
+def test_upload_session_lock_blocks_another_factory_sharing_token_store(tmp_path):
+    video = tmp_path / 'v.mp4'; video.write_bytes(b'v')
+    store = _store(tmp_path)
+    other = FakeHTTP()
+    http = FakeHTTP().on('POST', UPLOAD_URL, (200, {'location': 'https://www.googleapis.com/upload/session'}, b''))
+    def receive(*args):
+        with pytest.raises(PlatformError, match='another worker'):
+            YouTubePlatform(store, other, lambda: NOW).upload_video(video, META)
+        return 201, {}, {'id': 'one-video'}
+    http.on('PUT', 'https://www.googleapis.com/upload/session', receive)
+    assert YouTubePlatform(store, http, lambda: NOW).upload_video(video, META).platform_ref == 'one-video'
+    assert not other.calls
+
+
+def test_upload_session_errors_do_not_reveal_secret_urls(tmp_path):
+    import traceback
+
+    video, store, _ = _abandoned_upload(tmp_path)
+    http = FakeHTTP()
+    def error(*args): raise OSError('https://www.googleapis.com/upload/secret-session')
+    http.on('PUT', 'https://www.googleapis.com/upload/secret-session', error)
+    with pytest.raises(PlatformError) as caught:
+        YouTubePlatform(store, http, lambda: NOW, sleep=lambda _: None).upload_video(video, META)
+    assert 'secret-session' not in ''.join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+
+
+def test_make_platform_rejects_credentials_inside_media_artifacts(tmp_path):
+    with pytest.raises(PlatformError, match='outside media output_dir'):
+        make_platform(MediaConfig(output_dir=tmp_path, platform={'provider': 'youtube', 'tokens': str(tmp_path / 'tokens.json')}))
+
+
+@pytest.mark.parametrize('location', ['https://evil.example/session', 'https://www.googleapis.com@evil.example/session',
+                                      'https://www.googleapis.com:8443/upload/session', 'https://www.googleapis.com:invalid/upload/session',
+                                      'http://www.googleapis.com/upload/session'])
+def test_upload_never_sends_bearer_to_untrusted_session_origin(tmp_path, location):
+    video = tmp_path / 'v.mp4'; video.write_bytes(b'v')
+    http = FakeHTTP().on('POST', UPLOAD_URL, (200, {'location': location}, b''))
+    with pytest.raises(PlatformError, match='reconciliation_needed'):
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META)
+    assert not http.urls('PUT')
+
+
+def test_make_platform_rejects_journal_directory_inside_output(tmp_path):
+    with pytest.raises(PlatformError, match='outside media output_dir'):
+        make_platform(MediaConfig(output_dir=tmp_path / 'youtube-uploads',
+                                  platform={'provider': 'youtube', 'tokens': str(tmp_path / 'tokens.json')}))
+
+
+def test_upload_detects_inplace_change_after_remote_completion(tmp_path):
+    video = tmp_path / 'v.mp4'; video.write_bytes(b'v')
+    http = FakeHTTP().on('POST', UPLOAD_URL, (200, {'location': 'https://www.googleapis.com/upload/session'}, b''))
+    def receive(*args):
+        video.write_bytes(b'changed')
+        return 201, {}, {'id': 'uncertain-video'}
+    http.on('PUT', 'https://www.googleapis.com/upload/session', receive)
+    with pytest.raises(PlatformError, match='reconciliation_needed'):
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META)
+
+
+def test_upload_write_failure_preserves_active_session_and_redacts_error(tmp_path, monkeypatch):
+    from studio import platform as module
+
+    video, store, journal = _abandoned_upload(tmp_path)
+    http = FakeHTTP().on('PUT', 'https://www.googleapis.com/upload/secret-session', (201, {}, {'id': 'finished'}))
+    def fail(*args): raise OSError('https://secret-session')
+    monkeypatch.setattr(module, '_save_upload_state', fail)
+    with pytest.raises(PlatformError, match='private session state unavailable') as caught:
+        YouTubePlatform(store, http, lambda: NOW).upload_video(video, META)
+    assert 'https://' not in str(caught.value)
+    assert json.loads(journal.read_text())['state'] == 'active'
+
+
+def test_upload_completed_corrupt_evidence_cannot_expose_session_url(tmp_path):
+    video, store, journal = _abandoned_upload(tmp_path)
+    state = json.loads(journal.read_text())
+    state.update(state='completed', result={'platform_ref': 'valid', 'url': 'https://youtu.be/valid', 'status': 'private',
+                                          'evidence': json.dumps({'id': 'valid', 'bytes': 5, 'secret': state['location']})})
+    journal.write_text(json.dumps(state))
+    with pytest.raises(PlatformError, match='corrupt completed result'):
+        YouTubePlatform(store, FakeHTTP(), lambda: NOW).upload_video(video, META)
+
+
 def test_comments_with_an_image_are_flagged_but_the_image_never_reaches_the_bus(tmp_path):
     """YouTube 11/2026: bình luận có `snippet.imageUrl`. community-manager cần biết bình luận kèm ảnh (lời có thể chỉ
     là "như hình"), nhưng ảnh/URL không bao giờ vào bus cho model (ADR-0007): chỉ cờ `has_image`."""
@@ -653,3 +867,62 @@ def test_youtube_snapshot_reads_duration_from_batch_get_stats_and_keeps_lifetime
     http3 = FakeHTTP().on("GET", ANALYTICS_URL, reports).on("GET", f"{API_URL}/videos:batchGetStats", (200, {}, {"items": []}))
     http3.on("GET", f"{API_URL}/videos?", (200, {}, {"items": [{"contentDetails": {"duration": "PT10S"}}]}))
     assert json.loads(YouTubePlatform(_store(tmp_path), http3, lambda: NOW).snapshot("yt1").evidence)["duration_s"] == 10.0
+
+
+@pytest.mark.parametrize('synthetic', [None, False, True])
+@pytest.mark.parametrize('paid', [None, False, True])
+def test_disclosure_identity_survives_active_and_completed_recovery(tmp_path, synthetic, paid):
+    video = tmp_path / 'flags.mp4'; video.write_bytes(b'approved')
+    store = _store(tmp_path)
+    metadata = META.model_copy(update={'synthetic_media': synthetic, 'paid_product_placement': paid})
+    location = 'https://www.googleapis.com/upload/disclosure-session'
+    http = FakeHTTP().on('POST', UPLOAD_URL, (200, {'location': location}, b''))
+    def interrupted(*args): raise SystemExit('process interrupted')
+    http.on('PUT', location, interrupted)
+    with pytest.raises(SystemExit): YouTubePlatform(store, http, lambda: NOW).upload_video(video, metadata)
+    post = next(call for call in http.calls if call[0] == 'POST')
+    request = json.loads(post[3])
+    assert request['status'].get('containsSyntheticMedia') is synthetic
+    assert ('containsSyntheticMedia' in request['status']) is (synthetic is not None)
+    assert request.get('paidProductPlacementDetails') == (
+        {'hasPaidProductPlacement': paid} if paid is not None else None)
+    assert ('paidProductPlacementDetails' in post[1]) is (paid is not None)
+    journal = next(store.path.parent.glob('youtube-uploads/*.json'))
+    assert json.loads(journal.read_text())['identity']['request'] == request
+    recovery = FakeHTTP().on('PUT', location, (201, {}, {
+        'id': 'confirmed-video', 'status': {'privacyStatus': 'private', 'uploadStatus': 'processed'}}))
+    resumed = YouTubePlatform(store, recovery, lambda: NOW).upload_video(video, metadata, require_existing=True)
+    assert resumed.platform_ref == 'confirmed-video'
+    assert json.loads(resumed.evidence)['uploadStatus'] == 'processed'
+    # None and omitted legacy defaults normalize to the same request, including completed journals.
+    default_or_same = META if synthetic is None and paid is None else metadata
+    completed = FakeHTTP()
+    result = YouTubePlatform(store, completed, lambda: NOW).upload_video(video, default_or_same, require_existing=True)
+    assert result == resumed
+    assert not any(call[0] == 'POST' for call in recovery.calls + completed.calls)
+    assert not any(call[0] == 'PUT' for call in completed.calls)
+
+
+@pytest.mark.parametrize('field', ['synthetic_media', 'paid_product_placement'])
+@pytest.mark.parametrize('before,after', [(None, False), (None, True), (False, None), (False, True), (True, None), (True, False)])
+@pytest.mark.parametrize('completed', [False, True])
+def test_changed_disclosure_requires_reconciliation_without_new_insert(tmp_path, field, before, after, completed):
+    video = tmp_path / 'flags.mp4'; video.write_bytes(b'approved')
+    store = _store(tmp_path)
+    metadata = META.model_copy(update={field: before})
+    location = 'https://www.googleapis.com/upload/disclosure-session'
+    http = FakeHTTP().on('POST', UPLOAD_URL, (200, {'location': location}, b''))
+    def upload(*args):
+        if not completed: raise SystemExit('process interrupted')
+        return 201, {}, {'id': 'confirmed-video'}
+    http.on('PUT', location, upload)
+    if completed: YouTubePlatform(store, http, lambda: NOW).upload_video(video, metadata)
+    else:
+        with pytest.raises(SystemExit): YouTubePlatform(store, http, lambda: NOW).upload_video(video, metadata)
+    recovery = FakeHTTP()
+    with pytest.raises(PlatformError, match='identity changed'):
+        YouTubePlatform(store, recovery, lambda: NOW).upload_video(
+            video, metadata.model_copy(update={field: after}), require_existing=True)
+    assert not any(call[0] in {'POST', 'PUT'} for call in recovery.calls)
+    journal = next(store.path.parent.glob('youtube-uploads/*.json'))
+    assert json.loads(journal.read_text())['state'] == 'reconciliation_needed'
