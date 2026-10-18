@@ -17,6 +17,34 @@ from studio.preflight import preflight
 from studio.renderer import Renderer
 
 
+def test_rights_review_receives_the_declared_font_notice_without_host_font_assumptions(tmp_path,monkeypatch):
+    from studio.fakes import make_scripted_client
+    from studio.orchestrator import Orchestrator, _with_provenance
+    notice='docs/rights/licenses/dejavu-bitstream-vera.txt'
+    monkeypatch.setattr('studio.presentation.font_evidence',lambda _: {'license_file':notice,'license':'bitstream-vera'})
+    o=Orchestrator(InMemoryBus(),make_scripted_client(),media=make_media(MediaConfig(output_dir=tmp_path)))
+    env=Envelope(topic='media-assets',key='V',actor='renderer',payload={'video_id':'V'})
+    evidence=_with_provenance(env,o)
+    assert 'Bitstream' in evidence['font_license_notice']
+    assert evidence['font_evidence']['license_file']==notice
+
+
+def test_sqlite_orchestrator_initializes_persistent_youtube_sessions_explicitly(tmp_path):
+    from studio.fakes import make_scripted_client
+    from studio.orchestrator import Orchestrator
+    from studio.platform import TokenStore, YouTubePlatform
+    from studio.sqlite_bus import SQLiteBus
+    from studio.upload_sessions import UploadSessions
+    bus=SQLiteBus(tmp_path/'studio.sqlite')
+    try:
+        platform=YouTubePlatform(TokenStore(tmp_path/'tokens.json'))
+        o=Orchestrator(bus,make_scripted_client(),platform=platform,
+            media=make_media(MediaConfig(output_dir=tmp_path/'media')))
+        assert isinstance(o.platform.sessions,UploadSessions)
+        assert o.platform.sessions.db==bus.path
+    finally:bus.close()
+
+
 @pytest.mark.parametrize('duration,warn', [(17., False), (29.99, False), (30., True), (None, True)])
 def test_missing_chapters_advice_uses_measured_duration(duration, warn):
     meta = MetadataPackage(video_id='V', title='Một hướng dẫn', description='Ngữ cảnh. '*30, tags=['hướng dẫn'])

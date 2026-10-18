@@ -146,8 +146,8 @@ CI Linux cài FFmpeg/font, chạy smoke Chromium; job Windows kiểm SQLite/Unic
 - `src/studio/web/`: HTML/CSS/JavaScript native, đóng gói cùng Python.
 - `agents/`, `skills/`, `topics/`: 14 vai, 24 skill và schema sự kiện; giữ prompt hiện có.
 - `gateway/`, `xagents-core/`: thành viên uv workspace có test/coverage riêng.
-- `tests/`: pytest 1327 ca / 84 file Python.
-- Test: 1327 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
+- `tests/`: pytest 1329 ca / 84 file Python.
+- Test: 1329 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
 - `docs/adr/`: ADR 0001–0024; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình, [ADR-0022](docs/adr/0022-default-quality-and-native-shorts.md) đưa chất lượng vào mặc định, [ADR-0023](docs/adr/0023-excerpt-ranges-and-rights-evidence.md) giữ mốc cảnh và hồ sơ quyền của bản trích, [ADR-0024](docs/adr/0024-current-export-traceability.md) nối đúng kịch bản và quyền thành phần của bản xuất.
 
 Giấy phép: [Apache-2.0](LICENSE), cùng giấy phép với repo nguồn [`X-Agents`](https://github.com/seeker19110/X-Agents) mà `xagents-core/` và `gateway/` được vendor về.
