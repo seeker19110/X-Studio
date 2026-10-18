@@ -11,6 +11,7 @@ from xagents_core.events import SupervisorAction as CoreSupervisorAction
 from xagents_core.events import can_transition as _can_transition
 
 from .film import CinemaSpec
+from .scene_graphic import MotionSpec
 
 Topic = Literal[
     "channel-briefs", "trend-reports", "video-briefs", "research-dossiers", "scripts",
@@ -21,7 +22,8 @@ Topic = Literal[
 ]
 Namespace = Literal["strategy", "research", "voice", "production", "brand", "seo", "rights", "insights", "community", "knowledge"]
 ReviewSource = Literal["fact", "rights", "quality"]
-AssetKind = Literal["scene_audio", "scene_image", "scene_layout", "scene_video", "music", "draft_video", "final_video", "thumbnail", "captions"]
+AssetKind = Literal["scene_audio", "scene_image", "scene_layout", "scene_video", "music", "draft_video", "final_video", "thumbnail", "captions",
+                    "contact_sheet"]  # contact_sheet: lưới khung hình từ bản cuối cho người duyệt (ADR-0016), không đăng lên nền tảng
 VideoFormat = Literal["long", "short"]
 # `SupervisorActionKind` giống hệt bản company (đo được), nên nó lên core ở K3.5a; re-export giữ tên cũ.
 from xagents_core.events import SupervisorActionKind as SupervisorActionKind  # noqa: E402
@@ -111,6 +113,8 @@ class Scene(BaseModel):
     locked: bool = False  # cảnh đã đạt: editor/renderer không được sinh lại
     asset_refs: dict[str, str] = {}  # kind → path (renderer điền)
     clip_start_s: float | None = Field(default=None,ge=0,allow_inf_nan=False)  # measured position in a derived clip
+    # ADR-0017: cảnh là đồ họa dữ liệu (title/quote/bars/list/stat) thay vì ảnh; model chọn, code kiểm số và dựng.
+    graphic: MotionSpec | None = None
 
 
 class SceneManifest(BaseModel):
@@ -192,6 +196,13 @@ class MetadataPackage(BaseModel):
     language: str = "vi"
     category: str = ""
     alt_titles: list[str] = []  # ứng viên A/B
+    # ADR-0018: nội dung tổng hợp/chỉnh sửa THỰC TẾ (YouTube `status.containsSyntheticMedia`). CODE điền từ manifest và
+    # provenance (`preflight.synthetic_media_of`) hoặc chính sách kênh `production.synthetic_media`; None = chưa quyết →
+    # preflight warn, gate publish hiện "(chưa khai)". Model không đặt trường này.
+    synthetic_media: bool | None = None
+    # ADR-0018: có quảng cáo/tài trợ trả tiền (YouTube `paidProductPlacementDetails.hasPaidProductPlacement`, 7/2026).
+    # CODE điền từ chính sách kênh `production.paid_product_placement`; None = chưa khai → adapter không gửi part.
+    paid_product_placement: bool | None = None
 
 
 class Finding(BaseModel):

@@ -9,6 +9,7 @@ lượt và ngân sách token, ghi audit `tools_used`; provider `claude-code` t�
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import sys
 from collections.abc import Callable
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from xagents_core.context import _prune, fit
+from xagents_core.llm import Attachment
 from xagents_core.runner import AgentRunner as CoreAgentRunner
 from xagents_core.runner import Generated as CoreGenerated
 from xagents_core.runner import RunnerError as RunnerError
@@ -24,6 +26,8 @@ from xagents_core.runner import RunResult as CoreRunResult
 from xagents_core.runner import output_schema as _core_output_schema
 from xagents_core.runner import payload_schema as _core_payload_schema
 
+from .attachments import attachment_note
+from .attachments import collect as collect_attachments
 from .blackboard import Blackboard
 from .bus import SCHEMA_DIR, BusError, InMemoryBus
 from .events import AuditLog, Envelope
@@ -111,6 +115,15 @@ class Generated(CoreGenerated):
 
 
 
+def _accepts_attachments(client: Any) -> bool:
+    """`complete` của client có nhận `attachments` (hoặc **kwargs) không — ADR-0020 không bắt mọi client phải biết ảnh."""
+    try:
+        params = inspect.signature(client.complete).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "attachments" or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+
+
 class AgentRunner(CoreAgentRunner[Envelope, AgentSpec]):
     """Runner của studio — phần ngoài ở `xagents_core.runner` (K3.6d2).
 
@@ -129,6 +142,7 @@ class AgentRunner(CoreAgentRunner[Envelope, AgentSpec]):
         super().__init__(bus, client, agents or load_agents(), blackboard, max_input_chars,
                          default_max_input_chars=DEFAULT_MAX_INPUT_CHARS)
         self.toolbox_factory = toolbox_factory  # test/orchestrator thay bằng toolbox giả hoặc tắt (lambda s: None)
+        self._attachments: list[Attachment] = []  # ảnh của lượt đang chạy (ADR-0020), đặt lại ở mỗi `generate`
 
     def _audit_scope(self, inp: Envelope) -> dict[str, Any]:
         return {"video_id": inp.payload.get("video_id"), "channel_id": inp.payload.get("channel_id")}
@@ -141,6 +155,12 @@ class AgentRunner(CoreAgentRunner[Envelope, AgentSpec]):
     def _complete(self, spec: AgentSpec, inp: Envelope, user: str, schema: dict[str, Any],
                   tools: ToolBox | None = None, messages: list[dict[str, Any]] | None = None) -> Completion:
         try:
+            # ADR-0020: chỉ truyền `attachments` khi có ảnh (generate đã bỏ ảnh nếu client không nhận tham số này).
+            if self._attachments:
+                return self.client.complete(system=spec.system_prompt(), user=user, schema=schema,
+                                            model_tier=spec.model_tier, cache_key=spec.id,
+                                            tools=tools.specs() if tools else None, messages=messages,
+                                            attachments=self._attachments)
             return self.client.complete(system=spec.system_prompt(), user=user, schema=schema, model_tier=spec.model_tier,
                                         cache_key=spec.id, tools=tools.specs() if tools else None, messages=messages)
         except LLMError as e:
@@ -245,6 +265,19 @@ class AgentRunner(CoreAgentRunner[Envelope, AgentSpec]):
             inp = inp.model_copy(update={"payload": both["payload"]})
             extra = both["extra"] or None
         user = build_user_message(spec, inp, topic_out, context, many=many, extra=extra)
+        # ADR-0020: ảnh agent khai trong `inputs`, CODE gom từ asset có sẵn trong payload/extra (không đọc đường dẫn khác).
+        self._attachments, skipped = collect_attachments(spec.inputs, {"payload": inp.payload, "extra": extra or {}})
+        if skipped:
+            self._audit(spec, "attachments_skipped", inp, evidence="; ".join(skipped)[:500])
+        if self._attachments and not _accepts_attachments(self.client):
+            # Client tự viết/cũ chưa có tham số `attachments`: chạy như trước (chỉ JSON) và nói rõ, không làm hỏng lượt.
+            self._audit(spec, "attachments_unsupported", inp,
+                        evidence=f"{type(self.client).__name__}.complete không nhận attachments; bỏ {len(self._attachments)} ảnh")
+            self._attachments = []
+        if self._attachments:
+            user += attachment_note(self._attachments)
+            self._audit(spec, "attachments", inp, evidence=json.dumps({"images": [
+                {"label": a.label, "sha256": a.sha256, "bytes": len(a.data)} for a in self._attachments]}, ensure_ascii=False))
         out_schema = output_schema(schema, spec.namespaces_write, many)
         tools = self.toolbox_factory(spec) if spec.tools else None
         if tools is None:

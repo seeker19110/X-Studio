@@ -89,6 +89,12 @@ biết, giá 0 phải do người vận hành xác nhận. Hạn mức USD media
 sẽ chặn trước gọi provider. Text token do backend báo cáo được hiển thị riêng; không quy đổi subscription CLI
 thành tiền hay coi đây là hóa đơn thực. Lượt lỗi có thể phát sinh phí ngoài hệ thống, hiển thị chi phí chưa biết.
 
+Giá từ form `production.pricing` cũng được dùng cho ledger provider `media.cost`; giá theo đơn vị
+từ form ưu tiên giá tương ứng của provider. `tts.price_per_second` vẫn được cộng nếu đã khai.
+Lớp tài nguyên ghi cùng lượt vào `media.usage` để giữ số lần sinh/lỗi/chi phí chưa biết; hai đường
+ghi nhận không gọi provider hai lần và không cộng hai bản ghi thành hai lượt mua. Đổi bảng giá
+không làm mất cache media.
+
 Nút tài nguyên cho tổng dung lượng, từng dự án/nhóm media và ledger. Xem trước danh sách dọn segment, tạm dừng
 xưởng rồi áp dụng. Danh sách đổi thì phải xem lại. Chỉ MKV checkpoint renderer có metadata phù hợp được xóa;
 không xóa TTS/ảnh/clip trả phí, tư liệu người dùng hoặc final.
@@ -169,7 +175,7 @@ Bài thử mặc định dùng `docs/rights/local-validation-vieneu.json`, chỉ
 Tùy chọn `--narration` nhận JSON các section đã rà để thử lại lời đọc qua model thật; không thay review
 bằng fixture. Bài thử tự dừng worker sau hai bản xuất và giữ gate publish chờ người duyệt.
 
-[ADR-0019](adr/0019-current-export-traceability.md) giữ heading/claim_ids khi sửa lời và chỉ nối
+[ADR-0024](adr/0024-current-export-traceability.md) giữ heading/claim_ids khi sửa lời và chỉ nối
 script_version khi narration khớp đủ. Draft/final kế thừa nhãn quyền của thành phần thực dùng; renderer
 không cấp lại quyền chỉ vì file ghép được sinh bằng code. Metadata giữ ghi công `licensed` và `cc-by`
 trước review; các bản ghi lịch sử được đánh dấu riêng trong gói bằng chứng. Timing sidecar có audit SHA

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from studio.events import Envelope, VideoBrief
+from studio.events import Envelope, MediaAsset, Provenance, VideoBrief
 from studio.factory import Factory
 from studio.media import MediaConfig
 
@@ -68,7 +68,8 @@ def test_dashboard_snapshot_shows_latest_work_and_strips_private_fields_after_re
             "claims": [{**script["claims"][0], "credentials": "private"}]})
     metadata = {"video_id": "V1", "title": "Một tiêu đề rõ ràng", "description": "Mô tả có nguồn",
                 "tags": ["học hỏi"], "chapters": [{"time": "00:00", "label": "Bắt đầu"}],
-                "primary_keyword": "học hỏi", "language": "vi", "category": "Education", "alt_titles": ["Một góc nhìn khác"]}
+                "primary_keyword": "học hỏi", "language": "vi", "category": "Education", "alt_titles": ["Một góc nhìn khác"], "synthetic_media": None,
+                "paid_product_placement": None}
     publish("metadata-packages", "seo-optimizer", {**metadata, "output_path": "/private/metadata.json",
             "chapters": [{**metadata["chapters"][0], "credentials": "private"}]})
     publication = {"video_id": "V1", "kind": "video", "status": "failed", "scheduled_at": None,
@@ -171,3 +172,15 @@ def test_failed_plan_generation_exposes_channel_error_and_ignores_malformed_evid
     command = next(c for c in factory.snapshot()["commands"] if c["id"] == command_id)
     assert command["status"] == "done"
     assert "Invalid model planning output" in command["planning_error"]
+
+
+def test_dashboard_media_carries_manifest_version_so_the_ui_never_pairs_a_stale_contact_sheet(dashboard_factory):
+    """Console chỉ hiện contact sheet cùng phiên bản với bản cuối (ADR-0016): snapshot phải mang `manifest_version`."""
+    add_brief(dashboard_factory)
+    for kind, version in (("final_video", 2), ("contact_sheet", 1)):
+        asset = MediaAsset(video_id="V1", kind=kind, path=f"/out/V1/{kind}.bin", manifest_version=version,
+                           provider="ffmpeg", provenance=Provenance(generated_by="ffmpeg:test"))
+        dashboard_factory.bus.publish(Envelope(topic="media-assets", key="V1", actor="renderer", payload=asset.model_dump()))
+    dashboard_factory.refresh()
+    media = dashboard_factory.snapshot()["projects"][0]["media"]
+    assert [(m["kind"], m["manifest_version"]) for m in media] == [("final_video", 2), ("contact_sheet", 1)]

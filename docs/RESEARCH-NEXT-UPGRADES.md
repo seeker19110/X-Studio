@@ -5,7 +5,7 @@ Ngày đối chiếu: **2026-10-16**. Source tại commit `13ab96a`. Phạm vi: 
 Ưu tiên tiếp theo là hoàn thiện vận hành và khả năng sửa sản phẩm: kiểm tra môi trường trước khi chạy, bảo vệ dữ liệu, tiếp tục upload qua restart và chỉnh sửa từng cảnh từ giao diện. Giữ Python, FFmpeg, SQLite và các adapter hiện có; mở rộng chất lượng phụ đề và review sau khi các bước vận hành có tiêu chí nghiệm thu rõ ràng.
 
 Cập nhật triển khai 2026-10-16: bốn đợt đã được đưa vào source; đợt 4 chọn nhánh Shorts.
-Xem [hướng dẫn vận hành](OPERATIONS-UPGRADES.md), [ADR-0016](adr/0016-durable-operations-and-editing.md)
+Xem [hướng dẫn vận hành](OPERATIONS-UPGRADES.md), [ADR-0021](adr/0021-durable-operations-and-editing.md)
 và [bằng chứng kiểm tra](VALIDATION.md). Phần dưới giữ hiện trạng và lộ trình tại thời điểm nghiên cứu;
 những nhánh mở rộng như analytics scheduler, alignment và workflow GPU mới chưa được chọn trong bốn đợt này.
 

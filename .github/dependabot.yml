@@ -1,0 +1,16 @@
+# Cập nhật phụ thuộc theo ma trận vệ sinh của kho `stored` (mục 23 §8.1). Action đã ghim SHA: Dependabot đề xuất SHA
+# mới kèm tag trong comment. PR của Dependabot vẫn phải qua `verify.yml` (lint, cov 100 %, eval replay) như mọi PR.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

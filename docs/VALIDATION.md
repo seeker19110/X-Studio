@@ -45,7 +45,7 @@ review đạt trong phạm vi cục bộ; backup/restore đã đối chiếu l�
 
 ## Bốn đợt vận hành và chỉnh sửa (2026-10-16)
 
-Phạm vi theo [nghiên cứu](RESEARCH-NEXT-UPGRADES.md), [ADR-0016](adr/0016-durable-operations-and-editing.md).
+Phạm vi theo [nghiên cứu](RESEARCH-NEXT-UPGRADES.md), [ADR-0021](adr/0021-durable-operations-and-editing.md).
 Đợt 4 chọn Shorts từ bản cuối có sẵn; không cài model alignment, analytics scheduler hoặc workflow GPU mới.
 
 - `make verify` đạt trên source cuối: **Studio 1.114, Gateway 273, core 478 test**, cả ba package

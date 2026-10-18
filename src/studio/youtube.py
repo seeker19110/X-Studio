@@ -145,7 +145,8 @@ def sync_comments(bus: Any, platform: Platform, video_id: str, ref: str | None =
                                                 "count": len(cs), "skipped": len(got) - len(cs)})
     if not cs: return None
     payload = {"video_id": video_id, "platform_ref": ref, "comments": [
-        {"comment_id": c.comment_id, "author": c.author, "text": c.text, "likes": c.likes, "published_at": c.published_at} for c in cs]}
+        {"comment_id": c.comment_id, "author": c.author, "text": c.text, "likes": c.likes, "published_at": c.published_at,
+         **({"has_image": True} if c.has_image else {})} for c in cs]}
     return bus.publish(Envelope(topic="audience-comments", key=video_id, actor=ACTOR, payload=payload))
 
 

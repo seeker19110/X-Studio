@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
-from .events import Finding, MetadataPackage
+from .events import Finding, MetadataPackage, SceneManifest
 
 TITLE_MAX, TITLE_SAFE, DESC_MAX, DESC_MIN, TAGS_MAX_CHARS, MIN_CHAPTERS = 100, 70, 5000, 200, 500, 3
 BANNED_PHRASES = ("chữa khỏi 100%", "cam kết lợi nhuận", "100% lợi nhuận", "guaranteed cure", "guaranteed profit",
@@ -29,6 +30,25 @@ class PreflightReport:
 
     def checklist(self) -> list[str]:
         return [f"preflight:{f.level}:{f.location or '-'}:{f.text}" for f in self.findings]
+
+
+def synthetic_media_of(manifest: SceneManifest, assets: list[dict[str, Any]], policy: bool | None = None) -> bool | None:
+    """Cờ `containsSyntheticMedia` do CODE quyết (ADR-0018), không hỏi model.
+
+    - `policy` (`production.synthetic_media` trong media.yaml) là chính sách kênh tường minh: thắng mọi suy luận.
+    - Phim (`film`) bằng clip AI (`generated_video`) hay ảnh AI điện ảnh → True: đúng định nghĩa "cảnh thực tế chưa từng
+      xảy ra" của YouTube, và clip Veo/Omni còn mang SynthID nên nền tảng tự gắn nhãn dù có khai hay không.
+    - Hoạt hình, explainer minh hoạ: YouTube chỉ đòi nhãn nổi bật cho nội dung photorealistic; code không đoán phong cách
+      từ prompt → None, người duyệt quyết ở gate publish (dòng `synthetic_media:`).
+    - Không có asset hình nào do model sinh (footage có bản quyền, upload) → None.
+    """
+    if policy is not None: return bool(policy)
+    cinema = manifest.cinema
+    visual = {p for s in manifest.scenes for k, p in s.asset_refs.items() if k in {"scene_video", "scene_image"}}
+    generated = any(a.get("path") in visual and (a.get("provenance") or {}).get("license") == "generated" for a in assets)
+    if not generated or cinema.production_type == "animation": return None
+    if cinema.visual_mode == "generated_video" or cinema.production_type == "film": return True
+    return None
 
 
 def _seconds(t: str) -> int:
@@ -60,6 +80,10 @@ def preflight(meta: MetadataPackage, format: str = "long", *, duration_s: float 
     for p in BANNED_PHRASES:
         if p in low or p in title.lower():
             f.append(Finding(level="block", text=f"cụm bị cấm `{p}` (lời hứa tuyệt đối/YMYL)", location="description"))
+    if meta.synthetic_media is None:
+        f.append(Finding(level="warn", text="chưa khai nội dung tổng hợp (containsSyntheticMedia): YouTube tự gắn nhãn AI từ "
+                                            "5/2026 nếu bỏ trống — code điền sau bản cuối, hoặc đặt production.synthetic_media",
+                         location="synthetic_media"))
     if format == "long":
         if not meta.chapters:
             # Three chapters of ten seconds cannot fit in a shorter measured export.

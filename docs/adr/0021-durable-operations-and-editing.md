@@ -1,4 +1,4 @@
-# ADR-0016 — Vận hành bền vững, sửa cảnh và bản trích dọc
+# ADR-0021 — Vận hành bền vững, sửa cảnh và bản trích dọc
 
 Ngày: 2026-10-16. Trạng thái: chấp nhận. Bổ sung ADR-0002, 0004, 0009, 0012 và 0015.
 

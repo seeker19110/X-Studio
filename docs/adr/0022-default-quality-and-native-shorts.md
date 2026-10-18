@@ -1,4 +1,4 @@
-# ADR-0017: Chất lượng mặc định và Shorts dàn lại từ tư liệu gốc
+# ADR-0022: Chất lượng mặc định và Shorts dàn lại từ tư liệu gốc
 
 Ngày: 2026-10-16. Trạng thái: chấp nhận. Bổ sung ADR-0004, 0009, 0012 và 0016.
 

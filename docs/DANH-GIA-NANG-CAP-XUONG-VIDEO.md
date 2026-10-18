@@ -89,6 +89,9 @@ zoom bằng `zoompan`), nối bằng `xfade`/`acrossfade`. Mẹo giữ đồng b
 chồng lấn luôn nằm trong đoạn đệm im lặng — không câu nào chồng lên câu nào, và hình với tiếng cùng ngắn đi đúng
 `transition_s` mỗi mối nối. Tắt bằng `video.motion: none` / `transition_s: 0`.
 *Còn thiếu:* nhạc nền có license và ducking dưới giọng đọc (cần thư viện nhạc, mục D4).
+*Bổ sung 2026-10-13 (ADR-0017):* cảnh số liệu/so sánh/liệt kê không còn là ảnh — production-manager chọn đồ họa
+template (`stat` số đếm lên, `bars`, `list` hiện lần lượt, `quote`, `title`), code kiểm số với claim có nguồn và xếp
+chữ trong vùng an toàn trước khi FFmpeg dựng.
 
 **B2. Không chuẩn hoá âm lượng.** *Đã làm:* `loudnorm=I=-14:TP=-1:LRA=11` ở lượt ghép cuối, AAC 192 kb/s 48 kHz.
 Kiểm chứng: hai đoạn tiếng vào ở -52,7 và -24,6 LUFS đều ra đúng -14,0 LUFS, đỉnh -1,2 dBFS.
@@ -130,6 +133,9 @@ sinh ra. Đề xuất hai lớp, giữ nguyên tắc code hành động:
   block, OpenAI `image_url` base64); agent khai `inputs: [images]` trong front matter; runner gắn ảnh cảnh thu nhỏ (≤ 512 px)
   cho editor / quality-reviewer / rights-checker; provider `claude-code` đọc file ảnh qua tool. Eval ghi/phát lại lưu hash
   ảnh thay nội dung. Editor có thể lên tier `strong` khi có ảnh (chi phí thấp ở 512 px).
+  **ĐÃ LÀM 2026-10-14 (ADR-0020):** `attachments` trong `ModelClient` (Anthropic, OpenAI, `claude-code` qua
+  stream-json), `inputs` trong front matter, lưới ảnh cảnh có nhãn, contact sheet và thumbnail cho ba reviewer,
+  eval băm file nguồn; mỗi reviewer có một ca chỉ đúng khi nhìn ảnh, ghi bằng model thật.
 
 **C2. Người duyệt gate publish phải mở file tay.** `gates/checklists.md` yêu cầu "đã xem bản cuối `output/<video>/final_v<n>.mp4`";
 console không xem được bản nháp/final (README "chưa có giao diện web xem bản nháp"). Đề xuất: console phục vụ `output/`
@@ -141,8 +147,10 @@ chỉ đọc ở màn *Xưởng video* (thẻ video, lưới ảnh từng cảnh
 (Gemini TTS, tiếng Việt, PCM → WAV đo thời lượng chính xác), `elevenlabs`, `azure` (vi-VN-HoaiMyNeural / NamMinhNeural),
 `google` (vi-VN-Neural2), `command` (Piper, Kokoro, edge-tts chạy cục bộ — self-hosted, không tốn tiền, văn bản không rời máy).
 Còn thiếu: timestamps từng từ (ElevenLabs `/with-timestamps`, Gemini) để làm phụ đề karaoke; cache audio theo hash narration.
+Cập nhật 2026-10-14: `gemini` đi qua Interactions API (model 3.8, bản 2.5 preview tắt 17/11/2026); `elevenlabs` mặc định
+`eleven_flash_v2_5` (có tiếng Việt); QC nghe lại bản cuối bằng whisper trong ffmpeg ≥ 8 (ADR-0019).
 
-**D2. Ảnh — đã mở rộng ở đợt này.** Nay có `gemini` (Gemini Image `gemini-2.5-flash-image` hoặc Imagen `imagen-*`, kích thước
+**D2. Ảnh — đã mở rộng ở đợt này.** Nay có `gemini` (Gemini Image, mặc định `gemini-3.1-flash-lite-image` từ 2026-10-14, `image_size` 1K/2K/4K, hoặc Imagen `imagen-*`, kích thước
 đổi sang tỷ lệ 16:9 / 9:16), `stability` (core / sd3 / ultra, `negative_prompt`, `style_preset`), `replicate` (Flux, SDXL…,
 `Prefer: wait` rồi poll, URL kết quả đi qua ranh giới `check_url`). Còn thiếu: ComfyUI/SD local (có thể đi qua `replicate`-compatible
 hoặc thêm một class); nhất quán phong cách bằng **code**: `style_preset` cấp manifest nối tiền tố vào mọi prompt, seed / ảnh tham
@@ -157,7 +165,9 @@ trong claim đã fact-check, giải quyết việc skill cấm số trong ảnh 
 Đề xuất thư mục `music/` kèm `LICENSES.yaml` (tên, license, attribution) → renderer chọn theo `mood` → provenance
 `licensed | cc-by` → seo-optimizer ghi công trong mô tả (finding warn đã có đường đi).
 
-**D5. Chi phí media chưa tính tiền** (hệ quả ADR-0003). Thêm `pricing:` trong `media.yaml` (mỗi ảnh, mỗi 1k ký tự TTS, mỗi
+**D5. Chi phí media chưa tính tiền** (hệ quả ADR-0003). *ĐÃ LÀM 2026-10-12 (ADR-0016): `media_cost.py` — khoá
+`*.price_*` + `production.media_budget_usd`, sổ `media.cost` trong audit-log, trần chặn trước lượt gọi, console và
+checklist publish hiển thị; chưa có cảnh báo 80%.* Đề xuất gốc: Thêm `pricing:` trong `media.yaml` (mỗi ảnh, mỗi 1k ký tự TTS, mỗi
 giây video) → audit `render.*` ghi USD → supervisor áp ngưỡng 80/100 cho media như token → console hiển thị.
 
 ## 7. Vận hành (P2–P3)
@@ -178,7 +188,7 @@ giây video) → audit `render.*` ghi USD → supervisor áp ngưỡng 80/100 ch
 | Khung hình | 1920x1080 30 fps (long) · 1080x1920 (short); không dải đen |
 | Âm thanh | 48 kHz, −14 LUFS ± 1, true peak ≤ −1 dBTP; không khoảng im lặng > 1,5 s; không click |
 | Đồng bộ | thời lượng cảnh = thời lượng audio thật + đệm; tổng khớp Σ duration_s ± 1 % |
-| Chuyển động | không cảnh tĩnh hoàn toàn > 8 s; hook có hình mới ≤ 3 s |
+| Chuyển động | không cảnh tĩnh hoàn toàn > 8 s (**đo từ 2026-10-12**: `qc.py` `freezedetect`, ADR-0016); hook có hình mới ≤ 3 s |
 | Phụ đề | phủ 100 % narration, lệch ≤ 300 ms |
 | Chapter | mốc khớp cảnh đầu của mục ± 1 s |
 | Ảnh cảnh | OCR không thấy chữ; không khuôn mặt thật; không gần đen/gần trắng |

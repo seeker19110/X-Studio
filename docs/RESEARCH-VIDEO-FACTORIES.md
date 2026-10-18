@@ -9,7 +9,7 @@ Khảo sát ngày 2026-10-11 qua README, tree, giấy phép và các file liên 
 | [short-video-maker](https://github.com/gyoridavid/short-video-maker) | Phụ đề đọc được, nhạc, video dọc, API/UI | Narration dài thành một khối phụ đề; thiếu music/footage | Caption pages, SRT/burn-in, ducking, `scene_video`, giao diện responsive |
 | [NarratoAI](https://github.com/linyqh/NarratoAI) | Tập trung vào thao tác sản xuất từ một giao diện | CLI rời rạc, khó biết đang chờ bước nào | Console dự án, phòng dựng, review, log, pause/resume, cấu hình vận hành |
 | [ClipsAI](https://github.com/ClipsAI/clipsai) | Tách clip, reframe và bố cục theo đầu ra | Render dài bằng graph lớn | Dựng độc lập từng cảnh, tái dùng segment. Chưa tích hợp semantic clipping hoặc tracking người nói |
-| [Remotion](https://github.com/remotion-dev/remotion) | Đồ họa theo dữ liệu và template | Chữ/biểu đồ dễ bị vẽ sai bằng model ảnh | `MotionSpec` cho title/quote/bars; FFmpeg vẽ chữ Unicode. Không thêm React/Chromium vào runtime |
+| [Remotion](https://github.com/remotion-dev/remotion) | Đồ họa theo dữ liệu và template | Chữ/biểu đồ dễ bị vẽ sai bằng model ảnh | `MotionSpec` cho title/quote/bars/list/stat, production-manager chọn theo cảnh, số phải khớp claim có nguồn (ADR-0017); FFmpeg vẽ chữ Unicode. Không thêm React/Chromium vào runtime |
 | [Motion Canvas](https://github.com/motion-canvas/motion-canvas) | Timeline xác định, animation phối hợp lời đọc | Motion khó tái tạo nhất quán | Motion template khai báo, cùng thời gian lời đọc và frame grid |
 | [Manim](https://github.com/ManimCommunity/manim) | Biểu diễn trực quan chính xác từ dữ liệu | Biểu đồ ảnh sinh khó kiểm chứng | Mẫu bars buộc labels/values/source, từ chối số âm/NaN và trường code tùy ý |
 

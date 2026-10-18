@@ -119,7 +119,7 @@ Các lỗi đã sửa trong mặc định, với regression đỏ trước sửa
 Đã gặp chính thông báo idle cũ khi tiếp tục bài thử. Event gốc được giữ; gate thông báo sai của video chính
 được invalidate cùng bằng chứng tại `obsolete-idle-hold-P90a1f6f2f24c43608030c50b-V1.json`, không duyệt
 escalation bằng chữ ký người hoặc mở gate publish. Thông báo và dự án sơ bộ vẫn giữ trong lịch sử.
-Thiết kế và cách replay được ghi tại [ADR-0019](adr/0019-current-export-traceability.md).
+Thiết kế và cách replay được ghi tại [ADR-0024](adr/0024-current-export-traceability.md).
 
 Nguồn C3 đã đổi sang [hướng dẫn phụ đề của University of Arizona](https://accessibility.arizona.edu/documents-media/captioning),
 đúng phần tên riêng và con số. C2 ghi rõ việc vừa nghe vừa đọc là suy luận biên tập từ yêu cầu đồng bộ;
@@ -357,7 +357,7 @@ Receipt cuối: `result.json`, `post-metadata-validation.json`, `independent-val
 
 ## Chất lượng mặc định và dự án mới bằng model thật
 
-Đã đưa các cải thiện vào renderer/factory thường dùng, theo [ADR-0017](adr/0017-default-quality-and-native-shorts.md).
+Đã đưa các cải thiện vào renderer/factory thường dùng, theo [ADR-0022](adr/0022-default-quality-and-native-shorts.md).
 Lượt đạt mới: `output/real-validation/default-factory-20261016-223325/`; chạy bằng
 `scripts/live-defaults-smoke.py`, không dùng script xuất riêng của bài thử cũ.
 

@@ -1,7 +1,7 @@
 ---
 name: youtube-analytics
-version: 1
-standards: [CTR × AVD framework, Retention curve reading, Impressions funnel, Minimum sample size, Evidence-bound insights]
+version: 2
+standards: [CTR × AVD framework, Retention curve reading, Impressions funnel, Minimum sample size, Evidence-bound insights, YouTube view-count change 2026-08-24]
 ---
 # Skill: youtube-analytics
 
@@ -21,6 +21,8 @@ standards: [CTR × AVD framework, Retention curve reading, Impressions funnel, M
 - Mỗi insight gắn một agent nhận hành động.
 - CTR cao + AVD thấp = thumbnail/tiêu đề hứa quá → hành động cho thumbnail-designer/seo-optimizer, không phải khen.
 - So sánh với video trước cùng pillar, không so với video viral ngoài kênh.
+- YouTube đổi cách đếm view ngày 24/8/2026 (đếm khi bắt đầu phát, thống nhất video dài/Live/Shorts): snapshot trước
+  và sau ngày đó không so trực tiếp; nói rõ khi so sánh vắt qua mốc này.
 
 ## Checklist (supervisor và human gate dùng để chấm)
 - [ ] Mẫu đủ hoặc nói "chưa đủ dữ liệu"

@@ -91,7 +91,10 @@ def test_thresholds_yaml_that_ton_tai_va_khop_required() -> None:
     assert set(th) == required, f"thresholds.yaml phải khớp đúng REQUIRED.txt: {set(th) ^ required}"
     for aid, t in th.items():
         assert t.min_pass_ratio == 0.95, aid
-        assert t.cases == 2, aid
+        # production-manager có thêm ca graphic theo cảnh (ADR-0017); ba reviewer xem ảnh có thêm ca chỉ-thấy-trong-ảnh
+        # (ADR-0020); sàn `cases` chống thu nhỏ bộ ca
+        three = {"production-manager", "editor", "quality-reviewer", "rights-checker"}
+        assert t.cases == (3 if aid in three else 2), aid
 
 
 def test_load_thresholds_mac_dinh_va_duong_dan_tuong_minh(tmp_path: Path) -> None:

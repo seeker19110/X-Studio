@@ -102,7 +102,7 @@ def test_youtube_resumable_upload_two_steps_then_thumbnail_and_schedule(tmp_path
     init = http.calls[0]; body = json.loads(init[3])
     assert "uploadType=resumable" in init[1] and init[2]["X-Upload-Content-Length"] == "100" and init[2]["Authorization"] == "Bearer tok-1"
     assert body["snippet"]["title"] == "AI dựng video" and "00:00 Mở đầu" in body["snippet"]["description"] and body["snippet"]["categoryId"] == "27"
-    assert body["status"] == {"privacyStatus": "private", "selfDeclaredMadeForKids": False}
+    assert body["status"] == {"privacyStatus": "private", "selfDeclaredMadeForKids": False}  # chưa quyết → không gửi cờ
     put = http.calls[1]; assert put[0] == "PUT" and put[3] == b"v" * 100 and put[2]["Content-Length"] == "100"
     ev = json.loads(up.evidence); assert ev["init"] == 200 and ev["put"] == 200 and ev["id"] == "yt123" and ev["bytes"] == 100
     th = yt.set_thumbnail("yt123", t); assert json.loads(th)["thumbnails.set"] == 200
@@ -110,6 +110,35 @@ def test_youtube_resumable_upload_two_steps_then_thumbnail_and_schedule(tmp_path
     sc = yt.schedule("yt123", "2026-09-05T12:00:00Z"); assert json.loads(sc)["publishAt"] == "2026-09-05T12:00:00Z"
     assert json.loads(http.calls[3][3]) == {"id": "yt123", "status": {"privacyStatus": "private", "publishAt": "2026-09-05T12:00:00Z"}}
     assert not any(TOKEN_URL in u for u in http.urls())  # token còn hạn → không refresh
+
+
+def test_youtube_upload_declares_synthetic_media_when_decided(tmp_path):
+    """ADR-0018: `status.containsSyntheticMedia` (Data API) chỉ gửi khi code/người đã quyết; YouTube tự gắn nhãn từ 5/2026."""
+    f = tmp_path / "final.mp4"; f.write_bytes(b"v" * 10)
+    http = FakeHTTP()
+    http.on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session/1"}, b""))
+    http.on("PUT", "https://upload.example/session/1", (200, {}, {"id": "yt9", "status": {"privacyStatus": "private"}}))
+    yt = YouTubePlatform(_store(tmp_path), fetcher=http, now=lambda: NOW)
+    yt.upload_video(f, META.model_copy(update={"synthetic_media": True}))
+    assert json.loads(http.calls[0][3])["status"]["containsSyntheticMedia"] is True
+    fake = FakePlatform(); up = fake.upload_video(f, META.model_copy(update={"synthetic_media": False}))
+    assert fake.videos[up.platform_ref]["synthetic_media"] is False and "synthetic_media=False" in up.evidence
+
+
+def test_youtube_upload_declares_paid_product_placement_only_when_decided(tmp_path):
+    """Data API 7/2026: `paidProductPlacementDetails.hasPaidProductPlacement` — part riêng, chỉ gửi khi đã khai."""
+    f = tmp_path / "final.mp4"; f.write_bytes(b"v" * 10)
+    for value, part in ((True, True), (False, True), (None, False)):
+        http = FakeHTTP()
+        http.on("POST", UPLOAD_URL, (200, {"location": "https://upload.example/session/1"}, b""))
+        http.on("PUT", "https://upload.example/session/1", (200, {}, {"id": "yt9", "status": {"privacyStatus": "private"}}))
+        YouTubePlatform(_store(tmp_path), fetcher=http, now=lambda: NOW).upload_video(
+            f, META.model_copy(update={"paid_product_placement": value}))
+        body, url = json.loads(http.calls[0][3]), http.calls[0][1]
+        assert ("paidProductPlacementDetails" in url) is part
+        assert body.get("paidProductPlacementDetails") == ({"hasPaidProductPlacement": value} if part else None)
+    fake = FakePlatform(); up = fake.upload_video(f, META.model_copy(update={"paid_product_placement": True}))
+    assert fake.videos[up.platform_ref]["paid_product_placement"] is True and "paid_product_placement=True" in up.evidence
 
 
 def test_youtube_upload_missing_location_or_id_is_clear_error(tmp_path):
@@ -575,3 +604,52 @@ def test_youtube_captions_error_surfaces_as_platform_error(tmp_path):
     with pytest.raises(PlatformError) as e:
         yt.upload_captions("vid-9", srt)
     assert e.value.status == 403 and e.value.reason == "quotaExceeded"
+
+
+def test_comments_with_an_image_are_flagged_but_the_image_never_reaches_the_bus(tmp_path):
+    """YouTube 11/2026: bình luận có `snippet.imageUrl`. community-manager cần biết bình luận kèm ảnh (lời có thể chỉ
+    là "như hình"), nhưng ảnh/URL không bao giờ vào bus cho model (ADR-0007): chỉ cờ `has_image`."""
+    item = _thread("c9", "nhìn này", "2026-11-02T10:00:00Z")
+    item["snippet"]["topLevelComment"]["snippet"]["imageUrl"] = "https://yt3.ggpht.com/img.png"
+    http = FakeHTTP().on("GET", f"{API_URL}/commentThreads", (200, {}, {"items": [item, _thread("c8", "chữ", "2026-11-01T10:00:00Z")]}))
+    got = YouTubePlatform(_store(tmp_path), http, lambda: NOW).list_comments("yt1")
+    assert [c.has_image for c in got] == [True, False]
+    bus = InMemoryBus(); p = FakePlatform(); p.comments["yt1"] = got
+    env = sync_comments(bus, p, "V1", ref="yt1")
+    assert env.payload["comments"][0]["has_image"] is True and "has_image" not in env.payload["comments"][1]
+    assert "ggpht" not in json.dumps(env.payload)
+
+
+def test_youtube_snapshot_reads_duration_from_batch_get_stats_and_keeps_lifetime_counts_apart(tmp_path):
+    """videos:batchGetStats (6/2026): 1 đơn vị ở rổ riêng, thời lượng tới mili-giây. Số đếm công khai TRỌN ĐỜI chỉ vào
+    evidence — không trộn vào views/likes theo cửa sổ ngày của Analytics. Lệnh mới lỗi thì quay về videos.list."""
+    def reports(method, url, headers, body):
+        m = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["metrics"][0]
+        if m.startswith("views"):
+            return 200, {}, {"columnHeaders": [{"name": n} for n in m.split(",")], "rows": [[120, 95.5, 7.3, 4, 1]]}
+        if m.startswith("impressions"):
+            return 403, {}, {"error": {"message": "no"}}
+        return 200, {}, {"columnHeaders": [{"name": "elapsedVideoTimeRatio"}, {"name": "audienceWatchRatio"}], "rows": [[1.0, 0.5]]}
+    batch = {"kind": "youtube#batchGetStatsResponse", "items": [{"id": "yt1", "contentDetails": {"duration": "PT1M40S", "durationMillis": "100500"},
+             "statistics": {"viewCount": "5000", "likeCount": "300", "commentCount": "12"}}],
+             "summary": {"requestedVideoCount": "1", "succeededVideoCount": "1", "failedVideoCount": "0"}}
+    http = FakeHTTP().on("GET", ANALYTICS_URL, reports).on("GET", f"{API_URL}/videos:batchGetStats", (200, {}, batch))
+    r = YouTubePlatform(_store(tmp_path), http, lambda: NOW).snapshot("yt1", 7, channel_id="CH1")
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(next(u for u in http.urls() if "batchGetStats" in u)).query)
+    assert q == {"part": ["contentDetails,statistics"], "id": ["yt1"]}
+    assert not any(u.startswith(f"{API_URL}/videos?") for u in http.urls())
+    assert (r.snapshot.views, r.snapshot.likes, r.snapshot.comments) == (120, 4, 1)   # cửa sổ 7 ngày, không phải 5000
+    assert [(p.t, p.pct) for p in r.snapshot.retention_curve] == [(100.5, 50.0)]
+    ev = json.loads(r.evidence)
+    assert ev["duration_s"] == 100.5 and ev["duration_source"] == "videos.batchGetStats"
+    assert ev["public_lifetime"] == {"views": 5000, "likes": 300, "comments": 12}
+    # lệnh mới lỗi (chưa bật / video riêng tư bị từ chối) → videos.list như trước, evidence ghi lý do
+    http2 = FakeHTTP().on("GET", ANALYTICS_URL, reports).on("GET", f"{API_URL}/videos:batchGetStats", (404, {}, {"error": {"message": "x"}}))
+    http2.on("GET", f"{API_URL}/videos?", (200, {}, {"items": [{"contentDetails": {"duration": "PT1M40S"}}]}))
+    ev2 = json.loads(YouTubePlatform(_store(tmp_path), http2, lambda: NOW).snapshot("yt1").evidence)
+    assert ev2["duration_s"] == 100.0 and ev2["duration_source"] == "videos.list" and ev2["batch_stats"]["status"] == 404
+    assert "public_lifetime" not in ev2
+    # video không có trong kết quả batch (failedVideoIds) → cũng quay về videos.list
+    http3 = FakeHTTP().on("GET", ANALYTICS_URL, reports).on("GET", f"{API_URL}/videos:batchGetStats", (200, {}, {"items": []}))
+    http3.on("GET", f"{API_URL}/videos?", (200, {}, {"items": [{"contentDetails": {"duration": "PT10S"}}]}))
+    assert json.loads(YouTubePlatform(_store(tmp_path), http3, lambda: NOW).snapshot("yt1").evidence)["duration_s"] == 10.0

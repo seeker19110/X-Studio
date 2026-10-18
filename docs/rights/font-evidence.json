@@ -7,8 +7,9 @@
       "license": "bitstream-vera",
       "source_url": "https://dejavu-fonts.github.io/License.html",
       "license_file": "docs/rights/licenses/dejavu-bitstream-vera.txt",
-      "license_sha256": "72d37aeb165ea171421f0cdae09e20f80d4a5303018be6abeb15ac77d40220a2",
+      "license_sha256": "562c8f5e92af7a06339292a1bb0b9a3e9c8d5142af5d7167f2866fc50261b993",
       "basis": "Installed fonts-dejavu-core copyright notice; exact font bytes bound to this record"
     }
-  ]
+  ],
+  "notice_normalization": "Trailing line whitespace removed from the bundled notice; license text retained."
 }

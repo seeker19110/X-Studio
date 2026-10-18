@@ -81,8 +81,101 @@
                 "default": {},
                 "type": "object"
               },
+              "graphic": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "template": {
+                        "default": "title",
+                        "enum": [
+                          "title",
+                          "quote",
+                          "bars",
+                          "list",
+                          "stat"
+                        ],
+                        "title": "Template",
+                        "type": "string",
+                        "description": "title: tiêu đề chương · quote: câu trích + người nói ở subtitle · bars: so sánh ≤6 số (labels+values+source) · list: 2–6 ý ngắn hiện lần lượt · stat: một con số lớn (values[0], unit, source)"
+                      },
+                      "title": {
+                        "maxLength": 160,
+                        "minLength": 1,
+                        "title": "Title",
+                        "type": "string"
+                      },
+                      "subtitle": {
+                        "default": "",
+                        "maxLength": 240,
+                        "title": "Subtitle",
+                        "type": "string"
+                      },
+                      "accent": {
+                        "default": "55DDB0",
+                        "pattern": "^[0-9A-Fa-f]{6}$",
+                        "title": "Accent",
+                        "type": "string"
+                      },
+                      "background": {
+                        "default": "101F29",
+                        "pattern": "^[0-9A-Fa-f]{6}$",
+                        "title": "Background",
+                        "type": "string"
+                      },
+                      "labels": {
+                        "items": {
+                          "type": "string",
+                          "maxLength": 80
+                        },
+                        "maxItems": 6,
+                        "title": "Labels",
+                        "type": "array"
+                      },
+                      "values": {
+                        "items": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "maxItems": 6,
+                        "title": "Values",
+                        "type": "array"
+                      },
+                      "unit": {
+                        "default": "",
+                        "maxLength": 12,
+                        "title": "Unit",
+                        "type": "string"
+                      },
+                      "source": {
+                        "default": "",
+                        "maxLength": 200,
+                        "title": "Source",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "title"
+                    ],
+                    "type": "object",
+                    "description": "ADR-0017: đồ họa dữ liệu của cảnh (template), null = cảnh dùng ảnh/footage. Số trên bars/stat phải có nguồn."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "clip_start_s": {
-                "anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}],
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
                 "default": null
               }
             },

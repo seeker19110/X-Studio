@@ -38,7 +38,11 @@
 | Provider TTS / ảnh / video | `src/studio/media.py` (adapter; `fake` cho test); cấu hình `media.yaml` / `STUDIO_MEDIA_*` |
 | Pipeline render, sửa từng cảnh | `src/studio/renderer.py` (ADR-0004, ADR-0009) |
 | Mốc cảnh → SRT, chapter | `src/studio/timeline.py` |
-| Đo file thật (thời lượng, độ phân giải, âm) | `src/studio/qc.py` (ffprobe/ffmpeg) |
+| Đo file thật (thời lượng, độ phân giải, âm, hình đứng yên/slideshow) | `src/studio/qc.py` (ffprobe/ffmpeg; `MAX_STATIC_S`, ADR-0016) |
+| Contact sheet bản cuối (lưới 1 khung/cảnh) | `FFmpegAssembler.contact_sheet` ở `src/studio/media.py` + `Renderer._contact_sheet`; dòng `contact_sheet:` ở `Orchestrator._publish_checklist` |
+| Graphic theo cảnh (model chọn template) | `src/studio/scene_graphic.py` (`MotionSpec`, luật từng template) → `Scene.graphic` ở `events.py` + `topics/schemas/scene-manifests.json`; kiểm số với claim có nguồn `motion.verify_graphics` gọi ở `Orchestrator._call`; prompt `agents/production/production-manager.md` + `skills/scene-production.md` (ADR-0017) |
+| Layout đồ họa, vùng an toàn phụ đề/Shorts | `motion.plan` (thuần, có test) + `safe_bottom`; FFmpeg ở `motion.render_motion`; khoá cache `layout`/`bottom` ở `Renderer.render_scene` |
+| Sổ chi phí media (giá niêm yết, trần mỗi video) | `src/studio/media_cost.py` (`Ledger`, `MediaBudgetError`); gọi ở `Renderer.render_scene`/`thumbnails`; khoá `*.price_*` + `production.media_budget_usd` |
 | Cách chạy lệnh con (ffmpeg, TTS cục bộ): env lọc khoá, timeout, container | `src/studio/sandbox.py` + `media.yaml` khoá `render` (bản tạm, vào lõi chung ở K3.2) |
 | Preflight khả năng được tìm thấy | `src/studio/preflight.py` (ADR-0005) |
 | Retention map cảnh, A/B ≥ 95% | `src/studio/analytics.py` |

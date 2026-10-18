@@ -34,6 +34,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from . import media_cost
 from .analytics import judge_experiment, retention_drops
 from .blackboard import Blackboard
 from .bus import InMemoryBus
@@ -58,8 +59,10 @@ from .gates import GateRequest, gate_approvers
 from .inspection import inspect_project
 from .llm import LLMError, ModelClient, TransientError
 from .media import MediaError, MediaSuite, frame_size
+from .media_cost import MediaBudgetError
+from .motion import verify_graphics
 from .platform import Platform, PlatformError, UploadResult, YouTubePlatform, make_platform
-from .preflight import PreflightReport, preflight
+from .preflight import PreflightReport, preflight, synthetic_media_of
 from .qc import QCReport, qc_scenes, qc_video
 from .registry import AgentSpec, load_agents
 from .renderer import ACTOR as RENDERER
@@ -193,6 +196,9 @@ def _with_package(e: Envelope, o: Orchestrator) -> dict[str, Any]:
                            'thumbnail_version_scope': 'thumbnail-specs; independent of scene manifest version',
                            "final_video": next((a for a in reversed(_assets_of(o, vid)) if a["kind"] == "final_video"), None),
                            "captions": next((a for a in reversed(_assets_of(o, vid)) if a["kind"] == "captions"), None),
+                           # ADR-0020: một khung giữa mỗi cảnh của BẢN CUỐI — quality-reviewer khai `inputs: [contact_sheet]`
+                           # nên runner gửi ảnh này cho model nhìn (sau phụ đề/nhạc/ghép, thứ JSON không cho thấy)
+                           "contact_sheet": next((a for a in reversed(_assets_of(o, vid)) if a["kind"] == "contact_sheet"), None),
                            "preflight": [f.model_dump() for f in o.preflights.get(vid, PreflightReport()).findings],
                            # QC đo trên FILE thật: quality-reviewer chỉ đọc JSON nên đây là mắt và tai của nó
                            "qc": o.qcs[vid].as_dict() if vid in o.qcs else None,
@@ -215,7 +221,7 @@ def _with_provenance(e: Envelope, o: Orchestrator) -> dict[str, Any]:
     brief = o.desk.briefs.get(vid); manifest = o.manifest(vid)
     data = {"assets": [{"kind": a["kind"], "scene_id": a.get("scene_id"), "path": a["path"], "provenance": a["provenance"],
                        'checksum':a.get('checksum'),'manifest_version':a.get('manifest_version',0),'variant_id':a.get('variant_id')}
-                       for a in _assets_of(o, vid)], "claims": s.get("claims", []),
+                       for a in _assets_of(o, vid) if a['kind'] != 'contact_sheet'], "claims": s.get("claims", []),
             "brief": brief.model_dump() if brief else {}, 'script': s,
             'metadata': _latest_payload(o, 'metadata-packages', vid),
             'manifest': manifest.model_dump() if manifest else None,
@@ -740,6 +746,10 @@ class Orchestrator:
                             if r.topic_out == "metadata-packages": p["language"] = language
                             else: p["voice"] = {**p.get("voice", {}), "language": language}
                 if r.topic_out == "scene-manifests":
+                    # ADR-0017: số trên biểu đồ của model phải nằm trong claim có nguồn của kịch bản đã qua fact-check.
+                    p, dropped = verify_graphics(p, data.get("script"))
+                    for d in dropped:
+                        self._audit("graphic.unverified", d, video_id=p.get("video_id"))
                     previous = max((e.payload.get("version", 1) for e in self.bus.replay("scene-manifests", p["video_id"])), default=0)
                     p = {**p, "version": max(p.get("version", 1), previous + 1)}
                 output_key = key_for(r.topic_out, p, env.key)
@@ -766,12 +776,16 @@ class Orchestrator:
         self._audit("render_failed", {"error": str(error)[:300], "event_id": env.event_id, "attempt": attempts}, video_id=vid)
         res.actions.append("render!failed")
         limit = int(self.renderer.media.cfg.render.get("max_retries", 3))
-        if isinstance(error, MediaError) and attempts <= limit:
+        # Vượt ngân sách media (ADR-0016): thử lại không làm rẻ đi — cắt ngay như ngân sách token (`budget_cut`), để
+        # người quyết tăng trần hay đổi provider; media đã tạo nằm trong cache nên không trả tiền lại.
+        over = isinstance(error, MediaBudgetError)
+        if isinstance(error, MediaError) and not over and attempts <= limit:
             wait = min(300, 5 * 2 ** (attempts - 1))
             self._transient("media", TransientError(f"media unavailable; thử lại sau {wait}s"), res)
         elif vid in self.desk.briefs:
+            reason = f"media budget: {error}"[:300] if over else f"media failed after {attempts} attempts: {str(error)[:200]}"
             self.bus.publish(Envelope(topic="supervisor-actions", key=vid, actor="supervisor", payload={
-                "target": vid, "action": "pause", "reason": f"media failed after {attempts} attempts: {str(error)[:200]}"}))
+                "target": vid, "action": "budget_cut" if over else "pause", "reason": reason}))
             self._defer(env, res, f"paused:{vid}")
 
     def _render(self, env: Envelope, res: StepResult) -> None:
@@ -862,7 +876,20 @@ class Orchestrator:
             meta = MetadataPackage.model_validate(latest)
             fixed = snap_chapters(meta.chapters, cues)
             self._credit_metadata(meta)
-            if [c.model_dump() for c in fixed] != [c.model_dump() for c in meta.chapters] or meta.description != latest["description"]:
+            # ADR-0018: cờ nội dung tổng hợp do CODE quyết từ manifest + provenance (hoặc chính sách kênh), không hỏi model.
+            decided = synthetic_media_of(m, _assets_of(self, vid), self.renderer.media.cfg.production.get("synthetic_media"))
+            if decided is not None and decided != meta.synthetic_media:
+                meta.synthetic_media = decided
+                self._audit("synthetic_media.decided", {"video_id": vid, "synthetic_media": decided,
+                                                        "production_type": m.cinema.production_type, "visual_mode": m.cinema.visual_mode}, video_id=vid)
+            paid = self.renderer.media.cfg.production.get("paid_product_placement")
+            if paid is not None and bool(paid) != meta.paid_product_placement:
+                meta.paid_product_placement = bool(paid)
+                self._audit("paid_product_placement.decided", {"video_id": vid, "paid_product_placement": bool(paid)},
+                            video_id=vid)
+            if ([c.model_dump() for c in fixed] != [c.model_dump() for c in meta.chapters] or meta.description != latest["description"]
+                    or meta.synthetic_media != latest.get("synthetic_media")
+                    or meta.paid_product_placement != latest.get("paid_product_placement")):
                 meta.chapters = fixed
                 self._audit("chapters.snapped", {"video_id": vid, "chapters": [c.model_dump() for c in fixed]}, video_id=vid)
                 self.bus.publish(Envelope(topic="metadata-packages", key=vid, actor="chapters", payload=meta.model_dump()))
@@ -872,7 +899,8 @@ class Orchestrator:
         fps, res_str = int(v.get("fps", 30)), frame_size(v, m.aspect)
         thumb = self._chosen_thumbnail(vid); cap = self._captions_of(vid)
         rep = qc_video(Path(final.path), expected_duration_s=final.duration_s or 0.0, expected_resolution=res_str,
-                       expected_fps=fps, thumbnail=Path(thumb) if thumb else None, captions=Path(cap) if cap else None)
+                       expected_fps=fps, thumbnail=Path(thumb) if thumb else None, captions=Path(cap) if cap else None,
+                       narration=[(c.scene_id,c.start,c.end,c.text) for c in cues])
         inspection = inspect_project(m,final,self.renderer.media.cfg)
         self.inspections[vid] = inspection
         rep.findings.extend(Finding.model_validate(f) for f in inspection['findings'])
@@ -1011,9 +1039,26 @@ class Orchestrator:
         meta = _latest_payload(self, "metadata-packages", vid) or {}
         thumb = self._chosen_thumbnail(vid)
         cap = self._captions_of(vid)
+        cfg = self.renderer.media.cfg
         facts = [f"final_video:{final['path']}" if final else "final_video:(chưa có)",
                  f"thumbnail:{thumb}" if thumb else "thumbnail:(chưa có)", f"title:{meta.get('title', '(chưa có)')}",
-                 f"captions:{cap}" if cap else "captions:(chưa có)"]
+                 f"captions:{cap}" if cap else "captions:(chưa có)",
+                 # ADR-0018: người duyệt thấy cờ sẽ gửi lên nền tảng; chưa quyết thì nói thẳng là nền tảng sẽ tự xét.
+                 f"synthetic_media:{meta['synthetic_media']}" if meta.get("synthetic_media") is not None
+                 else "synthetic_media:(chưa khai — người duyệt quyết; YouTube tự gắn nhãn AI nếu bỏ trống)",
+                 f"paid_product_placement:{meta['paid_product_placement']}" if meta.get("paid_product_placement") is not None
+                 else "paid_product_placement:(chưa khai — coi như không tài trợ; có tài trợ thì request_changes và đặt "
+                      "production.paid_product_placement)"]
+        # Contact sheet (ADR-0016) chỉ đứng tên cho đúng phiên bản bản cuối; bản giả không có sheet nên không có dòng.
+        sheet = next((a["path"] for a in reversed(_assets_of(self, vid)) if a["kind"] == "contact_sheet" and final
+                      and a["manifest_version"] == final["manifest_version"]), None)
+        if sheet: facts.append(f"contact_sheet:{sheet}")
+        if media_cost.priced(cfg):  # chưa khai giá thì không có dòng: 0 USD bịa còn tệ hơn không nói gì
+            cap_usd, used_usd = media_cost.budget(cfg), media_cost.spent(self.bus, vid)
+            facts.append(f"media_cost:{used_usd:.4f} USD ước tính"
+                         + (f" / trần {cap_usd:g} USD" if cap_usd else "")
+                         + (f" — đã dùng ≥ {round(media_cost.WARN_RATIO * 100)} % trần"
+                            if media_cost.near_cap(used_usd, cap_usd) else ""))
         qc = self.qcs[vid].checklist() if vid in self.qcs else []
         return [f"review:{s}:{r.verdict}" for s, r in sorted(self.desk.reviews[vid].items())] + rep.checklist() + qc + facts
 

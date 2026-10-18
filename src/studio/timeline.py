@@ -69,11 +69,52 @@ def timeline(m: SceneManifest, order: list[str] | None = None, pad: float = 0.0,
     return cues
 
 
-def caption_pages(cues: list[Cue], max_chars: int = 42, max_lines: int = 2) -> list[Cue]:
-    """Readable caption pages; timings are proportional estimates, NOT word alignment.
+Word = tuple[float, float, str]  # (start, end, từ) tính từ đầu audio của cảnh
+
+
+def _norm(word: str) -> str:
+    """Từ để so khớp mốc: bỏ dấu câu, không phân biệt hoa thường (edge-tts trả "bạn" cho "bạn,")."""
+    return re.sub(r"[^\w]", "", word.casefold())
+
+
+def _page_layout(tokens: list[str], max_chars: int, max_lines: int) -> list[list[list[int]]]:
+    """Trang → dòng → chỉ số từ: dòng gom từ tới `max_chars` (từ dài hơn đứng riêng), trang = `max_lines` dòng."""
+    lines: list[list[int]] = []
+    for i, word in enumerate(tokens):
+        if lines and len(" ".join(tokens[j] for j in lines[-1]) + " " + word) <= max_chars:
+            lines[-1].append(i)
+        else:
+            lines.append([i])
+    return [lines[k:k + max_lines] for k in range(0, len(lines), max_lines)]
+
+
+def _timed(cue: Cue, words: dict[str, list[Word]] | None) -> tuple[list[Word], list[str]] | None:
+    """Mốc của cảnh khi dãy từ khớp lời đọc (bỏ dấu câu, không phân biệt hoa thường); None = chia theo tỷ lệ."""
+    timed, tokens = (words or {}).get(cue.scene_id), " ".join(cue.text.split()).split()
+    if timed and [_norm(str(w[2])) for w in timed] == [_norm(t) for t in tokens]:
+        return timed, tokens
+    return None
+
+
+def _word_pages(cue: Cue, words: list[Word], tokens: list[str], max_chars: int, max_lines: int) -> list[Cue]:
+    """Trang phụ đề theo mốc từng từ: trang bắt đầu lúc từ đầu được đọc, kết thúc lúc từ cuối dứt, kẹp trong khoảng
+    cảnh. Chữ hiển thị là `tokens` của lời đọc gốc (giữ dấu câu), mốc lấy từ `words` cùng vị trí."""
+    out: list[Cue] = []
+    for page in _page_layout(tokens, max_chars, max_lines):
+        first, last = page[0][0], page[-1][-1]
+        start = min(cue.end, round(cue.start + float(words[first][0]), 3))
+        end = min(cue.end, round(cue.start + float(words[last][1]), 3))
+        out.append(Cue(cue.scene_id, start, max(end, start + 0.001),
+                       "\n".join(" ".join(tokens[j] for j in line) for line in page)))
+    return out
+
+
+def caption_pages(cues: list[Cue], max_chars: int = 42, max_lines: int = 2,
+                  words: dict[str, list[Word]] | None = None) -> list[Cue]:
+    """Readable caption pages. With provider word timestamps (`words[scene_id]`, same tokens as the narration) pages
+    follow the real speech; otherwise timings are proportional estimates, NOT word alignment.
 
     Keep every word inside its measured narration interval. No ASR/model/API call.
-    Use provider word timestamps for karaoke or phoneme-accurate highlighting.
     """
     if max_chars < 1 or max_lines < 1:
         raise ValueError("caption limits must be positive")
@@ -82,6 +123,10 @@ def caption_pages(cues: list[Cue], max_chars: int = 42, max_lines: int = 2) -> l
         text = " ".join(cue.text.split())
         duration = cue.end - cue.start
         if not text or duration <= 0:
+            continue
+        matched = _timed(cue, words)
+        if matched:
+            out += _word_pages(cue, *matched, max_chars, max_lines)
             continue
         lines = textwrap.wrap(text, width=max_chars, break_on_hyphens=False)
         chunks = ["\n".join(lines[i:i + max_lines]) for i in range(0, len(lines), max_lines)]
@@ -96,6 +141,55 @@ def caption_pages(cues: list[Cue], max_chars: int = 42, max_lines: int = 2) -> l
             end = cue.end if elapsed == total else cue.start + duration * elapsed / total
             out.append(Cue(cue.scene_id, start, end, chunk))
     return out
+
+
+def _ass_time(t: float) -> str:
+    cs = max(0, round(t * 100))
+    return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
+
+
+def _ass_text(text: str) -> str:
+    return text.replace("{", "(").replace("}", ")").replace("\\", "/")
+
+
+def karaoke_ass(cues: list[Cue], words: dict[str, list[Word]], resolution: str, max_chars: int = 42,
+                max_lines: int = 2) -> str:
+    """Phụ đề karaoke để ĐỐT CỨNG (libass): mỗi trang một Dialogue, mỗi từ một thẻ `\\k` (centi-giây từ lúc từ bắt đầu
+    tới lúc từ sau bắt đầu) nên từ đổi màu đúng lúc được đọc. Cảnh không có mốc khớp lời đọc vẫn có trang chia theo tỷ
+    lệ, không thẻ `\\k`. YouTube không nhận ASS: SRT vẫn là phụ đề đăng lên nền tảng."""
+    width, height = (int(x) for x in resolution.lower().split("x"))
+    size, margin = round(height * 0.055), round(height * 0.06)
+    out = ["[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}", "WrapStyle: 2", "",
+           "[V4+ Styles]",
+           "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
+           "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, "
+           "MarginR, MarginV, Encoding",
+           f"Style: Karaoke,DejaVu Sans,{size},&H0000D7FF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,"
+           f"{max(2, size // 20)},0,2,{margin},{margin},{margin},1", "",
+           "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
+    for cue in cues:
+        if not cue.text.strip() or cue.end <= cue.start:
+            continue
+        matched = _timed(cue, words)
+        if matched is None:
+            for plain in caption_pages([cue], max_chars=max_chars, max_lines=max_lines):
+                out.append(f"Dialogue: 0,{_ass_time(plain.start)},{_ass_time(plain.end)},Karaoke,,0,0,0,,"
+                           + _ass_text(plain.text).replace("\n", "\\N"))
+            continue
+        timed, tokens = matched
+        for page in _page_layout(tokens, max_chars, max_lines):
+            flat = [i for line in page for i in line]
+            parts = []
+            for n, line in enumerate(page):
+                for j, i in enumerate(line):
+                    nxt = float(timed[i + 1][0]) if i != flat[-1] else float(timed[i][1])
+                    gap = "\\N" if n and j == 0 else (" " if j else "")
+                    parts.append(f"{gap}{{\\k{max(1, round((nxt - float(timed[i][0])) * 100))}}}{_ass_text(tokens[i])}")
+            start = min(cue.end, cue.start + float(timed[flat[0]][0]))
+            end = min(cue.end, cue.start + float(timed[flat[-1]][1]))
+            out.append(f"Dialogue: 0,{_ass_time(start)},{_ass_time(max(end, start + 0.01))},Karaoke,,0,0,0,,"
+                       + "".join(parts))
+    return "\n".join(out) + "\n"
 
 
 def srt(cues: list[Cue]) -> str:

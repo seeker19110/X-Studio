@@ -16,6 +16,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from xagents_core.sqlite_bus import Lease
 
+from . import media_cost
 from .autopilot import Autopilot
 from .editing import MediaLibrary, SceneEdit, apply_edit, validate_edit
 from .events import Envelope, MetadataPackage, PerformanceSnapshot, PublishEvent, SceneManifest, Script
@@ -277,6 +278,8 @@ class Factory:
                     try: origins[event.payload['video_id']] = json.loads(event.payload.get('evidence') or '{}')
                     except (ValueError,TypeError): pass
         projects = []
+        cfg = o.renderer.media.cfg
+        spend = media_cost.totals(self.bus.replay("audit-log", media_cost.ACTOR))
         for vid, brief in o.desk.briefs.items():
             media = [{"id": e.event_id, "kind": e.payload["kind"], "scene_id": e.payload.get("scene_id"),
                       "url": "/media/" + e.event_id, "provider": e.payload["provider"],
@@ -316,6 +319,9 @@ class Factory:
                              'inspection':{**{k:v for k,v in o.inspections.get(vid,{}).items() if k not in {'references','contact_sheet'}},
                                'contact_url':'/media/inspection-'+o.inspections[vid]['fingerprint'][:32]} if o.inspections.get(vid,{}).get('available') and o.inspections[vid]['manifest_version']==(manifest.version if manifest else 0) else None,
                              "qc": o.qcs[vid].as_dict() if vid in o.qcs else None,
+                             "media_cost": {"usd": spend.get(vid, 0.0), "budget_usd": media_cost.budget(cfg),
+                                            "priced": media_cost.priced(cfg),
+                                            "warning": media_cost.near_cap(spend.get(vid, 0.0), media_cost.budget(cfg))},
                              "brief": brief.model_dump(exclude={"hint"}), "request": request, "research": research,
                              "cinema": CinemaSpec.model_validate(brief.model_dump()).model_dump(),
                              "script": Script.model_validate(script_event.payload).model_dump() if script_event else None,

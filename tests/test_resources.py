@@ -23,6 +23,26 @@ def test_estimated_media_budget_counts_only_generation_and_preserves_unknown_cos
     assert account.summary()['projects']['V2']['unknown_cost'] == 1
 
 
+@pytest.mark.parametrize(('rates','expected'),[({'price_per_1k_chars':.02},.02),({'price_per_second':.01},.06)])
+def test_provider_ledger_prices_are_reported_without_a_second_provider_call(tmp_path,rates,expected):
+    from studio.media import MediaResult
+    from studio.media_cost import Ledger
+    bus=InMemoryBus();cfg=MediaConfig(output_dir=tmp_path,tts={'provider':'command',**rates},production={'media_budget_usd':1})
+    account=MediaAccounting(bus,cfg)
+    def audit(action,vid,data):
+        from studio.events import AuditLog, Envelope
+        payload=AuditLog(actor='renderer',action=action,video_id=vid,evidence=json.dumps(data))
+        bus.publish(Envelope(topic='audit-log',key=vid,actor='renderer',payload=payload.model_dump()))
+    ledger=Ledger(bus,cfg,audit);calls=[]
+    def generate():
+        calls.append('actual provider');return MediaResult(tmp_path/'voice.wav','command','voice',6.)
+    account.generate('V','tts',1.,lambda:ledger.charge('V','tts',1000,generate),provider_ledger=True)
+    item=account.summary()['projects']['V']
+    assert calls==['actual provider'] and item['generations']==1 and item['unknown_cost']==0
+    assert item['estimated_usd']==pytest.approx(expected)
+    assert ledger.total('V')==pytest.approx(expected)
+
+
 def test_cleanup_preview_only_selects_owned_derived_segments_and_rejects_stale_preview(tmp_path):
     cfg = MediaConfig(output_dir=tmp_path)
     folder = tmp_path / 'V1' / '.segments'; folder.mkdir(parents=True)

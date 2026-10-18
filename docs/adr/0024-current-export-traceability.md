@@ -1,6 +1,6 @@
-# ADR-0019: Truy vết kịch bản và quyền của bản xuất hiện tại
+# ADR-0024: Truy vết kịch bản và quyền của bản xuất hiện tại
 
-Ngày: 2026-10-18. Trạng thái: chấp nhận. Bổ sung ADR-0018.
+Ngày: 2026-10-18. Trạng thái: chấp nhận. Bổ sung ADR-0023.
 
 Sửa lời từ phòng dựng giữ heading và claim_ids của từng section. Sau cut-list, renderer chỉ nâng
 script_version khi toàn bộ narration theo thứ tự cảnh khớp nguyên văn kịch bản mới nhất; không gắn
@@ -55,3 +55,9 @@ Nhóm phụ đề cũng phải vừa thực tế trong hai dòng, thay vì chỉ
 tạo trang thứ ba thì mở nhóm mới ngay tại mốc từ đo được, tránh trang một từ lóe vài mili giây
 trước nhóm cuối. Ghi công có một đoạn tiền tố nguyên văn của notice đầy đủ được hoàn tất tại chỗ;
 nếu notice đầy đủ đã ở đoạn khác thì bỏ đoạn tiền tố trùng, giữ phần mô tả còn lại và tính idempotent.
+
+Đồng bộ main giữ ledger provider, nhãn AI/tài trợ, karaoke, ASR QC và reviewer hình ảnh. Timing tuple
+của provider được chuẩn hóa sang sidecar có SHA; karaoke đọc cả sidecar mới lẫn cache tuple cũ.
+Hai đường khai giá (provider hoặc form production.pricing) dùng cùng đơn vị khi ghi ledger; lớp tài nguyên
+không gọi provider lần hai. Session upload giữ cả nhãn AI và khai tài trợ trong định danh metadata,
+thay khai báo phải đối chiếu lại thay vì dùng tiếp một operation đã duyệt trước.

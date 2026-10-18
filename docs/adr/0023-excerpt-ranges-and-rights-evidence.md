@@ -1,6 +1,6 @@
-# ADR-0018: Mốc cảnh thật và hồ sơ quyền của bản trích
+# ADR-0023: Mốc cảnh thật và hồ sơ quyền của bản trích
 
-Ngày: 2026-10-16. Trạng thái: chấp nhận. Bổ sung ADR-0017.
+Ngày: 2026-10-16. Trạng thái: chấp nhận. Bổ sung ADR-0022.
 
 Shorts reflow giữ từng mục script, heading và claim_ids của các cảnh đã chọn. Mỗi Scene có `clip_start_s`
 tùy chọn, là vị trí đo trong file clip dẫn xuất; `duration_s` là phần cảnh nằm trong clip. Timeline không

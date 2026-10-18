@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 from itertools import pairwise
@@ -298,15 +299,23 @@ def test_thumbnail_is_finished_by_code_not_by_the_image_model(tmp_path):
 
 
 def test_youtube_rejects_thumbnail_over_platform_limit(tmp_path):
-    from studio.media import THUMBNAIL_MAX_BYTES
+    """YouTube nhận thumbnail tới 50 MB từ 14/9/2026 (Data API revision history); 2 MB chỉ còn là MỤC TIÊU của
+    renderer (QC warn), không phải lý do adapter từ chối."""
+    from studio.media import PLATFORM_THUMBNAIL_MAX_BYTES, THUMBNAIL_MAX_BYTES
     from studio.platform import PlatformError, Tokens, TokenStore, YouTubePlatform
+    assert PLATFORM_THUMBNAIL_MAX_BYTES == 50_000_000 and THUMBNAIL_MAX_BYTES == 2_000_000
     st = TokenStore(tmp_path / "t.json")
     st.save(Tokens(access_token="a", refresh_token="r", client_id="c", client_secret="s",
                    expiry="2099-01-01T00:00:00+00:00", scopes=["a"]))
-    big = tmp_path / "big.jpg"; big.write_bytes(b"x" * (THUMBNAIL_MAX_BYTES + 1))
+    big = tmp_path / "big.jpg"; big.write_bytes(b"x" * (PLATFORM_THUMBNAIL_MAX_BYTES + 1))
     def boom(*a, **k): raise AssertionError("không được gọi API khi file đã quá nặng")
-    with pytest.raises(PlatformError, match=r"2\.0 MB.*≤ 2 MB"):
+    with pytest.raises(PlatformError, match=r"50\.0 MB.*≤ 50 MB"):
         YouTubePlatform(st, fetcher=boom).set_thumbnail("vid1", big)
+    ok = tmp_path / "ok.jpg"; ok.write_bytes(b"x" * (THUMBNAIL_MAX_BYTES + 1))
+    sent = {}
+    def fetch(method, url, headers, body):
+        sent["bytes"] = len(body); return 200, {}, b"{}"
+    assert json.loads(YouTubePlatform(st, fetcher=fetch).set_thumbnail("vid1", ok))["bytes"] == THUMBNAIL_MAX_BYTES + 1
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="cần ffmpeg + ffprobe")
@@ -509,3 +518,80 @@ def test_thumbnail_batch_failure_preserves_published_variants_and_reuses_cache(t
     completed = renderer.thumbnails(spec)
     assert len(completed) == 2 and all(Path(a.path).is_file() for a in completed)
     assert renderer.media.image.generate.call_count == 0
+
+
+def test_word_times_from_tts_reach_the_captions_and_survive_the_cache(tmp_path):
+    """Provider có mốc từng từ → renderer ghi `<cảnh>.words.json` cạnh audio → phụ đề dùng mốc thật. Cache trúng vẫn
+    mang mốc (metadata cache lưu cả `words`)."""
+    from unittest.mock import Mock
+
+    from studio.media import MediaResult
+    r = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path)))
+    real = r.media.tts.synthesize
+
+    def timed(text, voice, out):
+        res = real(text, voice, out)
+        n = len(text.split())
+        return MediaResult(res.path, "fake", "fake-tts", res.duration_s,
+                           words=[(0.2 * i, 0.2 * i + 0.15, w) for i, w in enumerate(text.split())] if n else None)
+    r.media.tts.synthesize = Mock(side_effect=timed)
+    m = _manifest(); r.render(m)
+    sidecar = Path(m.scenes[0].asset_refs["scene_audio"]).parent / "S1.words.json"
+    saved=json.loads(sidecar.read_text())
+    assert saved['words'][0] == {'text':'Câu','start':0.,'duration':.15}
+    assert saved['sha256'] == hashlib.sha256(Path(m.scenes[0].asset_refs['scene_audio']).read_bytes()).hexdigest()
+    final = r.finalize(m)
+    captions = next(e.payload for e in r.bus.replay("media-assets", "V1") if e.payload["kind"] == "captions")
+    assert captions["provenance"]["generated_by"] == "studio:srt-word-times"
+    assert Path(captions["path"]).read_text(encoding="utf-8").startswith("1\n00:00:00,000 --> 00:00:0")
+    assert final.kind == "final_video"
+    # lần dựng sau trúng cache: không gọi TTS, mốc vẫn còn
+    r2 = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path)))
+    r2.media.tts.synthesize = Mock(side_effect=AssertionError("cache phải trúng"))
+    sidecar.unlink(); r2.render(_manifest())
+    assert sidecar.exists()
+    # provider không còn mốc (đổi provider) → sidecar cũ bị xoá, phụ đề quay về chia theo tỷ lệ
+    r3 = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path, tts={"provider": "fake", "speed": 1})))
+    r3.render(_manifest())
+    assert not sidecar.exists()
+
+
+def test_word_time_sidecars_that_are_missing_or_corrupt_fall_back_to_proportional_captions(tmp_path):
+    r = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path)))
+    m = _manifest(); r.render(m)
+    audio = Path(m.scenes[0].asset_refs["scene_audio"])
+    (audio.parent / "S1.words.json").write_text("{không phải json", encoding="utf-8")
+    (audio.parent / "S2.words.json").write_text('[[0, 1]]', encoding="utf-8")
+    assert r._word_times(m) == {}
+    assert r._word_times(_manifest()) == {}  # manifest chưa dựng: không có scene_audio
+
+
+def _timed_tts(r):
+    from unittest.mock import Mock
+
+    from studio.media import MediaResult
+    real = r.media.tts.synthesize
+
+    def timed(text, voice, out):
+        res = real(text, voice, out)
+        return MediaResult(res.path, "fake", "fake-tts", res.duration_s,
+                           words=[(0.2 * i, 0.2 * i + 0.15, w) for i, w in enumerate(text.split())])
+    r.media.tts.synthesize = Mock(side_effect=timed)
+
+
+def test_karaoke_ass_is_burned_when_enabled_and_srt_stays_for_the_platform(tmp_path):
+    """`video.karaoke: true` + `burn_captions` + mốc từng từ → đốt cứng ASS `\\k`; SRT vẫn là asset phụ đề đăng
+    YouTube. Không có mốc thì đốt SRT như cũ (karaoke không có gì để tô)."""
+    cfg = MediaConfig(output_dir=tmp_path, video={"burn_captions": True, "karaoke": True})
+    r = Renderer(InMemoryBus(), make_media(cfg)); _timed_tts(r)
+    m = _manifest(); r.render(m)
+    final = r.finalize(m)
+    burned = Path(json.loads(Path(final.path).read_text())["finishing"]["captions"])
+    assert burned.name == "captions_v1.ass" and burned.is_file() and r"{\k" in burned.read_text(encoding="utf-8")
+    kinds = [e.payload["kind"] for e in r.bus.replay("media-assets", "V1")]
+    assert "captions" in kinds and not any(e.payload["path"].endswith(".ass") for e in r.bus.replay("media-assets", "V1"))
+    plain = Renderer(InMemoryBus(), make_media(MediaConfig(output_dir=tmp_path / "p",
+                                                           video={"burn_captions": True, "karaoke": True})))
+    m2 = _manifest(); plain.render(m2)
+    final2 = plain.finalize(m2)
+    assert json.loads(Path(final2.path).read_text())["finishing"]["captions"].endswith(".srt")

@@ -6,12 +6,15 @@ from itertools import pairwise
 from pathlib import Path
 
 
-def validate_words(words: list[dict], duration: float) -> list[dict]:
+def validate_words(words: list, duration: float) -> list[dict]:
     if not isinstance(words, list) or not words or len(words) > 100000 or not math.isfinite(duration) or duration <= 0:
         raise ValueError('Mốc từ hoặc thời lượng không hợp lệ')
     result = []; previous = -1.
     for word in words:
         try:
+            if isinstance(word,(list,tuple)):
+                start,end,text=word
+                word={'text':text,'start':start,'duration':float(end)-float(start)}
             text = word['text']; start = float(word['start']); span = float(word['duration'])
         except (KeyError, TypeError, ValueError) as exc: raise ValueError('Mốc từ không hợp lệ') from exc
         if (not isinstance(text,str) or not text.strip() or not math.isfinite(start) or not math.isfinite(span)
@@ -104,4 +107,3 @@ def timed_captions(words: list[dict], offset: float, pace: float, *, text: str |
     if group: emit()
     for current, following in pairwise(cues): current['end'] = min(current['end'], following['start'] - .025)
     return cues
-

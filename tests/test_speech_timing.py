@@ -16,6 +16,13 @@ def test_word_timing_rejects_invalid_or_nonmonotonic_provider_data():
         with pytest.raises(ValueError): validate_words(words,1)
 
 
+def test_provider_tuple_timings_normalize_to_checksum_sidecar_words():
+    assert validate_words([(0.,.3,'Xin'),(.4,.8,'chào')],1.) == [
+        {'text':'Xin','start':0.,'duration':.3},{'text':'chào','start':.4,'duration':.4}]
+    with pytest.raises(ValueError,match='Mốc từ'):
+        validate_words([(0.,)],1.)
+
+
 def test_edge_provider_keeps_measured_word_boundaries_and_uses_no_api_key(tmp_path,monkeypatch):
     from studio import speech
     selected_voices=[]

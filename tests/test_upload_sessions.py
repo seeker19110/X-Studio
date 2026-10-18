@@ -39,6 +39,24 @@ def test_restart_probes_existing_session_and_resumes_confirmed_offset(tmp_path):
     assert 'private-session' not in result.evidence
 
 
+def test_persistent_upload_keeps_disclosures_and_holds_when_they_change(tmp_path):
+    file=tmp_path/'video.mp4';file.write_bytes(b'video');calls=[]
+    meta=META.model_copy(update={'synthetic_media':True,'paid_product_placement':True})
+    def fetch(method,url,headers,body):
+        calls.append((method,url,body))
+        return (200,{'location':LOCATION},b'') if method=='POST' else (201,{},b'{"id":"fixture-video"}')
+    sessions=UploadSessions(tmp_path/'studio.sqlite')
+    platform(tmp_path,sessions,fetch).upload_video(file,meta,operation_id='V1',authorization='same-gate')
+    init=json.loads(calls[0][2])
+    assert init['status']['containsSyntheticMedia'] is True
+    assert init['paidProductPlacementDetails']=={'hasPaidProductPlacement':True}
+    assert 'paidProductPlacementDetails' in calls[0][1]
+    no_network=Mock(side_effect=AssertionError('changed disclosure must not upload'))
+    with pytest.raises(PlatformError,match='đối chiếu'):
+        platform(tmp_path,sessions,no_network).upload_video(file,meta.model_copy(update={'paid_product_placement':False}),
+            operation_id='V1',authorization='same-gate')
+
+
 def test_completed_final_chunk_without_local_result_is_reconciled(tmp_path):
     db = tmp_path / 'studio.sqlite'; file = tmp_path / 'final.mp4'; file.write_bytes(b'video')
     def lost(method, url, headers, body):

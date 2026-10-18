@@ -54,21 +54,30 @@ class MediaAccounting:
                 'estimated_usd':round(sum(p['estimated_usd'] for p in projects.values()),8),
                 'unknown_cost':sum(p['unknown_cost'] for p in projects.values()),'currency':'USD','basis':'operator_estimate'}
 
-    def generate(self, video_id: str, kind: str, units: float, create: Callable[[],T]) -> T:
+    def generate(self, video_id: str, kind: str, units: float, create: Callable[[],T], *, provider_ledger: bool = False) -> T:
         price = self.cfg.production.get('pricing',{}).get(PRICE_KEYS[kind])
         if not math.isfinite(units) or units < 0: raise MediaError('Invalid media accounting units')
         if price is not None and (isinstance(price,bool) or not isinstance(price,(int,float)) or not math.isfinite(price) or price < 0):
             raise MediaError('Media price must be a finite nonnegative number')
         estimate = round(price*units,8) if price is not None else None
+        channel='scene_video' if kind=='video' else kind
+        provider_rates=getattr(self.cfg,channel)
+        from .media_cost import RATES, MediaBudgetError, quote
+        provider_price=provider_ledger and price is None and (RATES[channel] in provider_rates or
+                                                            (kind=='tts' and 'price_per_second' in provider_rates))
+        provider_units=units*1000 if kind=='tts' else units
+        if provider_price: estimate=quote(self.cfg,channel,provider_units)
         budget = self.cfg.production.get('media_budget_usd')
-        if budget is not None:
+        if budget is not None and not provider_price:
             if not isinstance(budget,(int,float)) or not math.isfinite(budget) or budget < 0: raise MediaError('Invalid media budget')
             spent = self.summary()['projects'].get(video_id,{}).get('estimated_usd',0.)
             if estimate is None: raise MediaError('Cấu hình giá media trước khi dùng hạn mức chi phí ước tính')
             if spent + estimate > budget + 1e-9: raise MediaError('Đã hết hạn mức chi phí media ước tính của dự án')
         try: result = create()
+        except MediaBudgetError: raise
         except Exception:
             self.record(video_id,kind,units,None,'failed'); raise
+        if provider_price: estimate=quote(self.cfg,channel,provider_units,seconds=getattr(result,'duration_s',None))
         self.record(video_id,kind,units,estimate,'succeeded')
         return result
 

@@ -87,7 +87,7 @@
     ],
     "timeout_minutes": 30,
     "tools": [],
-    "version": 1,
+    "version": 2,
     "writes": [
       "cut-lists"
     ]
@@ -136,7 +136,7 @@
     ],
     "timeout_minutes": 45,
     "tools": [],
-    "version": 1,
+    "version": 2,
     "writes": [
       "scene-manifests"
     ]
@@ -182,7 +182,7 @@
     ],
     "timeout_minutes": 45,
     "tools": [],
-    "version": 1,
+    "version": 2,
     "writes": [
       "review-results"
     ]
@@ -204,7 +204,7 @@
     ],
     "timeout_minutes": 45,
     "tools": [],
-    "version": 1,
+    "version": 2,
     "writes": [
       "review-results"
     ]
