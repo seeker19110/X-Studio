@@ -1,5 +1,84 @@
 # Xác minh bản nâng cấp factory
 
+Lượt mới nhất (2026-10-17) đã **thay Piper bằng VieNeu-TTS v3 Turbo, preset Ngọc Huyền**,
+có giấy phép model/preset, quyền đầu ra thương mại và xác nhận consent từ tác giả; xem
+[hồ sơ quyền](rights/vieneu-commercial-voice-evidence.json).
+“Hình cần rõ” đổi thành “Hình cần dễ nhìn”; giữ bốn ảnh, thay bốn audio và tạo Shorts mới.
+Main **v4, 1920×1080, 17,14 giây**, Shorts **1080×1920, 16,84 giây**; cả hai
+**fact/quality/rights pass**. Whisper small và large-v3-turbo nhận đúng **66/66 từ trên cả hai MP4**,
+không gợi transcript. Decode/QC/phụ đề đạt; đã xem frame sau encode tại đủ 8/10 cue.
+Sửa lỗi Shorts kế thừa quyền/credit từ take cũ; tư liệu unknown hiện tại vẫn bị giữ chặn.
+Source đạt **1.908 test**, 100% dòng cả ba package, core 100% nhánh, replay **28/28**;
+**20 test Windows** đạt. Worker đóng, queue/deferred 0, **0 publish/upload**; chưa phê duyệt đăng.
+File xem và receipt trong [báo cáo thực tế](VALIDATION-LIVE-UPGRADES.md).
+
+Lượt Piper trước đó (2026-10-17) sửa các cụm khó đọc, thêm khoảng nghỉ và xuất lại bằng model thật:
+main **v3, 1920×1080, 17,89 giây**, Shorts mới **1080×1920, 17,72 giây**.
+Decode/QC toàn file và phụ đề đạt; đã xem frame sau encode tại 8/9 cue. ASR mỗi bản khớp 63/64 từ,
+còn “rõ” → “xõ”, chưa có nghe duyệt bằng người. Hai bản **fact pass / quality pass / rights block**.
+Giọng `vi_VN-vais1000-medium` hiện **NOT_CLEARED cho phát hành công khai/kiếm tiền** do lineage Lessac;
+CC BY trong model card nói về dataset, không chứng nhận đầu ra. Xem [hồ sơ quyền](rights/piper-release-assessment-20261017.json).
+SEO thật đã đính chính metadata và ghi rõ bản xem cục bộ. Queue/deferred bằng 0; **0 publish/upload**, worker đóng.
+Source đạt **1.900 test**, coverage dòng **100%**, core 100% nhánh, replay **28/28**; Windows **29** ca đạt.
+[Báo cáo mới](VALIDATION-LIVE-UPGRADES.md) giữ receipt, góp ý còn lại và lịch sử của các lượt trước.
+
+Lượt Piper ngày 16/10 bên dưới dùng cách gọi CC BY quá rộng; kết luận quyền ngày 17/10 thay thế cách gọi đó.
+Bản xem trước đạt 1.897 test và Windows 44 + 20 ca, còn những cụm đọc chưa rõ đã được nghiên cứu ở lượt mới.
+
+
+Lượt mới đã đưa cải thiện hình/tiếng/phụ đề vào mặc định và chạy một dự án mới bằng model thật:
+video chính **1920×1080**, Shorts dàn riêng **1080×1920**, cả hai fact/quality/rights `pass` trong phạm vi cục bộ.
+Source cuối đạt **1.878 test**, coverage dòng **100%**, replay **28/28** và **33 test Windows**.
+Đã kiểm từng cue sau encode, nhận dạng tiếng cục bộ và restore 90 file/31 asset; giữ cấu hình chất lượng mới.
+Hai gate đăng vẫn chờ, **0 publish-event / 0 upload-session**. Góp ý metadata/quyền trước phát hành còn được
+giữ trong [báo cáo lượt mới](VALIDATION-LIVE-UPGRADES.md), cùng receipt và giới hạn kiểm tra.
+
+Lượt rà soát hình/tiếng/phụ đề trước khi áp dụng mặc định đạt **1.871 test**, coverage **100%**, replay **28/28**;
+hai bản xem mới Full HD có bố cục ngang/dọc riêng, phụ đề sửa dấu câu/ngắt dòng và âm thanh đo lại.
+Xem phần đầu [báo cáo thực tế](VALIDATION-LIVE-UPGRADES.md). Chưa đăng hoặc lên lịch YouTube.
+
+Lượt tiếp theo đã chạy native Windows, CUDA/NVENC và media có giọng đọc thật; xem
+[báo cáo kiểm thử thực tế](VALIDATION-LIVE-UPGRADES.md) để phân biệt kết quả mới với baseline dưới đây.
+Lượt cuối bổ sung ngân sách/hồ sơ quyền và provenance Shorts đạt **1.869 test**, coverage dòng **100%** cả ba
+package, replay strict **28/28** và **44 test Windows**. Bản chính/sửa cảnh/Shorts đều dùng model thật, đủ ba
+review đạt trong phạm vi cục bộ; backup/restore đã đối chiếu lại hồ sơ quyền. Chưa đăng hoặc lên lịch YouTube.
+
+## Bốn đợt vận hành và chỉnh sửa (2026-10-16)
+
+Phạm vi theo [nghiên cứu](RESEARCH-NEXT-UPGRADES.md), [ADR-0016](adr/0016-durable-operations-and-editing.md).
+Đợt 4 chọn Shorts từ bản cuối có sẵn; không cài model alignment, analytics scheduler hoặc workflow GPU mới.
+
+- `make verify` đạt trên source cuối: **Studio 1.114, Gateway 273, core 478 test**, cả ba package
+  **coverage 100% dòng**; eval replay strict **28/28**. Ruff/mypy đạt; JavaScript qua `node --check`.
+- Doctor chạy trên `media.yaml` thật: Python, thư mục/dung lượng, FFmpeg/ffprobe, encoder/filter, font,
+  executable TTS/ảnh và backend text đều qua kiểm tra cục bộ. Không gọi provider để kiểm credential/quota.
+- Smoke FFmpeg thật: 12 giây 640×360, H.264/AAC, chữ Việt burn-in, ffprobe và decode toàn file.
+  Từ fixture đó cắt đoạn yêu cầu giây 1–7, căn theo SRT thành giây 0–8, dựng **360×640, 25 fps** có tiếng,
+  SRT/poster và contact sheet. Đây là hình tổng hợp/âm thử, không phải đánh giá chất lượng TTS hay nội dung sáng tạo.
+  Artifact cục bộ: `output/upgrade-validation/SAMPLE/`, report `output/upgrade-validation/evidence.json`.
+- Browser Chromium thật (`scripts/operations-smoke.py`): ba browser context, import legacy lỗi rồi thử lại,
+  hai tab xung đột giữ draft, upload/cập nhật quyền trong thư viện, sửa narration đến manifest mới và gate mới,
+  tạo Shorts với gate riêng, doctor, tài nguyên/chi phí, backup và mở workspace phục hồi ở trạng thái dừng.
+  Desktop và 390×844 không lỗi JavaScript hoặc tràn ngang; ảnh tại `output/operations-smoke/`.
+- Test fault injection kiểm migration rollback; restore checksum/path/DB lỗi và giữ cấu hình render;
+  upload restart/offset, mất phản hồi cuối, session hết hạn, gate/file thay đổi và che session URI.
+  Nếu đã thử chunk cuối rồi session mất, giữ để đối chiếu thay vì tự upload lại. Cache audio/timing/segment hỏng
+  được tạo lại có chọn lọc; sửa cảnh giữ asset khác, vô hiệu duyệt cũ và không ghi đè script người dùng.
+
+Fixture hiệu năng: 10 cảnh + 10 asset/dự án, không render/model/provider; median ba lượt refresh trên WSL/Python 3.13.15.
+[JSON số đo](measurements/upgrade-performance.json) giữ baseline trước, sau và lượt đo bộ nhớ riêng.
+
+| Dự án | Refresh trước | Refresh sau | JSON đầy đủ sau | JSON tổng quan sau |
+|---:|---:|---:|---:|---:|
+| 10 | 10,14 ms | 2,29 ms | 164.243 B | 10.283 B |
+| 100 | 30,45 ms | 20,71 ms | 1.637.904 B | 98.304 B |
+| 1.000 | 1.449,81 ms | 264,67 ms | 16.376.305 B | 980.305 B |
+
+Ở lượt riêng có tracemalloc, peak Python với 1.000 dự án khoảng 156,6 MB; peak RSS tích lũy của process khoảng
+362,5 MB. Tracemalloc làm tăng thời gian nên không dùng lượt đó so tốc độ baseline. Chưa đo p95 giao diện
+production hoặc workload media 12 giờ. Job CI Windows được cấu hình nhưng chưa chạy trên Windows trong lượt này.
+Upload YouTube thật, chất lượng model/GPU và adapter review đa phương thức thật chưa được xác minh.
+
 ## Website → Video và hai video Đồng Hành 4K (2026-10-11)
 
 Luồng mới của [ADR-0015](adr/0015-website-to-local-video.md) đã chạy qua form thật,

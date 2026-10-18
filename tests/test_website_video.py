@@ -11,6 +11,12 @@ from studio.website_capture import ReadOnlyNetwork
 from studio.website_render import caption_chunks, clock, fit_slots
 
 
+@pytest.fixture(autouse=True)
+def configured_website_tools(monkeypatch):
+    # Pipeline unit fixtures stub the browser, TTS and FFmpeg; readiness has its own integration tests.
+    monkeypatch.setattr('studio.doctor.check_environment', lambda *args, **kwargs: {'ok':True, 'checks':[]})
+
+
 @pytest.mark.parametrize('url', ['file:///C:/secret', 'http://user:pass@example.org', 'https://', 'javascript:alert(1)', 'http://example.org:99999'])
 def test_reject_unsafe_website_url(url):
     with pytest.raises(ValueError): WebsiteRequest(url=url)
@@ -136,7 +142,7 @@ def test_job_pipeline_checkpoints_both_exports_and_reuses_sources(tmp_path, monk
     from studio.llm import FakeClient
     monkeypatch.setattr('studio.website.C_MOUNT', tmp_path)
     capture = Mock(return_value=evidence()); monkeypatch.setattr('studio.website_capture.capture_site', capture)
-    def render(request, plan, pages, root, kind, progress, checkpoint):
+    def render(request, plan, pages, root, kind, progress, checkpoint, accounting=None, video_id=''):
         checkpoint(); progress('verifying', .95, 'Checking')
         (root / (kind + '.mp4')).write_bytes(b'checked video')
         return {kind: kind + '.mp4'}
@@ -305,6 +311,28 @@ def test_speech_stages_audio_and_preserves_cache_on_failure(tmp_path, monkeypatc
     assert not list(tmp_path.glob('*.part.mp3')) and first[0].read_bytes() == b'voice'
 
 
+def test_corrupted_speech_or_timing_regenerates_only_invalid_checkpoint(tmp_path, monkeypatch):
+    import json
+
+    from studio.website_render import speech
+    calls = []
+    async def voice(text, selected, path):
+        calls.append(text); path.write_bytes(b'healthy audio')
+        return [{'text':'Xin chào', 'start':0., 'duration':1.}]
+    monkeypatch.setattr('studio.website_render.voice_audio', voice)
+    monkeypatch.setattr('studio.website_render.probe', lambda _: {'format':{'duration':'4'}})
+    path, _, _ = speech('Xin chào','voice',tmp_path)
+    path.write_bytes(b'damaged audio')
+    speech('Xin chào','voice',tmp_path)
+    assert len(calls) == 2 and path.read_bytes() == b'healthy audio'
+    timing = path.with_suffix('.json'); timing.write_text('{broken')
+    speech('Xin chào','voice',tmp_path)
+    assert len(calls) == 3
+    metadata = json.loads(timing.read_text()); metadata['duration'] = float('nan')
+    timing.write_text(json.dumps(metadata)); speech('Xin chào','voice',tmp_path)
+    assert len(calls) == 4
+
+
 def test_media_subprocess_reports_failures_and_timeout(monkeypatch):
     import subprocess
 
@@ -358,6 +386,12 @@ def test_renderer_caches_segments_and_verifies_before_publishing(tmp_path, monke
     count=sum('.part.mp4' in a[-1] and 'segment-' in a[-1] for a in calls)
     render_video(request,WebsitePlan.model_validate(payload()),pages,tmp_path,'intro',lambda *a:None,lambda:None)
     assert sum('.part.mp4' in a[-1] and 'segment-' in a[-1] for a in calls) == count == 4
+    segment = source / 'intro' / 'segment-0.mp4'; segment.write_bytes(b'damaged segment')
+    render_video(request,WebsitePlan.model_validate(payload()),pages,tmp_path,'intro',lambda *a:None,lambda:None)
+    assert sum('.part.mp4' in a[-1] and 'segment-' in a[-1] for a in calls) == count + 1
+    (source / 'intro' / 'segment-0.json').write_text('{broken')
+    render_video(request,WebsitePlan.model_validate(payload()),pages,tmp_path,'intro',lambda *a:None,lambda:None)
+    assert sum('.part.mp4' in a[-1] and 'segment-' in a[-1] for a in calls) == count + 2
     monkeypatch.setattr('studio.website_render.verify_video',Mock(side_effect=ValueError('QC failed')))
     with pytest.raises(ValueError,match='QC failed'):
         render_video(request,WebsitePlan.model_validate(payload()),pages,tmp_path,'intro',lambda *a:None,lambda:None)

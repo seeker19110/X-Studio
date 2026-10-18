@@ -212,11 +212,11 @@ SILENCE_RATIO = 0.9                                        # giọng đọc gầ
 SHORT_READ_RATIO = 0.4                                     # đọc ngắn hơn 40% so với số từ = TTS nuốt mất phần cuối
 
 
-def measure_image(path: Path) -> dict[str, float]:
+def measure_image(path: Path, start_s: float = 0) -> dict[str, float]:
     """Độ sáng và tương phản của một ảnh (`signalstats` in mọi khoá metadata ra stderr)."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg or not Path(path).is_file(): return {}
-    _, _, err = _run([ffmpeg, "-hide_banner", "-nostats", "-i", str(path), "-vf", "signalstats,metadata=print",
+    _, _, err = _run([ffmpeg, "-hide_banner", "-nostats", "-ss",str(start_s), "-i", str(path), "-vf", "signalstats,metadata=print",
                       "-frames:v", "1", "-f", "null", "-"])
     out: dict[str, float] = {}
     for key in ("YAVG", "YLOW", "YHIGH"):
@@ -226,23 +226,25 @@ def measure_image(path: Path) -> dict[str, float]:
     return out
 
 
-def measure_silence(path: Path) -> float:
+def measure_silence(path: Path, start_s: float = 0, duration_s: float | None = None) -> float:
     """Tổng số giây im lặng trong một file audio."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg or not Path(path).is_file(): return 0.0
-    _, _, err = _run([ffmpeg, "-hide_banner", "-nostats", "-i", str(path), "-af", "silencedetect=n=-50dB:d=0.3",
+    span=['-t',str(duration_s)] if duration_s is not None else []
+    _, _, err = _run([ffmpeg, "-hide_banner", "-nostats", '-ss',str(start_s), "-i", str(path), *span,"-af", "silencedetect=n=-50dB:d=0.3",
                       "-f", "null", "-"])
     return round(sum(float(x) for x in re.findall(r"silence_duration:\s*(\d+(?:\.\d+)?)", err)), 2)
 
 
-def qc_scene(image: Path | None, audio: Path | None, narration: str = "", declared_s: float = 0.0) -> dict[str, Any]:
+def qc_scene(image: Path | None, audio: Path | None, narration: str = "", declared_s: float = 0.0,
+             clip_start_s: float | None = None) -> dict[str, Any]:
     """Đo một cảnh. Editor được yêu cầu bắt "ảnh tối", "narration vấp" nhưng chỉ nhận JSON đường dẫn — đây là chỗ
     biến những thứ đó thành số để nó quyết định trên dữ liệu chứ không phải phỏng đoán."""
     m: dict[str, Any] = {}; f: list[Finding] = []
     if image is None or not Path(image).is_file():
         f.append(Finding(level="block", text="thiếu ảnh cảnh", location="scene_image"))
     else:
-        m["image"] = measure_image(Path(image))
+        m["image"] = measure_image(Path(image),clip_start_s+declared_s/2) if clip_start_s is not None else measure_image(Path(image))
         yavg = m["image"].get("yavg")
         if yavg is not None:
             if yavg < IMAGE_DARK: f.append(Finding(level="warn", text=f"ảnh gần như đen (độ sáng {yavg}/255): sinh lại với prompt sáng hơn", location="scene_image"))
@@ -254,6 +256,10 @@ def qc_scene(image: Path | None, audio: Path | None, narration: str = "", declar
     else:
         dur = probe_duration(Path(audio)) or 0.0
         silence = measure_silence(Path(audio))
+        if clip_start_s is not None:
+            dur=min(declared_s,max(0,dur-clip_start_s))
+            silence=measure_silence(Path(audio),clip_start_s,declared_s)
+            m['clip_start_s']=clip_start_s
         m["audio"] = {"duration_s": dur, "silence_s": silence}
         if dur <= 0:
             f.append(Finding(level="block", text="file giọng đọc rỗng", location="scene_audio"))
@@ -274,5 +280,5 @@ def qc_scenes(manifest: Any) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for s in manifest.scenes:
         img = s.asset_refs.get("scene_video") or s.asset_refs.get("scene_image"); aud = s.asset_refs.get("scene_audio")
-        out[s.scene_id] = qc_scene(Path(img) if img else None, Path(aud) if aud else None, s.narration, s.duration_s)
+        out[s.scene_id] = qc_scene(Path(img) if img else None, Path(aud) if aud else None, s.narration, s.duration_s,s.clip_start_s)
     return out

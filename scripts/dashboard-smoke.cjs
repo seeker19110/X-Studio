@@ -90,7 +90,7 @@ const path = require("node:path");
     await page.locator("#create-form button[type=submit]").click();
     await page.locator("#create-dialog").waitFor({ state: "hidden" });
     const convertedCommand = await page.evaluate(
-      () => JSON.parse(localStorage.getItem("xstudio.ideas.v1"))[0].command_id,
+      async () => (await fetch("/api/ideas").then(r => r.json())).ideas[0].command_id,
     );
     const channel =
       "P" + convertedCommand.replace(/[^a-zA-Z0-9]/g, "").slice(0, 24);
@@ -163,7 +163,7 @@ const path = require("node:path");
     await page.locator("#create-form button[type=submit]").click();
     await page.locator("#create-dialog").waitFor({ state: "hidden" });
     const rejectedCommand = await page.evaluate(
-      () => JSON.parse(localStorage.getItem("xstudio.ideas.v1"))[0].command_id,
+      async () => (await fetch("/api/ideas").then(r => r.json())).ideas[0].command_id,
     );
     await waitState((s) =>
       s.commands.some((c) => c.id === rejectedCommand && c.planning_error),

@@ -22,7 +22,8 @@ def publish_fixture(tmp_path, monkeypatch):
                                                 asset_refs={'scene_video':str(file)})])
     o = Mock(); o.renderer.media.cfg = MediaConfig(production={'automation':'publish'})
     o.gate.pending={'PUB-V':SimpleNamespace(kind='publish')}; o.gate.approvers=[]
-    o.desk.ready_for_publish.return_value=True; o.desk.briefs={'V':SimpleNamespace(target_minutes=1)}
+    o.desk.ready_for_publish.return_value=True; o.desk.briefs={'V':SimpleNamespace(target_minutes=1,channel_id='CH1')}
+    o.latest.return_value=None
     o.bus.replay.return_value=assets; o.bus.latest.return_value=SimpleNamespace(payload={'description':'Artist CC BY'})
     o.manifest.return_value=m; o._chosen_thumbnail.return_value=str(file); o._captions_of.return_value=None
     o.preflights={'V':SimpleNamespace(findings=[])}; o.qcs={}

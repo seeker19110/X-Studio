@@ -1,0 +1,57 @@
+{
+  "checked_at": "2026-10-17",
+  "model": "VieNeu-TTS-v3-Turbo",
+  "voice": "Ngọc Huyền",
+  "sdk": "vieneu==3.8.3",
+  "publication_decision": "COMMERCIAL_VOICE_USE_ALLOWED",
+  "operator_scope": "Create local main and Shorts previews only; no upload, scheduling or publication approval.",
+  "model_revision": "61b85e3d937fbbacb387714180e8182823512523",
+  "license": "Apache-2.0",
+  "source": "https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo/blob/61b85e3d937fbbacb387714180e8182823512523/README.md",
+  "evidence": {
+    "model": "Publisher grants Apache-2.0 for the released weights, ONNX exports, configs and bundled preset voice assets.",
+    "output": "Publisher explicitly permits audio from bundled preset voices in commercial and monetized voiceovers, videos, products and services without an additional license or fee.",
+    "speaker_consent": "Publisher explicitly confirms the speakers or rightsholders of the bundled presets granted rights and consent for AI training and synthetic speech, including commercial generation.",
+    "ancestry": "Publisher states v3 Turbo was designed and trained from scratch, not fine-tuned or distilled from another TTS model. It does not use the previous Piper/Lessac voice.",
+    "disclosure": "The internal training corpus is not publicly audited here. Clearance relies on the explicit published model, preset, output and consent grants rather than guessing rights from a dataset tag."
+  },
+  "components": [
+    {
+      "name": "VieNeu-TTS SDK and bundled Ngọc Huyền preset",
+      "license": "Apache-2.0",
+      "source": "https://github.com/pnnbao97/VieNeu-TTS"
+    },
+    {
+      "name": "MOSS-Audio-Tokenizer-Nano-ONNX",
+      "license": "Apache-2.0",
+      "source": "https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano-ONNX"
+    },
+    {
+      "name": "sea-g2p phonemizer",
+      "source": "https://github.com/pnnbao97/sea-g2p",
+      "license": "Apache-2.0",
+      "version": "0.10.0",
+      "license_file": "docs/rights/licenses/sea-g2p-apache-2.0.txt",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    }
+  ],
+  "constraints": [
+    "Use the bundled preset only; no external reference audio or cloning in this run.",
+    "Keep license/attribution notices when redistributing model or preset assets.",
+    "Commercial voice permission is separate from the owner approving a whole video for publication."
+  ],
+  "supersedes": "Previous Piper/VAIS1000/Lessac voice and CC BY statements are historical, not the voice used by new active audio. Evaluate current manifest references and the resolved command model; old assets are retained for audit.",
+  "metadata_contract": "Describe current synthesized speech as VieNeu-TTS v3 Turbo, Ngọc Huyền preset, Pham Nguyen Ngoc Bao, Apache-2.0; commercial output is explicitly permitted by publisher. Remove old Piper, VAIS1000, Lessac or CC BY voice credits from the NEW export metadata. Do not claim the video was published or approved. Preserve current dataset/source rights history without attributing it to this replacement voice.",
+  "attribution": "Giọng tổng hợp: VieNeu-TTS v3 Turbo, preset Ngọc Huyền — Phạm Nguyễn Ngọc Bảo / pnnbao97, Apache-2.0. Nguồn: https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo . Đã tổng hợp lời mới, rút đuôi và chuẩn hóa âm lượng; Shorts trích lại và dàn khung 9:16.",
+  "runtime_artifacts_sha256": "f4a0f135046d5a4f6ee9fcdfd15a9dd38fba64387a710e919ade40d999fc6011",
+  "model_card_sha256": "5d5bb2de661fabc0e073b3b844dc131696fac3dddd5ea882d10fd9a849108eb7",
+  "preset_assets": {
+    "path": "/home/liend/.local/opt/xstudio-vieneu-runtime/lib/python3.12/site-packages/vieneu/assets/voices_v3_turbo.json",
+    "bytes": 180332,
+    "sha256": "e1f13cd2c2e0d29fdab5e15bfd7a30f3d7b768e6132bb43dd2b853f8efefdce9"
+  },
+  "license_notice": "docs/rights/licenses/vieneu-apache-2.0.txt",
+  "selection_basis": "Bundled northern Vietnamese female natural preset; unprompted recognition checks on the actual new narration.",
+  "runtime_manifest_path": "output/runtime/vieneu/runtime-artifacts.json",
+  "recorded_by": "Codex, implementing the operator-selected licensed replacement voice; not a publication approval"
+}

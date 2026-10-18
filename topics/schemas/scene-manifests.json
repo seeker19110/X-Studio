@@ -80,6 +80,10 @@
                 },
                 "default": {},
                 "type": "object"
+              },
+              "clip_start_s": {
+                "anyOf": [{"type": "number", "minimum": 0}, {"type": "null"}],
+                "default": null
               }
             },
             "required": [

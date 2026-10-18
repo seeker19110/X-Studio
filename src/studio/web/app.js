@@ -11,6 +11,8 @@ const esc = (text) =>
 const html = (id, content) => {
   if ($(id) && $(id).innerHTML !== content) $(id).innerHTML = content;
 };
+const sceneCount = p => p.scene_count ?? p.scenes.length;
+let detailProject = null;
 const latest = (p, kind) => [...p.media].reverse().find((m) => m.kind === kind);
 const safeURL = (value) => {
   try {
@@ -95,6 +97,7 @@ function cinemaBrief(p) {
   ].filter(([, value]) => value).map(([label, value]) => `<h4>${label}</h4><p class="script-text">${esc(value)}</p>`).join("")}${c.production_type && c.production_type !== "explainer" && c.seed != null ? `<p class="muted">Seed tạo hình: ${esc(c.seed)}</p>` : ""}</div>`;
 }
 const views = {
+  library: ["Thư viện media", "Tư liệu có nguồn. Dùng lại đúng cách.", "Quản lý ảnh, footage và nhạc cùng quyền sử dụng."],
   website: ["Website → Video", "Website của bạn. Một video dễ hiểu.", "Nhập link, chọn thời lượng và lưu video giới thiệu hoặc hướng dẫn ngay trên ổ C."],
   dashboard: [
     "Tổng quan",
@@ -332,8 +335,8 @@ function stageOf(p) {
   if (p.state === "analyzed" || p.performance) return 7;
   if (["approved", "scheduled", "published"].includes(p.state)) return 6;
   if (p.state === "in_review" || latest(p, "final_video")) return 5;
-  if (latest(p, "draft_video") || p.state === "changes_requested") return 4;
-  if (p.state === "in_production" || p.scenes.length) return 3;
+  if (p.has_draft || latest(p, "draft_video") || p.state === "changes_requested") return 4;
+  if (p.state === "in_production" || sceneCount(p)) return 3;
   if (p.state === "scripted" || p.script) return 2;
   return 1;
 }
@@ -355,7 +358,7 @@ async function api(path, body) {
           },
           body: JSON.stringify(body),
         }
-      : {},
+      : path === "/api/state" ? {headers:{"X-Studio-Overview":"1"}} : {},
   );
   const data = await response.json();
   if (response.status === 401) {
@@ -397,7 +400,7 @@ function card(p, compact = false) {
     phase = stageOf(p),
     bad = ["blocked", "escalated"].includes(p.state),
     published = ["published", "analyzed"].includes(p.state);
-  return `<button class="project-card ${compact ? "compact" : ""}" data-project="${esc(p.id)}"><div class="poster poster-${p.format}">${thumb && thumb.provider !== "fake" ? `<img src="${esc(thumb.url)}" alt="Thumbnail ${esc(p.title)}" loading="lazy">` : `<div class="poster-art" aria-hidden="true">${icon(p.format === "short" ? "publish" : "edit")}</div><span class="poster-title">${esc(p.title)}</span>`}<span class="poster-label">${p.format === "short" ? "SHORT VIDEO" : "LONG VIDEO"}</span><span class="duration">${esc(p.minutes)} phút · ${p.format === "short" ? "9:16" : "16:9"}</span></div><div class="card-body"><div class="card-top"><span class="badge ${bad ? "red" : published ? "success" : p.state === "in_review" ? "amber" : ""}">${esc(states[p.state] || p.state)}</span><span class="muted">${esc(date(p.updated_at))}</span></div><h3>${esc(p.title)}</h3>${productionBadges(p)}<div class="card-meta"><span>${p.scenes.length} cảnh</span><span>·</span><span>${Object.values(p.reviews).filter((r) => r.verdict === "pass").length}/3 review đạt</span></div><div class="steps" aria-label="Bước ${phase + 1}/8: ${esc(stages[phase].title)}">${stages.map((_, i) => `<span class="${i < phase ? "done" : i === phase ? "current" : ""}"></span>`).join("")}</div><div class="card-footer"><span>${bad ? "Mở để xem vấn đề" : stages[phase].label}</span><span>Mở dự án ↗</span></div></div></button>`;
+  return `<button class="project-card ${compact ? "compact" : ""}" data-project="${esc(p.id)}"><div class="poster poster-${p.format}">${thumb && thumb.provider !== "fake" ? `<img src="${esc(thumb.url)}" alt="Thumbnail ${esc(p.title)}" loading="lazy">` : `<div class="poster-art" aria-hidden="true">${icon(p.format === "short" ? "publish" : "edit")}</div><span class="poster-title">${esc(p.title)}</span>`}<span class="poster-label">${p.format === "short" ? "SHORT VIDEO" : "LONG VIDEO"}</span><span class="duration">${esc(p.minutes)} phút · ${p.format === "short" ? "9:16" : "16:9"}</span></div><div class="card-body"><div class="card-top"><span class="badge ${bad ? "red" : published ? "success" : p.state === "in_review" ? "amber" : ""}">${esc(states[p.state] || p.state)}</span><span class="muted">${esc(date(p.updated_at))}</span></div><h3>${esc(p.title)}</h3>${productionBadges(p)}<div class="card-meta"><span>${sceneCount(p)} cảnh</span><span>·</span><span>${Object.values(p.reviews).filter((r) => r.verdict === "pass").length}/3 review đạt</span></div><div class="steps" aria-label="Bước ${phase + 1}/8: ${esc(stages[phase].title)}">${stages.map((_, i) => `<span class="${i < phase ? "done" : i === phase ? "current" : ""}"></span>`).join("")}</div><div class="card-footer"><span>${bad ? "Mở để xem vấn đề" : stages[phase].label}</span><span>Mở dự án ↗</span></div></div></button>`;
 }
 function bindProjects() {
   document
@@ -466,7 +469,7 @@ function renderProjects() {
     groups
       .map(([name, symbol, test]) => {
         const items = projects.filter(test);
-        return `<section class="stage-column"><h3>${icon(symbol)} ${name}<span>${items.length}</span></h3>${items.map((p) => `<button class="board-card" data-project="${esc(p.id)}"><span class="badge">${p.format === "short" ? "9:16 · Video ngắn" : "16:9 · Video dài"}</span>${productionBadges(p)}<h4>${esc(p.title)}</h4><p>${esc(states[p.state])}</p><small>${p.scenes.length} cảnh · ${esc(p.minutes)} phút</small>${icon("arrow")}</button>`).join("") || '<p class="column-empty">Chưa có dự án</p>'}</section>`;
+        return `<section class="stage-column"><h3>${icon(symbol)} ${name}<span>${items.length}</span></h3>${items.map((p) => `<button class="board-card" data-project="${esc(p.id)}"><span class="badge">${p.format === "short" ? "9:16 · Video ngắn" : "16:9 · Video dài"}</span>${productionBadges(p)}<h4>${esc(p.title)}</h4><p>${esc(states[p.state])}</p><small>${sceneCount(p)} cảnh · ${esc(p.minutes)} phút</small>${icon("arrow")}</button>`).join("") || '<p class="column-empty">Chưa có dự án</p>'}</section>`;
       })
       .join(""),
   );
@@ -749,7 +752,7 @@ function detailContent(p) {
   if (detailTab === "script")
     return `${p.script ? `<div class="content-card"><div class="card-top"><span class="badge">KỊCH BẢN · V${esc(p.script.version)}</span><span class="muted">${number(p.script.word_count)} từ · ${esc(p.script.estimated_minutes)} phút ước lượng</span></div><h3>Hook mở đầu</h3><p class="script-text hook-text">${esc(p.script.hook)}</p>${(p.script.sections || []).map((s, i) => `<section class="script-section"><span class="eyebrow">PHẦN ${i + 1}</span><h3>${esc(s.heading)}</h3><p class="script-text">${esc(s.narration)}</p>${s.visual_notes ? `<div class="notice"><small>GỢI Ý HÌNH ẢNH</small><p>${esc(s.visual_notes)}</p></div>` : ""}</section>`).join("")}<h3>Lời kêu gọi hành động</h3><p class="script-text">${esc(p.script.cta || "Chưa có CTA")}</p></div>` : emptyPanel("Kịch bản đang được chuẩn bị", "Kịch bản sẽ hiển thị khi biên kịch hoàn thành bước này.")}<div class="content-card"><h3>Nguồn nghiên cứu & kiểm chứng</h3>${(p.research?.sources || []).length ? p.research.sources.map((s) => `<div class="timeline-row">${external(s.url, s.title || s.url)}<small>${esc(s.type || "Nguồn tham khảo")} ${s.accessed ? "· " + esc(s.accessed) : ""}</small></div>`).join("") : "<p>Chưa có danh sách nguồn trong hồ sơ nghiên cứu.</p>"}${(p.script?.claims || []).map((c) => `<div class="timeline-row"><p>${esc(c.text)}</p><small>${c.source ? external(c.source, c.source) : "Chưa có nguồn"} · ${c.needs_verification ? "Cần kiểm chứng" : "Đã khai báo"}</small></div>`).join("")}</div>`;
   if (detailTab === "scenes")
-    return p.scenes.length
+    return sceneCount(p)
       ? `<div class="scene-list">${p.scenes
           .map((s, i) => {
             const visual = [...p.media]
@@ -760,7 +763,7 @@ function detailContent(p) {
               .reverse()
               .find((a) => a.scene_id === s.id && a.kind === "scene_audio");
             const provenance = visual?.provenance || {};
-            return `<article class="scene">${visual && visual.provider !== "fake" ? (visual.kind === "scene_video" ? `<video src="${esc(visual.url)}" controls preload="metadata"></video>` : `<img src="${esc(visual.url)}" alt="Cảnh ${i + 1}" loading="lazy">`) : `<div class="scene-placeholder">${icon("media")}<span>${state.demo || visual?.provider === "fake" ? "Tư liệu mô phỏng" : "Đang chuẩn bị hình ảnh"}</span></div>`}<div class="scene-body"><div class="card-top"><span class="badge">CẢNH ${String(i + 1).padStart(2, "0")}</span><small>${Number(s.duration_s).toFixed(1)} giây ${s.locked ? "· Đã khóa" : ""}</small></div><p class="script-text">${esc(s.narration)}</p>${s.visual_prompt ? `<div class="storyboard-prompt"><small>STORYBOARD · CHỈ DẪN HÌNH ẢNH</small><p>${esc(s.visual_prompt)}</p></div>` : ""}${clip && clip.provider !== "fake" ? `<a class="scene-clip-link" href="${esc(clip.url)}" download="${esc(s.id)}.mp4">↓ Tải clip cảnh ${i + 1}</a>` : ""}${audio && audio.provider !== "fake" ? `<audio controls preload="none" src="${esc(audio.url)}"></audio>` : ""}${visual ? `<div class="asset-provenance"><small>NGUỒN & QUYỀN SỬ DỤNG</small><p>${esc(provenance.generated_by)} · ${esc(provenance.license)}</p>${provenance.source_url ? external(provenance.source_url, "Xem nguồn") : ""}<p>${esc(provenance.attribution)}</p></div>` : ""}</div></article>`;
+            return `<article class="scene">${visual && visual.provider !== "fake" ? (visual.kind === "scene_video" ? `<video src="${esc(visual.url)}" controls preload="metadata"></video>` : `<img src="${esc(visual.url)}" alt="Cảnh ${i + 1}" loading="lazy">`) : `<div class="scene-placeholder">${icon("media")}<span>${state.demo || visual?.provider === "fake" ? "Tư liệu mô phỏng" : "Đang chuẩn bị hình ảnh"}</span></div>`}<div class="scene-body"><div class="card-top"><span class="badge">CẢNH ${String(i + 1).padStart(2, "0")}</span><small>${Number(s.duration_s).toFixed(1)} giây ${s.locked ? "· Đã khóa" : ""}</small></div><p class="script-text">${esc(s.narration)}</p>${s.visual_prompt ? `<div class="storyboard-prompt"><small>STORYBOARD · CHỈ DẪN HÌNH ẢNH</small><p>${esc(s.visual_prompt)}</p></div>` : ""}${clip && clip.provider !== "fake" ? `<a class="scene-clip-link" href="${esc(clip.url)}" download="${esc(s.id)}.mp4">↓ Tải clip cảnh ${i + 1}</a>` : ""}${audio && audio.provider !== "fake" ? `<audio controls preload="none" src="${esc(audio.url)}"></audio>` : ""}${p.state === "in_review" ? `<button type="button" class="button quiet small" data-edit-scene="${esc(s.id)}" data-scene-video="${esc(p.id)}">Sửa cảnh</button>` : ""}${visual ? `<div class="asset-provenance"><small>NGUỒN & QUYỀN SỬ DỤNG</small><p>${esc(provenance.generated_by)} · ${esc(provenance.license)}</p>${provenance.source_url ? external(provenance.source_url, "Xem nguồn") : ""}<p>${esc(provenance.attribution)}</p></div>` : ""}</div></article>`;
           })
           .join("")}</div>`
       : emptyPanel(
@@ -768,7 +771,7 @@ function detailContent(p) {
           "Cảnh sẽ được tạo từ kịch bản đã hoàn thành.",
         );
   if (detailTab === "review")
-    return `<div class="review-summary">${["fact", "rights", "quality"]
+    return `${inspectionMarkup(p)}<div class="review-summary">${["fact", "rights", "quality"]
       .map((k) => {
         const r = p.reviews[k];
         return `<article class="content-card"><span class="badge ${r?.verdict === "pass" ? "success" : r ? "red" : ""}">${r ? esc({ pass: "Đạt", fail: "Cần sửa", block: "Đang chặn" }[r.verdict] || r.verdict) : "Chưa kiểm tra"}</span><h3>${{ fact: "Nội dung & dữ kiện", rights: "Quyền sử dụng tư liệu", quality: "Chất lượng video" }[k]}</h3>${r?.findings?.length ? `<ul>${r.findings.map((f) => `<li>${esc(f.text)}${f.location ? " · " + esc(f.location) : ""}</li>`).join("")}</ul>` : "<p>" + (r?.verdict === "pass" ? "Review không ghi nhận vấn đề." : "Kết quả sẽ xuất hiện sau bước kiểm tra.") + "</p>"}</article>`;
@@ -801,16 +804,19 @@ function detailContent(p) {
         "Sau khi đăng, đồng bộ dữ liệu YouTube để xem lượt xem, CTR và retention. SOP khuyến nghị kiểm tra sau 24 giờ, 7 ngày và 28 ngày.",
       );
 }
-function detail(id, tab = "overview") {
+async function detail(id, tab = "overview") {
   current = id;
   detailTab = tab;
   const p = state?.projects.find((p) => p.id === id);
   if (!p) return;
+  try {detailProject = p.summary ? (await api("/api/projects/" + encodeURIComponent(id))).project : p;}
+  catch (error) {toast(error.message); return;}
+  if (current !== id) return;
   renderDetail(true);
   if (!$("detail-dialog").open) $("detail-dialog").showModal();
 }
 function renderDetail(force = false) {
-  const p = state?.projects.find((p) => p.id === current);
+  const p = detailProject?.id === current ? detailProject : state?.projects.find((p) => p.id === current);
   if (!p) return;
   const signature = JSON.stringify([p, detailTab]);
   if (!force && signature === detailSignature) return;
@@ -826,7 +832,7 @@ function renderDetail(force = false) {
   detailSignature = signature;
   html(
     "detail-body",
-    `<div class="detail-heading"><span class="badge">${p.format === "short" ? "VIDEO NGẮN · 9:16" : "VIDEO DÀI · 16:9"}</span>${productionBadges(p)}<h2>${esc(p.title)}</h2><p>${esc(states[p.state] || p.state)} · ${p.scenes.length} cảnh · ${esc(p.minutes)} phút mục tiêu</p></div><div class="detail-tabs" role="tablist" aria-label="Thông tin dự án">${[
+    `<div class="detail-heading"><span class="badge">${p.format === "short" ? "VIDEO NGẮN · 9:16" : "VIDEO DÀI · 16:9"}</span>${productionBadges(p)}<h2>${esc(p.title)}</h2><p>${esc(states[p.state] || p.state)} · ${sceneCount(p)} cảnh · ${esc(p.minutes)} phút mục tiêu</p>${latest(p,"final_video") ? `<button class="button quiet small" data-create-shorts="${esc(p.id)}">Tạo Shorts từ video này</button>` : ""}</div><div class="detail-tabs" role="tablist" aria-label="Thông tin dự án">${[
       ["overview", "Tổng quan"],
       ["script", "Kịch bản"],
       ["scenes", "Cảnh & tư liệu"],
@@ -867,6 +873,8 @@ function renderDetail(force = false) {
       }
     };
   });
+  document.querySelectorAll("[data-create-shorts]").forEach(button => button.onclick = () => openShorts(button.dataset.createShorts));
+  document.querySelectorAll("[data-edit-scene]").forEach(button => button.onclick = () => openSceneEditor(button.dataset.sceneVideo, button.dataset.editScene));
   if (document.querySelector("[data-open-publishing]"))
     document.querySelector("[data-open-publishing]").onclick = () => {
       $("detail-dialog").close();
@@ -874,29 +882,61 @@ function renderDetail(force = false) {
     };
 }
 const ideaKey = "xstudio.ideas.v1";
-let ideaStorageError = "";
-let ideas = [];
+let ideaStorageError = "", ideas = [], legacyIdeas = [], ideasBusy = false;
+let ideaEpoch = 0, editingIdeaDraft = null, convertedIdeaRevision = null;
+const importedDatabases = new Set(), ideaRevisions = new Map();
 try {
   const saved = JSON.parse(localStorage.getItem(ideaKey) || "[]");
   if (!Array.isArray(saved)) throw Error();
-  ideas = saved
-    .filter((i) => i && typeof i.id === "string" && typeof i.title === "string")
-    .slice(0, 200);
+  legacyIdeas = saved;
 } catch {
-  ideaStorageError =
-    "Không thể đọc kho ý tưởng của trình duyệt. Bạn vẫn có thể tạo dự án trực tiếp.";
+  ideaStorageError = "Không đọc được bản nháp cũ trong trình duyệt. Kho SQLite vẫn có thể sử dụng.";
 }
-function saveIdeas(next) {
-  try {
-    localStorage.setItem(ideaKey, JSON.stringify(next));
-    ideas = next;
-    return true;
-  } catch {
-    toast(
-      "Trình duyệt không cho phép lưu ý tưởng. Hãy tạo dự án trực tiếp hoặc bật lưu trữ.",
-    );
-    return false;
+function acceptIdeas(result) {
+  ideas = result.ideas;
+  for (const idea of ideas) ideaRevisions.set(idea.id, idea.revision);
+  for (const [id, revision] of Object.entries(result.revisions || {})) ideaRevisions.set(id, revision);
+}
+async function loadIdeas() {
+  if (ideasBusy) return;
+  const epoch = ideaEpoch;
+  let result = await api("/api/ideas");
+  const marker = "xstudio.ideas.imported." + result.database_id;
+  let marked = importedDatabases.has(result.database_id);
+  try { marked ||= localStorage.getItem(marker) === "1"; } catch { /* Server storage remains available. */ }
+  if (legacyIdeas.length && !marked) {
+    try {
+      result = await api("/api/ideas", {action:"import", ideas:legacyIdeas});
+      importedDatabases.add(result.database_id);
+      try { localStorage.setItem(marker, "1"); } catch { /* Import is idempotent after reload. */ }
+      ideaStorageError = "";
+    } catch (error) {
+      ideaStorageError = "Chưa nhập được bản nháp cũ: " + error.message + " Dữ liệu cũ vẫn còn trong trình duyệt.";
+    }
   }
+  if (epoch === ideaEpoch && !ideasBusy) {acceptIdeas(result); renderIdeas();}
+}
+async function saveIdeas(next, expected = {}) {
+  if (ideasBusy) {toast("Đang lưu ý tưởng; thử lại sau giây lát."); return false;}
+  const clean = (idea) => {const {revision, ...data} = idea; return data;};
+  const previous = new Map(ideas.map(idea => [idea.id, idea]));
+  const following = new Map(next.map(idea => [idea.id, idea]));
+  const changes = [];
+  for (const id of new Set([...previous.keys(), ...following.keys()])) {
+    const old = previous.get(id), idea = following.get(id);
+    if (JSON.stringify(old && clean(old)) === JSON.stringify(idea && clean(idea))) continue;
+    changes.push({id, revision:expected[id] ?? old?.revision ?? ideaRevisions.get(id) ?? 0, idea:idea ? clean(idea) : null});
+  }
+  if (!changes.length) return true;
+  ideasBusy = true; ideaEpoch++;
+  try {
+    acceptIdeas(await api("/api/ideas", {action:"apply", changes}));
+    return true;
+  } catch (error) {
+    toast(error.message);
+    if ($("idea-dialog").open) $("idea-error").textContent = error.message;
+    return false;
+  } finally {ideasBusy = false;}
 }
 function renderIdeas() {
   $("idea-count").textContent = ideas.length;
@@ -932,9 +972,9 @@ function renderIdeas() {
     .forEach((b) => (b.onclick = () => openIdea(b.dataset.editIdea)));
   document.querySelectorAll("[data-delete-idea]").forEach(
     (b) =>
-      (b.onclick = () => {
+      (b.onclick = async () => {
         const old = ideas.find((i) => i.id === b.dataset.deleteIdea);
-        if (saveIdeas(ideas.filter((i) => i.id !== b.dataset.deleteIdea))) {
+        if (await saveIdeas(ideas.filter((i) => i.id !== b.dataset.deleteIdea))) {
           renderIdeas();
           if (state) renderDashboard();
           toast("Đã xóa ý tưởng.");
@@ -943,8 +983,8 @@ function renderIdeas() {
             const undo = document.createElement("button");
             undo.textContent = "Hoàn tác";
             undo.className = "toast-undo";
-            undo.onclick = () => {
-              if (saveIdeas([old, ...ideas])) {
+            undo.onclick = async () => {
+              if (await saveIdeas([old, ...ideas])) {
                 renderIdeas();
                 if (state) renderDashboard();
                 toast("Đã khôi phục ý tưởng.");
@@ -969,6 +1009,7 @@ function openIdea(id = null) {
   const form = $("idea-form");
   form.reset();
   const idea = ideas.find((i) => i.id === id);
+  editingIdeaDraft = idea ? {...idea} : null;
   if (idea)
     for (const key of ["title", "audience", "hook", "format", "notes"])
       if (form.elements[key]) form.elements[key].value = idea[key] || "";
@@ -977,6 +1018,7 @@ function openIdea(id = null) {
 }
 function openCreate(idea = null) {
   convertedIdea = idea?.id || null;
+  convertedIdeaRevision = idea?.revision ?? null;
   $("create-form").reset();
   $("create-error").textContent = "";
   setPreset(idea?.format || "long");
@@ -1024,7 +1066,8 @@ function setPreset(format) {
     b.setAttribute("aria-pressed", String(b.dataset.preset === format));
   });
 }
-function syncIdeas() {
+async function syncIdeas() {
+  if (ideasBusy) return;
   let changed = false;
   const next = ideas.map((i) => {
     if (!i.command_id || i.project_id) return i;
@@ -1048,7 +1091,7 @@ function syncIdeas() {
     }
     return i;
   });
-  if (changed && saveIdeas(next)) renderIdeas();
+  if (changed && await saveIdeas(next)) renderIdeas();
 }
 function bindDynamic() {
   document
@@ -1151,7 +1194,7 @@ function render() {
     }
   if (pendingSettings) {
     const applied = Object.entries(pendingSettings.values).every(
-      ([key, value]) => String(state[key]) === String(value),
+      ([key, value]) => key === "pricing" ? JSON.stringify(state[key]) === JSON.stringify(value) : String(state[key] ?? "") === String(value ?? ""),
     );
     const failed = state.commands.some(
       (c) => c.id === pendingSettings.id && c.status === "error",
@@ -1161,10 +1204,13 @@ function render() {
   }
   if (!settingsDirty && !$("settings-form").contains(document.activeElement)) {
     const f = $("settings-form").elements;
-    for (const key of ["automation", "threads", "style", "burn_captions"])
+    for (const key of ["automation", "threads", "style", "burn_captions", "media_budget_usd"])
       f[key].value = String(state[key] ?? "");
+    for (const [field,key] of Object.entries({price_tts:"tts_per_1000_chars",price_image:"image_per_request",price_video:"video_per_second"}))
+      f[field].value = String(state.pricing?.[key] ?? "");
   }
   syncIdeas();
+  $("backup-result").textContent = state.last_backup ? "Bản sao lưu gần nhất: " + state.last_backup : "";
   renderProjects();
   renderDashboard();
   renderGates();
@@ -1177,6 +1223,10 @@ async function refresh() {
   refreshing = true;
   try {
     state = await api("/api/state");
+    await loadIdeas();
+    if ($("detail-dialog").open && state.projects.find(p => p.id === current)?.summary)
+      detailProject = (await api("/api/projects/" + encodeURIComponent(current))).project;
+    if (view === "library") await loadLibrary();
     $("connection").textContent = "● Đã kết nối";
     render();
   } catch (e) {
@@ -1292,7 +1342,7 @@ $("login-form").onsubmit = async (e) => {
     button.disabled = false;
   }
 };
-$("idea-form").onsubmit = (e) => {
+$("idea-form").onsubmit = async (e) => {
   e.preventDefault();
   const values = Object.fromEntries(new FormData(e.target));
   values.title = values.title.trim();
@@ -1305,24 +1355,23 @@ $("idea-form").onsubmit = (e) => {
       "Kho đã có 200 ý tưởng. Xóa bớt ý tưởng trước khi thêm.";
     return;
   }
-  const old = ideas.find((i) => i.id === editingIdea);
+  const old = editingIdeaDraft;
   const idea = {
     ...old,
     ...values,
     id: editingIdea || crypto.randomUUID(),
     created_at: old?.created_at || new Date().toISOString(),
   };
-  if (
-    saveIdeas(
-      old
-        ? ideas.map((i) => (i.id === editingIdea ? idea : i))
-        : [idea, ...ideas],
-    )
-  ) {
+  const button = e.target.querySelector("[type=submit]");
+  button.disabled = true;
+  const saved = await saveIdeas([idea, ...ideas.filter(i => i.id !== idea.id)],
+    old ? {[old.id]:old.revision} : {});
+  button.disabled = false;
+  if (saved) {
     $("idea-dialog").close();
     renderIdeas();
     if (state) renderDashboard();
-    toast("Đã lưu ý tưởng trên trình duyệt này.");
+    toast("Đã lưu ý tưởng trong kho của xưởng.");
   }
 };
 $("create-form").onsubmit = async (e) => {
@@ -1383,15 +1432,11 @@ $("create-form").onsubmit = async (e) => {
   const button = e.target.querySelector("[type=submit]");
   button.disabled = true;
   try {
-    const result = await command("create", values);
-    if (convertedIdea)
-      saveIdeas(
-        ideas.map((i) =>
-          i.id === convertedIdea
-            ? { ...i, command_id: result.id, error: null }
-            : i,
-        ),
-      );
+    if (convertedIdea) {
+      const result = await api("/api/ideas", {action:"convert", id:convertedIdea,
+        revision:convertedIdeaRevision, data:values});
+      ideaEpoch++; acceptIdeas(result);
+    } else await command("create", values);
     $("create-dialog").close();
     e.target.reset();
     renderIdeas();
@@ -1411,6 +1456,12 @@ $("settings-form").onsubmit = async (e) => {
   const values = Object.fromEntries(new FormData(e.target));
   values.threads = Number(values.threads);
   values.burn_captions = values.burn_captions === "true";
+  values.media_budget_usd = values.media_budget_usd === "" ? null : Number(values.media_budget_usd);
+  values.pricing = {};
+  for (const [field,key] of Object.entries({price_tts:"tts_per_1000_chars",price_image:"image_per_request",price_video:"video_per_second"})) {
+    if (values[field] !== "") values.pricing[key] = Number(values[field]);
+    delete values[field];
+  }
   const b = e.target.querySelector("[type=submit]");
   b.disabled = true;
   const pending = { values, id: null };
@@ -1449,20 +1500,145 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden && !$("login-dialog").open) refresh();
 });
 window.addEventListener("storage", (e) => {
-  if (e.key === ideaKey) {
-    try {
-      const saved = JSON.parse(e.newValue || "[]");
-      if (Array.isArray(saved)) {
-        ideas = saved
-          .filter(
-            (i) => i && typeof i.id === "string" && typeof i.title === "string",
-          )
-          .slice(0, 200);
-        renderIdeas();
-        if (state) renderDashboard();
-      }
-    } catch {
-      toast("Không thể đọc kho ý tưởng được cập nhật.");
-    }
-  }
+  if (e.key === ideaKey) location.reload();
 });
+
+$("doctor-run").onclick = async () => {
+  const button = $("doctor-run"); button.disabled = true;
+  $("doctor-result").textContent = "Đang kiểm tra công cụ cục bộ…";
+  try {
+    const result = await api("/api/doctor?flow=" + $("doctor-flow").value);
+    html("doctor-result", `<p>${result.ok ? "Môi trường đạt các kiểm tra cục bộ." : "Cần xử lý trước khi chạy."} Chưa kiểm tra đăng nhập, quota hoặc chất lượng provider.</p>` + result.checks.map(c => `<p class="notice ${c.status === "error" ? "error" : "neutral"}">${esc({ok:"Đạt",warn:"Lưu ý",error:"Cần xử lý"}[c.status])}: ${esc(c.message)}</p>`).join(""));
+  } catch (error) {$("doctor-result").textContent = error.message;}
+  finally {button.disabled = false;}
+};
+$("backup-form").onsubmit = async event => {
+  event.preventDefault(); const button = event.target.querySelector("[type=submit]"); button.disabled = true;
+  try {
+    await command("backup", {destination:event.target.elements.destination.value.trim()});
+    toast("Đã yêu cầu sao lưu. Xưởng sẽ thực hiện sau bước đang chạy.");
+  } catch (error) {toast(error.message);}
+  finally {button.disabled = false;}
+};
+
+let libraryState = {assets:[],revision:0}, libraryDraftRevision = 0, sceneDraft = null;
+async function loadLibrary() {
+  libraryState = await api("/api/library");
+  if (!$("library-form").elements.path.value) libraryDraftRevision = libraryState.revision;
+  $("library-location").textContent = "Tư liệu lưu tại: " + libraryState.upload_dir;
+  html("library-list", libraryState.assets.map(asset => `<article class="content-card">${asset.kind === "image" ? `<img src="${esc(asset.url)}" alt="Tư liệu ${esc(asset.id)}" loading="lazy">` : asset.kind === "video" ? `<video controls preload="metadata" src="${esc(asset.url)}"></video>` : `<audio controls preload="none" src="${esc(asset.url)}"></audio>`}<p>${esc(asset.path)}</p><span class="badge">${esc(asset.license)}</span><p>${esc(asset.attribution)}</p><button type="button" class="button quiet small" data-library-edit="${esc(asset.id)}">Khai nguồn & quyền</button></article>`).join("") || emptyPanel("Thư viện đang trống", "Thêm tư liệu của bạn để sử dụng trong phòng dựng."));
+  document.querySelectorAll("[data-library-edit]").forEach(button => button.onclick = () => {
+    const asset = libraryState.assets.find(a => a.id === button.dataset.libraryEdit);
+    const form = $("library-form");
+    for (const name of ["id","path","kind","license","source_url","attribution"]) form.elements[name].value = asset[name] || "";
+    libraryDraftRevision = libraryState.revision; $("library-error").textContent = "";
+    form.scrollIntoView({block:"center",behavior:"smooth"});
+  });
+}
+$("library-refresh").onclick = () => loadLibrary().catch(error => toast(error.message));
+document.querySelector('.nav[data-view="library"]').addEventListener("click", () => loadLibrary().catch(error => toast(error.message)));
+$("library-upload").onsubmit = async event => {
+  event.preventDefault(); const button = event.target.querySelector("[type=submit]"); button.disabled = true;
+  try {
+    const file = event.target.elements.file.files[0];
+    const response = await fetch("/api/library/upload?name=" + encodeURIComponent(file.name), {method:"POST",headers:{"X-Studio-Request":"1","Content-Type":"application/octet-stream"},body:file});
+    const result = await response.json(); if (!response.ok) throw Error(result.error);
+    event.target.reset(); await loadLibrary(); toast("Đã thêm tư liệu. Khai nguồn và quyền sử dụng trước khi sản xuất.");
+  } catch (error) {toast(error.message);}
+  finally {button.disabled = false;}
+};
+$("library-form").onsubmit = async event => {
+  event.preventDefault(); const button = event.target.querySelector("[type=submit]"); button.disabled = true;
+  try {
+    const asset = Object.fromEntries(new FormData(event.target)); asset.id ||= crypto.randomUUID(); asset.source_url ||= null;
+    await api("/api/library",{revision:libraryDraftRevision,asset});
+    event.target.elements.id.value = asset.id;
+    await loadLibrary(); libraryDraftRevision = libraryState.revision; toast("Đã lưu quyền sử dụng.");
+  } catch (error) {$("library-error").textContent = error.message;}
+  finally {button.disabled = false;}
+};
+async function openSceneEditor(videoId, sceneId) {
+  const project = detailProject?.id === videoId ? detailProject : state.projects.find(p => p.id === videoId), scene = project?.scenes.find(s => s.id === sceneId);
+  if (!scene) return;
+  try {await loadLibrary();} catch (error) {toast(error.message); return;}
+  sceneDraft = {video_id:videoId,scene_id:sceneId,manifest_version:project.manifest_version,request_id:crypto.randomUUID()};
+  const form = $("scene-form"); form.reset(); form.elements.narration.value = scene.narration;
+  form.elements.visual_prompt.value = scene.visual_prompt || "";
+  form.elements.action.value = scene.locked ? "unlock" : "regenerate_audio";
+  for (const option of form.elements.action.options) option.disabled = scene.locked && !["lock","unlock"].includes(option.value);
+  form.elements.asset_id.innerHTML = libraryState.assets.filter(a => a.kind !== "music").map(a => `<option value="${esc(a.id)}">${esc(a.path)} · ${esc(a.license)}</option>`).join("");
+  $("scene-error").textContent = ""; syncSceneFields(); $("scene-dialog").showModal();
+}
+function syncSceneFields() {
+  const action = $("scene-form").elements.action.value;
+  $("scene-narration-field").hidden = !["regenerate_audio","regenerate_both"].includes(action);
+  $("scene-prompt-field").hidden = !["regenerate_image","regenerate_both"].includes(action);
+  $("scene-asset-field").hidden = action !== "replace_asset";
+}
+$("scene-form").elements.action.onchange = syncSceneFields;
+$("scene-form").onsubmit = async event => {
+  event.preventDefault(); const form = event.target, button = form.querySelector("[type=submit]"); button.disabled = true;
+  const action = form.elements.action.value, request = {...sceneDraft,action};
+  if (["regenerate_audio","regenerate_both"].includes(action)) request.narration = form.elements.narration.value.trim();
+  if (["regenerate_image","regenerate_both"].includes(action)) request.visual_prompt = form.elements.visual_prompt.value.trim();
+  if (action === "replace_asset") request.asset_id = form.elements.asset_id.value;
+  try {await command("scene",request); $("scene-dialog").close(); toast("Đã yêu cầu sửa cảnh; sẽ kiểm tra và duyệt lại bản mới.");}
+  catch (error) {$("scene-error").textContent = error.message;}
+  finally {button.disabled = false;}
+};
+
+function inspectionMarkup(project) {
+  const report = project.inspection;
+  if (!report?.contact_url) return "";
+  const status = {human_required:"Chờ người duyệt hình và tiếng",pass:"Adapter review đã đạt",warn:"Adapter review có lưu ý",block:"Adapter review chưa đạt",unavailable:"Chưa chạy được adapter review"}[report.review_status] || "Chờ kiểm tra";
+  return `<div class="content-card"><h3>Ảnh tổng hợp kiểm tra cảnh</h3><img class="inspection-sheet" src="${esc(report.contact_url)}" alt="Ảnh tổng hợp các cảnh trong bản dựng hiện tại"><p>${esc(status)} · ${esc(report.sampled_scenes)}/${esc(report.total_scenes)} cảnh được lấy mẫu. Nghe lời đọc trong Phòng dựng và xem bản cuối trước khi duyệt.</p><a href="${esc(report.contact_url)}" download>Tải ảnh tổng hợp</a></div>`;
+}
+let cleanupPlan = null;
+const fileSize = bytes => (Number(bytes || 0)/1024/1024).toLocaleString("vi-VN",{maximumFractionDigits:1}) + " MiB";
+async function loadResources(preview = false) {
+  const maxBytes = Math.round(Number($("cleanup-budget").value)*1024**3);
+  const result = await api("/api/resources?max_bytes=" + maxBytes);
+  const ledger = result.ledger;
+  html("resources-result", `<p>${fileSize(result.inventory.bytes)} media và metadata · còn trống ${fileSize(result.inventory.free_bytes)}.</p><p>${number(ledger.text_tokens)} token text đã ghi nhận · ${number(ledger.cache_hits)} thành phần dùng cache.</p><p>Media ước tính đã biết: ${Number(ledger.estimated_usd).toFixed(4)} USD. ${number(ledger.unknown_cost)} lượt chưa rõ chi phí. Giá do bạn cấu hình; tổng này không phải hóa đơn provider.</p><details><summary>Dung lượng và chi phí theo dự án</summary>${Object.entries(result.inventory.by_project).map(([id,bytes]) => `<p>${esc(id)} · ${fileSize(bytes)} · ${Number(ledger.projects[id]?.estimated_usd || 0).toFixed(4)} USD ước tính</p>`).join("")}</details>`);
+  if (preview) {
+    cleanupPlan = result.cleanup;
+    html("cleanup-result", `<p>${cleanupPlan.files.length} segment · có thể thu hồi ${fileSize(cleanupPlan.bytes)}.</p>${cleanupPlan.files.map(file => `<p class="website-path">${esc(file.path)} · ${fileSize(file.bytes)}</p>`).join("")}${result.can_cleanup ? "" : "<p>Tạm dừng xưởng để dọn danh sách này.</p>"}`);
+    $("cleanup-apply").disabled = !result.can_cleanup || !cleanupPlan.files.length;
+  }
+}
+$("resources-run").onclick = () => loadResources().catch(error => toast(error.message));
+$("cleanup-preview").onclick = () => loadResources(true).catch(error => toast(error.message));
+$("cleanup-budget").oninput = () => {cleanupPlan = null; $("cleanup-apply").disabled = true;};
+$("cleanup-apply").onclick = async () => {
+  if (!cleanupPlan) return;
+  $("cleanup-apply").disabled = true;
+  try {await command("cleanup", {max_bytes:cleanupPlan.max_bytes,fingerprint:cleanupPlan.fingerprint}); toast("Đã yêu cầu dọn segment theo danh sách đã xem."); cleanupPlan = null;}
+  catch (error) {toast(error.message);}
+};
+
+let shortsSource = null;
+function updateShortsFit() {
+  const form = $("shorts-form");
+  form.elements.focus_x.closest("label").style.display = form.elements.fit.value === "cover" ? "" : "none";
+}
+$("shorts-form").elements.fit.onchange = updateShortsFit;
+function openShorts(id) {
+  const project = detailProject?.id === id ? detailProject : state.projects.find(p => p.id === id);
+  const final = latest(project,"final_video");
+  shortsSource = {video_id:id, manifest_version:project.manifest_version, source_checksum:final.checksum, request_id:crypto.randomUUID()};
+  const form = $("shorts-form"); form.reset();
+  updateShortsFit();
+  form.elements.title.value = project.title + " · Shorts";
+  form.elements.end_s.value = Math.min(60, Number(final.duration_s || 60));
+  form.elements.end_s.max = final.duration_s || 180;
+  $("shorts-error").textContent = ""; $("shorts-dialog").showModal();
+}
+$("shorts-form").onsubmit = async event => {
+  event.preventDefault(); const form = event.currentTarget;
+  const request = {...shortsSource,title:form.elements.title.value, start_s:Number(form.elements.start_s.value),
+    end_s:Number(form.elements.end_s.value),fit:form.elements.fit.value,focus_x:Number(form.elements.focus_x.value)};
+  const button = form.querySelector('[type=submit]'); button.disabled = true;
+  try {await command("shorts",request); $("shorts-dialog").close(); toast("Đã xếp hàng dựng Shorts và review riêng. Bấm Chạy xưởng nếu đang tạm dừng.");}
+  catch (error) {$("shorts-error").textContent = error.message;}
+  finally {button.disabled = false;}
+};

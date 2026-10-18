@@ -46,6 +46,7 @@
           "enum": [
             "scene_audio",
             "scene_image",
+            "scene_layout",
             "draft_video",
             "final_video",
             "thumbnail",

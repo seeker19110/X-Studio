@@ -1,0 +1,14 @@
+{
+  "verified_at": "2026-10-16",
+  "fonts": [
+    {
+      "sha256": "e1d733afbbfce842a1b43dced0c9885a76a4e67290dc7e690c4e9b76ebfc7d23",
+      "family": "DejaVu Sans Bold",
+      "license": "bitstream-vera",
+      "source_url": "https://dejavu-fonts.github.io/License.html",
+      "license_file": "docs/rights/licenses/dejavu-bitstream-vera.txt",
+      "license_sha256": "72d37aeb165ea171421f0cdae09e20f80d4a5303018be6abeb15ac77d40220a2",
+      "basis": "Installed fonts-dejavu-core copyright notice; exact font bytes bound to this record"
+    }
+  ]
+}

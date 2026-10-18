@@ -47,6 +47,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20m-12 3 5 3-5 3z"/></svg>
           Website → Video
         </button>
+        <button type="button" class="nav" data-view="library">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m4 17 5-6 4 4 3-3 5 6"/></svg>
+          Thư viện media
+        </button>
         <button type="button" class="nav" data-view="workflow">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <rect x="3" y="3" width="6" height="6" rx="1.5" />
@@ -269,7 +273,7 @@
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M4 4h16v16H4zM8 4v6h8V4M8 20v-6h8v6" />
             </svg>
-            Bản nháp lưu trên trình duyệt này. Chuyển thành dự án khi brief sẵn
+            Ý tưởng lưu trong kho của xưởng. Chuyển thành dự án khi brief sẵn
             sàng.
           </p>
           <div id="idea-list" class="idea-grid"></div>
@@ -478,6 +482,19 @@
           </div>
           <div id="activity-list" class="activity-list"></div>
         </section>
+        <section id="library-view" class="view hidden" aria-label="Thư viện media">
+          <div class="section-heading"><div><h2>Tư liệu của xưởng</h2><p>Ảnh, footage và nhạc dùng lại cho các dự án. Khai đúng nguồn và quyền sử dụng trước khi sản xuất.</p></div><button id="library-refresh" class="button quiet" type="button">Tải lại thư viện</button></div>
+          <form id="library-upload" class="content-card"><label>Thêm ảnh, video hoặc audio<input name="file" type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime,audio/wav,audio/mpeg,audio/flac" required /></label><p>Tối đa 256 MiB. Tư liệu mới được đánh dấu chưa rõ quyền cho tới khi bạn khai báo.</p><button class="button quiet" type="submit">Tải vào thư viện</button></form>
+          <form id="library-form" class="content-card">
+            <h3>Nguồn và quyền sử dụng</h3>
+            <input name="id" type="hidden" />
+            <label>Đường dẫn tương đối trong thư mục upload<input name="path" required maxlength="1000" /></label>
+            <div class="form-row"><label>Loại tư liệu<select name="kind"><option value="image">Ảnh</option><option value="video">Video</option><option value="music">Nhạc / audio</option></select></label><label>Quyền sử dụng<select name="license"><option value="unknown">Chưa xác định</option><option value="owned">Tự sở hữu</option><option value="licensed">Đã được cấp phép</option><option value="cc-by">CC-BY</option><option value="cc0">CC0</option></select></label></div>
+            <label>Link nguồn<input name="source_url" type="url" maxlength="2000" /></label><label>Ghi công / bằng chứng quyền sử dụng<textarea name="attribution" maxlength="3000" rows="2"></textarea></label>
+            <p id="library-error" class="form-error" role="status"></p><button class="button quiet" type="submit">Lưu quyền sử dụng</button>
+          </form>
+          <p id="library-location" class="muted"></p><div id="library-list" class="library-grid"></div>
+        </section>
         <section id="settings-view" class="view hidden" aria-label="Cấu hình">
           <div class="section-heading">
             <div>
@@ -533,8 +550,37 @@
               & xuất bản.
             </p>
             <button class="button primary" type="submit">Lưu thiết lập</button>
+            <details><summary>Hạn mức và giá media ước tính</summary>
+              <p>Nhập giá của provider bạn đang dùng. Bỏ trống hạn mức để không chặn theo ước tính; bỏ trống giá nghĩa là chưa biết chi phí. Token text và gói CLI được theo dõi riêng.</p>
+              <label>Hạn mức media mỗi dự án (USD)<input name="media_budget_usd" type="number" min="0" step="0.001" /></label>
+              <label>TTS mỗi 1.000 ký tự (USD)<input name="price_tts" type="number" min="0" step="0.0001" /></label>
+              <label>Mỗi ảnh hoặc nền thumbnail (USD)<input name="price_image" type="number" min="0" step="0.0001" /></label>
+              <label>Mỗi giây clip sinh mới (USD)<input name="price_video" type="number" min="0" step="0.0001" /></label>
+            </details>
           </form>
           <div id="settings-list" class="settings-grid"></div>
+          <div class="content-card">
+            <h3>Kiểm tra môi trường</h3>
+            <p>Kiểm tra công cụ, font, quyền ghi và dung lượng trên máy chạy xưởng. Không gọi dịch vụ trả phí.</p>
+            <label>Luồng sản xuất<select id="doctor-flow"><option value="render">Video thường</option><option value="website">Website → Video</option><option value="film">Phim và hoạt hình</option></select></label>
+            <button type="button" class="button quiet" id="doctor-run">Kiểm tra môi trường</button>
+            <div id="doctor-result" role="status" aria-live="polite"></div>
+          </div>
+          <form id="backup-form" class="content-card">
+            <h3>Sao lưu dữ liệu và media</h3>
+            <p>Xưởng chờ bước hiện tại kết thúc, tạm dừng các tác vụ website để sao lưu rồi tiếp tục. Chọn thư mục mới trên máy chạy xưởng, nằm ngoài thư mục media.</p>
+            <label>Thư mục bản sao lưu<input name="destination" required maxlength="1000" placeholder="Ví dụ trên WSL: /mnt/c/Backups/X-Studio/ban-01" /></label>
+            <button type="submit" class="button quiet">Tạo bản sao lưu</button>
+            <p id="backup-result" role="status" aria-live="polite"></p>
+            <p>Khôi phục bằng lệnh <code>studio backup restore</code> vào thư mục mới. Bản khôi phục tạm dừng để kiểm tra trước khi tiếp tục.</p>
+          </form>
+          <div class="content-card">
+            <h3>Dung lượng và media đã sử dụng</h3><button id="resources-run" class="button quiet" type="button">Đọc dung lượng và chi phí</button><div id="resources-result" aria-live="polite"></div>
+            <label>Giữ lại cache segment tối đa (GiB)<input id="cleanup-budget" type="number" min="0" max="10240" step="0.1" value="0" /></label>
+            <p>Chỉ dọn segment FFmpeg có thể dựng lại. Cache TTS/ảnh trả phí, tư liệu upload và bản xuất được giữ lại. Tạm dừng xưởng trước khi dọn.</p>
+            <button id="cleanup-preview" class="button quiet" type="button">Xem trước các file sẽ dọn</button>
+            <div id="cleanup-result" aria-live="polite"></div><button id="cleanup-apply" class="button quiet" type="button" disabled>Dọn đúng danh sách đã xem</button>
+          </div>
           <div class="notice neutral">
             Máy chủ chỉ lắng nghe trên thiết bị này. Khi chạy trên VPS, dùng SSH
             tunnel để mở bảng điều khiển.
@@ -731,6 +777,17 @@
         </div>
       </form>
     </dialog>
+    <dialog id="scene-dialog" aria-labelledby="scene-title">
+      <form id="scene-form">
+        <div class="dialog-top"><h2 id="scene-title">Sửa cảnh</h2><button type="button" class="close" data-close="scene-dialog" aria-label="Đóng">×</button></div>
+        <p>Chỉ tạo lại phần được chọn. Review và cửa duyệt cũ mất hiệu lực sau khi sửa. Mỗi dự án có tối đa 3 vòng sửa.</p>
+        <label>Thao tác<select name="action"><option value="regenerate_audio">Sửa / tạo lại lời đọc</option><option value="regenerate_image">Sửa / tạo lại hình hoặc clip</option><option value="regenerate_both">Sửa lời đọc và hình</option><option value="replace_asset">Dùng tư liệu trong thư viện</option><option value="lock">Khóa cảnh</option><option value="unlock">Mở khóa cảnh</option></select></label>
+        <label id="scene-narration-field">Lời đọc<textarea name="narration" maxlength="12000" rows="5"></textarea></label>
+        <label id="scene-prompt-field">Chỉ dẫn hình ảnh<textarea name="visual_prompt" maxlength="12000" rows="4"></textarea></label>
+        <label id="scene-asset-field">Tư liệu<select name="asset_id"></select></label>
+        <p id="scene-error" class="form-error" role="status"></p><button class="button primary" type="submit">Áp dụng thay đổi</button>
+      </form>
+    </dialog>
     <dialog id="idea-dialog" aria-labelledby="idea-title">
       <form id="idea-form">
         <div class="dialog-top">
@@ -779,7 +836,7 @@
             placeholder="Thông điệp chính, góc nhìn, đường dẫn nghiên cứu…"
           ></textarea>
         </label>
-        <p class="storage-note">Ý tưởng được lưu trên trình duyệt này.</p>
+        <p class="storage-note">Ý tưởng lưu trong SQLite của xưởng, dùng chung giữa các trình duyệt kết nối cùng xưởng.</p>
         <p id="idea-error" class="error" role="alert"></p>
         <div class="dialog-actions">
           <button type="button" class="button quiet" data-close="idea-dialog">
@@ -788,6 +845,18 @@
             Lưu ý tưởng <span aria-hidden="true">→</span>
           </button>
         </div>
+      </form>
+    </dialog>
+    <dialog id="shorts-dialog" aria-labelledby="shorts-title">
+      <form id="shorts-form">
+        <div class="dialog-top"><h2 id="shorts-title">Tạo Shorts từ bản cuối</h2><button type="button" class="close" data-close="shorts-dialog" aria-label="Đóng">×</button></div>
+        <p>Đoạn cắt được căn theo phụ đề để giữ trọn lời đọc. Clip mới có review và yêu cầu duyệt xuất bản riêng.</p>
+        <label>Tiêu đề<input name="title" required maxlength="200" /></label>
+        <div class="form-grid"><label>Từ giây<input name="start_s" type="number" min="0" step="0.1" value="0" required /></label><label>Đến giây<input name="end_s" type="number" min="0.5" step="0.1" required /></label></div>
+        <label>Khung hình<select name="fit"><option value="reflow">Dàn lại khung dọc, chữ rõ</option><option value="contain">Giữ trọn khung nguồn, thêm viền</option><option value="cover">Lấp khung dọc, cắt hai mép</option></select></label>
+        <label>Tâm cắt ngang (0 = trái, 1 = phải)<input name="focus_x" type="number" min="0" max="1" step="0.05" value="0.5" /></label>
+        <p id="shorts-error" class="error" role="alert"></p>
+        <div class="dialog-actions"><button type="button" class="button quiet" data-close="shorts-dialog">Để sau</button><button type="submit" class="button primary">Tạo clip dọc</button></div>
       </form>
     </dialog>
     <dialog id="detail-dialog" aria-label="Không gian dự án">

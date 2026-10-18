@@ -8,7 +8,7 @@ dependencies = [
     "pyyaml>=6",
     "playwright>=1.58",  # website public-page capture; Chromium is installed separately
     "pillow>=11",
-    "edge-tts>=7.2",       # Vietnamese narration and real word timings
+    "edge-tts>=7.3.1",       # Vietnamese narration and real word timings
     "xagents-core",   # lõi chung (ADR gốc 0001); mã chuyển sang theo bảy bước K3.1-K3.7
 ]
 
@@ -22,6 +22,9 @@ members = ["gateway", "xagents-core"]
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=1.0"]   # provider anthropic cho text; provider openai-compatible (text/TTS/ảnh) không cần SDK
+
+[project.scripts]
+studio = "studio.cli:main"
 
 [dependency-groups]
 dev = [

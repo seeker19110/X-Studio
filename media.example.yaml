@@ -8,7 +8,7 @@
 # dịch voice_id sang giọng của provider đang dùng; `pace` tự map sang tham số tốc độ của từng provider.
 
 tts:
-  provider: openai          # openai | gemini | elevenlabs | azure | google | command | fake
+  provider: openai          # openai | gemini | elevenlabs | azure | google | edge | command | fake
   # --- openai: POST {base_url}/audio/speech — OpenAI hoặc mọi server tương thích
   base_url: https://api.openai.com/v1
   model: gpt-4o-mini-tts
@@ -41,7 +41,15 @@ tts:
   # voice: vi-VN-Neural2-A
   # language: vi
   #
-  # --- command: lệnh cục bộ, không tốn tiền, không gửi văn bản ra ngoài (Piper, Kokoro, edge-tts…). Không qua shell.
+  # --- edge: dịch vụ Edge TTS, nhận word timing cho phụ đề (cần mạng; không cần API key).
+  # provider: edge                # edge-tts >= 7.3.1
+  # voice: vi-VN-HoaiMyNeural
+  # voices: {alloy: vi-VN-HoaiMyNeural, onyx: vi-VN-NamMinhNeural}
+  # rate: "+0%"                 # nếu khai rõ sẽ ưu tiên hơn pace của manifest
+  # Timing được buộc vào checksum audio; provider khác thiếu timing dùng nhãn estimated.
+  #
+  # --- command: chương trình đã cấu hình (Piper, Kokoro, CLI…). Không qua shell.
+  #     Chi phí và việc gửi dữ liệu phụ thuộc chương trình; không tự coi là miễn phí/offline.
   #     Chỗ giữ: {text} {out} {voice} {lang} {pace}; văn bản cũng được đưa vào stdin. File {out} phải có sau khi lệnh xong.
   # provider: command
   # command: "piper -m vi_VN-vais1000-medium.onnx -f {out}"
@@ -49,6 +57,20 @@ tts:
   # voice: vi-VN-HoaiMyNeural
   # suffix: .wav                              # edge-tts ghi mp3 → đặt .mp3
   # timeout_s: 300
+  # timing_sidecar: true                     # require {out with suffix .timing.json}: sha256, source, words(text/start/duration)
+  # license: unknown                         # dataset CC BY alone does not establish model/output clearance
+  # source_url: https://huggingface.co/rhasspy/piper-voices/blob/main/vi/vi_VN/vais1000/medium/MODEL_CARD
+  # attribution: "Piper/VAIS1000; dataset CC BY 4.0; output release not cleared; local preview"
+  # Local Piper example (piper-tts[alignment]==1.8.0); inspect model/data lineage before publication:
+  # command: "path/to/piper-python scripts/piper-speech.py --model path/to/vi_VN-vais1000-medium.onnx --out {out}"
+  # Commercial Vietnamese preset: pinned VieNeu v3 Turbo + offline ASR word verification.
+  # Runtime: vieneu==3.8.3, faster-whisper; artifact manifest includes model/codec/preset hashes.
+  # command: "path/to/vieneu-python scripts/vieneu-speech.py --artifacts runtime-artifacts.json --asr-cache path/to/asr-models --voice {voice} --out {out}"
+  # voice: "Ngọc Huyền"
+  # license: licensed
+  # source_url: https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo
+  # Keep attribution and Apache notices; use bundled presets covered by the publisher's explicit commercial grant.
+  # model: VieNeu-TTS-v3-Turbo/Ngoc-Huyen
 
 image:
   provider: openai          # openai | gemini | stability | replicate | command | fake
@@ -89,9 +111,14 @@ video:
   provider: ffmpeg          # ffmpeg (ghép ảnh + audio thành MP4, cần ffmpeg trên PATH; có ffprobe thì thời lượng audio đo thật) | fake
   fps: 30
   resolution: 1920x1080     # khung của video dài; manifest `aspect: 9:16` (Shorts) tự hoán đổi thành 1080x1920
+  layout: editorial        # bố cục chữ/hình theo tỷ lệ; full_bleed giữ kiểu hình lấp khung trước đây
+  burn_captions: true
+  caption_max_chars: 38
+  caption_max_chars_portrait: 26
+  trim_voice_tail: true    # chỉ khi có word timing hợp lệ; giữ 0,28 s sau từ cuối, không cắt nội dung lời đọc
   fit: cover                # cover: ảnh lấp đầy khung, cắt mép (mặc định) | contain: giữ trọn ảnh, chấp nhận viền đen
   tail_pad_s: 0.35          # im lặng đệm cuối mỗi cảnh; cảnh dài đúng bằng giọng đọc, không bị cắt theo thời lượng ước lượng
-  motion: auto              # chuyển động nhẹ trên ảnh tĩnh: auto (xoay vòng zoom/pan, hai cảnh liền nhau khác kiểu)
+  motion: none              # editorial giữ chữ cố định; full_bleed có thể chọn auto/zoom/pan
                             # | none | zoom_in | zoom_out | pan_left | pan_right (ép cùng một kiểu cho cả video)
   transition_s: 0.3         # chuyển cảnh mờ dần; tự kẹp ≤ tail_pad_s để giọng đọc hai cảnh không chồng nhau; 0 = cắt thẳng
   loudness_lufs: -14        # chuẩn hoá âm lượng về mức nền tảng phát lại (đỉnh ≤ -1 dBTP); `null` = giữ nguyên tiếng gốc
@@ -135,3 +162,16 @@ scene_video:
   fps: 24
   resolution: 832x480
   license: unknown
+
+# Vận hành: giá do người vận hành nhập, không tự lấy từ hóa đơn/provider.
+# Hạn mức là ước tính media theo dự án; không bao gồm chi phí text model/CLI subscription.
+production:
+  automation: manual
+  # pricing:
+  #   tts_per_1000_chars: 0.0
+  #   image_per_request: 0.0
+  #   video_per_second: 0.0
+  # media_budget_usd: 5.0  # thiếu giá của loại cần sinh sẽ dừng trước khi gọi provider
+  # review_required: true  # chặn xuất bản khi chưa có adapter review hình/tiếng
+  # review_command: [python, local_reviewer.py]  # nhận JSON qua stdin, trả verdict pass|warn|block + findings
+  # review_timeout_s: 60

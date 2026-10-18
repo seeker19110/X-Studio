@@ -29,7 +29,9 @@ Không có model text nào gọi được lớp này: chỉ code gọi.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+import hashlib
 import html
 import json
 import math
@@ -103,6 +105,8 @@ class MediaResult:
     model: str
     duration_s: float | None = None
     notes: str = ""  # điều code đã làm/không làm được với file (phủ chữ, thu nhỏ, nén) → renderer ghi vào audit
+    words: list[dict] = field(default_factory=list)
+    timing_source: str = 'estimated'
 
 
 class TTS(Protocol):
@@ -130,7 +134,8 @@ class MediaConfig:
     tts: dict[str, Any] = field(default_factory=lambda: {"provider": "fake", "model": "fake-tts", "voice": "neutral"})
     # không đặt `size` mặc định: `image_size()` chọn theo model + tỷ lệ khung của manifest
     image: dict[str, Any] = field(default_factory=lambda: {"provider": "fake", "model": "fake-image"})
-    video: dict[str, Any] = field(default_factory=lambda: {"provider": "fake", "fps": 30, "resolution": "1920x1080"})
+    video: dict[str, Any] = field(default_factory=lambda: {"provider": "fake", "fps": 30, "resolution": "1920x1080",
+        'layout':'editorial','burn_captions':True,'caption_max_chars':38,'caption_max_chars_portrait':26,'trim_voice_tail':True})
     platform: dict[str, Any] = field(default_factory=lambda: {"provider": "fake"})  # adapter nền tảng (ADR-0008): fake | youtube
     # gate.approvers: [human:owner, ...] — ai được duyệt (env STUDIO_GATE_APPROVERS thắng)
     gate: dict[str, Any] = field(default_factory=dict)
@@ -201,7 +206,7 @@ def make_media(cfg: MediaConfig | None = None) -> MediaSuite:
         raise MediaError("render.mode must be graph or bounded")
     vid: VideoAssembler = (assembler(binary=str(v.get("binary") or "ffmpeg"), fit=str(v.get("fit") or "cover"),
                                            tail_pad_s=float(v.get("tail_pad_s", 0.35)), font=v.get("font"),
-                                           motion=str(v.get("motion") or "auto"), transition_s=float(v.get("transition_s", 0.3)),
+                                           motion="none" if v.get('layout','editorial')=='editorial' else str(v.get("motion") or "auto"), transition_s=float(v.get("transition_s", 0.3)),
                                            loudness_lufs=v.get("loudness_lufs", TARGET_LUFS),
                                            timeout=float(cfg.render.get("timeout_s") or RENDER_TIMEOUT_S), sandbox=sb,
                                            threads=int(cfg.render.get("threads", 2)), **disk_options)
@@ -659,7 +664,21 @@ class CommandTTS:
         if r.timed_out: raise MediaError(f"lệnh TTS quá {self.timeout}s (tts.timeout_s)")
         if r.exit_code != 0: raise MediaError(f"lệnh TTS lỗi ({r.exit_code}): {r.stderr[-400:]}")
         if not p.is_file() or p.stat().st_size == 0: raise MediaError(f"lệnh TTS không tạo file {p.name}")
-        return MediaResult(p, "command", self.model, audio_duration(p, text))
+        duration = audio_duration(p, text)
+        words = []; source = 'estimated'
+        if s.get('timing_sidecar'):
+            from .speech import validate_words
+            try:
+                data = json.loads(p.with_suffix('.timing.json').read_text(encoding='utf-8'))
+                words = validate_words(data['words'], duration)
+                def normalized(value: str) -> str: return ''.join(c for c in value.casefold() if c.isalnum())
+                if (data['sha256'] != hashlib.sha256(p.read_bytes()).hexdigest() or not data['source']
+                        or normalized(' '.join(w['text'] for w in words)) != normalized(text)):
+                    raise ValueError('Audio/transcript/source mismatch')
+                source = data['source']
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise MediaError(f'command timing không hợp lệ: {exc}') from exc
+        return MediaResult(p, "command", self.model, duration, words=words, timing_source=source)
 
 
 class CommandImage:
@@ -810,9 +829,27 @@ class ReplicateImage:
         return MediaResult(out, "replicate", self.model)
 
 
+class EdgeTTS:
+    output_suffix = '.mp3'
+
+    def __init__(self, cfg: MediaConfig):
+        self.cfg = cfg
+
+    def synthesize(self, text: str, voice: dict[str, Any], out: Path) -> MediaResult:
+        from .speech import edge_audio, validate_words
+        selected = pick_voice(self.cfg.tts,voice,'vi-VN-HoaiMyNeural',trust_manifest=False)
+        rate = str(self.cfg.tts.get('rate') or f'{round((PACE_SPEED[pace_of(voice)]-1)*100):+d}%')
+        if not re.fullmatch(r'[+-][0-9]{1,3}%',rate): raise ValueError('Edge rate must be a signed percentage')
+        path = out.with_suffix('.mp3'); path.parent.mkdir(parents=True,exist_ok=True)
+        words = asyncio.run(edge_audio(text,selected,path,rate))
+        duration = probe_duration(path)
+        if duration is None or not math.isfinite(duration) or duration <= 0: raise ValueError('Cần ffprobe để đo giọng đọc Edge')
+        return MediaResult(path,'edge',selected,duration,words=validate_words(words,duration),timing_source='provider')
+
+
 TTS_PROVIDERS: dict[str, Callable[[MediaConfig], Any]] = {
     "openai": OpenAITTS, "gemini": GeminiTTS, "elevenlabs": ElevenLabsTTS, "azure": AzureTTS, "google": GoogleTTS,
-    "command": CommandTTS,
+    "command": CommandTTS, 'edge':EdgeTTS,
 }
 IMAGE_PROVIDERS: dict[str, Callable[[MediaConfig], Any]] = {
     "command": CommandImage,

@@ -9,10 +9,12 @@ import os
 import shutil
 import subprocess
 import time
-from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
+from .render_cache import digest
+from .speech import caption_chunks as caption_chunks
+from .speech import edge_audio, timed_captions, validate_words
 from .website import WebsitePlan, WebsiteRequest, save_json
 
 
@@ -22,20 +24,6 @@ def clock(seconds: float, separator: str = ',') -> str:
     return f'{hours:02}:{minutes:02}:{sec:02}{separator}{ms:03}'
 
 
-def caption_chunks(text: str) -> list[str]:
-    chunks: list[str] = []; lines: list[str] = []; line = ''
-    for word in text.split():
-        # Even a single unbroken URL cannot overflow the safe subtitle width.
-        pieces = [word[i:i + 42] for i in range(0, len(word), 42)]
-        for piece in pieces:
-            candidate = (line + ' ' + piece).strip()
-            if len(candidate) > 42:
-                lines.append(line); line = piece
-                if len(lines) == 2: chunks.append('\n'.join(lines)); lines = []
-            else: line = candidate
-    if line: lines.append(line)
-    if lines: chunks.append('\n'.join(lines))
-    return chunks
 
 
 class NarrationFitError(ValueError):
@@ -71,55 +59,44 @@ def probe(path: Path) -> dict:
     return json.loads(run([binary, '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(path)]))
 
 
+
+
 async def voice_audio(text: str, voice: str, path: Path) -> list[dict]:
-    import edge_tts
-    words = []
-    communicate = edge_tts.Communicate(text, voice, boundary='WordBoundary', connect_timeout=15, receive_timeout=60)
-    with path.open('wb') as audio:
-        async for chunk in communicate.stream():
-            if chunk['type'] == 'audio': audio.write(chunk['data'])
-            elif chunk['type'] == 'WordBoundary':
-                words.append({'text': chunk['text'], 'start': chunk['offset'] / 10000000,
-                              'duration': chunk['duration'] / 10000000})
-    if not words or not path.stat().st_size: raise ValueError('Dịch vụ giọng đọc không trả âm thanh và mốc phụ đề')
-    return words
+    return await edge_audio(text, voice, path)
 
 
-def speech(text: str, voice: str, source: Path) -> tuple[Path, float, list[dict]]:
+def speech(text: str, voice: str, source: Path, accounting: Any = None, video_id: str = '') -> tuple[Path, float, list[dict]]:
     key = hashlib.sha256((voice + '\n' + text).encode()).hexdigest()[:24]
     audio = source / (key + '.mp3'); timing = source / (key + '.json')
-    if not audio.exists() or not timing.exists():
+    cached = None
+    try:
+        data = json.loads(timing.read_text(encoding='utf-8'))
+        if (data['sha256'] == digest(audio) and audio.stat().st_size > 0
+                and math.isfinite(float(data['duration'])) and float(data['duration']) > 0 and data['words']):
+            data['words'] = validate_words(data['words'], float(data['duration']))
+            cached = data
+    except (OSError, ValueError, KeyError, TypeError): pass
+    if cached is None:
         stage = audio.with_suffix('.part.mp3')
         try:
             for attempt in range(3):
                 try:
-                    words = asyncio.run(voice_audio(text, voice, stage))
+                    def produce(): return asyncio.run(voice_audio(text, voice, stage))
+                    words = accounting.generate(video_id,'tts',len(text)/1000,produce) if accounting is not None else produce()
                     break
                 except Exception:
                     if attempt == 2: raise
                     time.sleep(2 ** attempt)
             duration = float(probe(stage)['format']['duration'])
-            stage.replace(audio); save_json(timing, {'duration': duration, 'words': words})
+            if not math.isfinite(duration) or duration <= 0: raise ValueError('Thời lượng giọng đọc không hợp lệ')
+            words = validate_words(words, duration)
+            checksum = digest(stage)
+            stage.replace(audio); save_json(timing, {'duration': duration, 'words': words, 'sha256':checksum})
         finally: stage.unlink(missing_ok=True)
     data = json.loads(timing.read_text(encoding='utf-8'))
     return audio, float(data['duration']), data['words']
 
 
-def timed_captions(words: list[dict], offset: float, pace: float) -> list[dict]:
-    cues = []; group: list[dict] = []
-    for word in words:
-        candidate = ' '.join(w['text'] for w in [*group, word])
-        if group and (len(candidate) > 72 or (group[-1]['text'].endswith(('.', '!', '?')) and len(candidate) > 35)):
-            cues.append({'start': offset + group[0]['start'] / pace,
-                         'end': offset + (group[-1]['start'] + group[-1]['duration']) / pace + .12,
-                         'text': caption_chunks(' '.join(w['text'] for w in group))[0]}); group = []
-        group.append(word)
-    if group:
-        cues.append({'start': offset + group[0]['start'] / pace,
-                     'end': offset + (group[-1]['start'] + group[-1]['duration']) / pace + .12,
-                     'text': caption_chunks(' '.join(w['text'] for w in group))[0]})
-    for current, following in pairwise(cues): current['end'] = min(current['end'], following['start'] - .025)
-    return cues
 
 
 def subtitles(path: Path, cues: list[dict]) -> None:
@@ -208,14 +185,15 @@ def verify_video(path: Path, request: WebsiteRequest, ffmpeg: str) -> dict:
 
 
 def render_video(request: WebsiteRequest, plan: WebsitePlan, pages: list[dict], root: Path, kind: str,
-                 progress: Any, checkpoint: Any) -> dict[str, str]:
+                 progress: Any, checkpoint: Any, accounting: Any = None, video_id: str = '') -> dict[str, str]:
     ffmpeg = os.environ.get('STUDIO_WEBSITE_FFMPEG', 'ffmpeg')
     if not shutil.which(ffmpeg): raise ValueError('Cần FFmpeg và ffprobe trên PATH để xuất video')
     source = root / 'source'; cache = source / kind; cache.mkdir(exist_ok=True)
     progress('voicing', .05, 'Tạo giọng đọc tiếng Việt và mốc phụ đề')
     voices = []
     for i, scene in enumerate(plan.scenes):
-        checkpoint(); voices.append(speech(scene.narration, request.voice, source))
+        checkpoint()
+        voices.append(speech(scene.narration,request.voice,source,accounting,video_id) if accounting is not None else speech(scene.narration, request.voice, source))
         progress('voicing', .05 + .20 * (i + 1) / len(plan.scenes), f'Giọng đọc cảnh {i + 1}/{len(plan.scenes)}')
     slots, pace = fit_slots([v[1] for v in voices], request.duration_s)
     by_id = {p['id']: p for p in pages}; cues = []; offset = 0.; segments = []; timeline = []
@@ -227,7 +205,12 @@ def render_video(request: WebsiteRequest, plan: WebsitePlan, pages: list[dict], 
                         scene.model_dump(), request.voice, request.quality, duration, pace,
                         hashlib.sha256((source / page['image']).read_bytes()).hexdigest()], sort_keys=True).encode()).hexdigest()
         marker = cache / f'segment-{i}.json'
-        valid = segment.exists() and marker.exists() and json.loads(marker.read_text()) == signature
+        valid = False
+        try:
+            metadata = json.loads(marker.read_text(encoding='utf-8'))
+            valid = (metadata['signature'] == signature and metadata['sha256'] == digest(segment)
+                     and metadata['bytes'] == segment.stat().st_size and segment.stat().st_size > 0)
+        except (OSError, ValueError, TypeError, KeyError): pass
         if not valid:
             card(plan, scene, source / page['image'], png, request.quality, i, page['url'])
             partial = cache / f'segment-{i}.part.mp4'
@@ -238,7 +221,8 @@ def render_video(request: WebsiteRequest, plan: WebsitePlan, pages: list[dict], 
                  '-c:v', 'libx264', '-preset', 'medium', '-crf', '17', '-threads', '2', '-c:a', 'aac',
                  '-b:a', '256k', '-ar', '48000', '-ac', '2', '-color_primaries', 'bt709', '-color_trc', 'bt709',
                  '-colorspace', 'bt709', str(partial)])
-            partial.replace(segment); save_json(marker, signature)
+            partial.replace(segment)
+            save_json(marker, {'signature':signature, 'sha256':digest(segment), 'bytes':segment.stat().st_size})
         segments.append(segment)
         cues.extend(timed_captions(voice[2], offset + .4, pace))
         timeline.append({'start': offset, 'end': offset + duration, **scene.model_dump()}); offset += duration

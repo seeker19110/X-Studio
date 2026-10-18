@@ -39,7 +39,7 @@ TOPIC_PRODUCERS: dict[str, frozenset[str]] = {
     "analytics-reports": frozenset({"analytics-analyst"}),
     "audience-comments": frozenset({"adapter:youtube"}),
     "channel-briefs": frozenset(),                    # chỉ người mở kênh (`human_topics`)
-    "cut-lists": frozenset({"editor"}),
+    "cut-lists": frozenset({"editor", "console:editor"}),
     "media-assets": frozenset({"renderer"}),
     "metadata-packages": frozenset({"seo-optimizer", "chapters"}),
     "performance-snapshots": frozenset({"adapter:youtube"}),
@@ -48,11 +48,11 @@ TOPIC_PRODUCERS: dict[str, frozenset[str]] = {
     "research-dossiers": frozenset({"trend-researcher"}),
     "review-results": frozenset({"fact-checker", "quality-reviewer", "rights-checker"}),
     "scene-manifests": frozenset({"production-manager", "renderer"}),
-    "scripts": frozenset({"script-writer"}),
+    "scripts": frozenset({"script-writer", "console:editor", "console:shorts"}),
     "supervisor-actions": frozenset({"supervisor"}),
     "thumbnail-specs": frozenset({"thumbnail-designer"}),
     "trend-reports": frozenset({"trend-researcher"}),
-    "video-briefs": frozenset({"channel-strategist", "desk"}),
+    "video-briefs": frozenset({"channel-strategist", "desk", "console:shorts"}),
 }
 # Giữ nguyên `HUMAN_TOPICS` mà `orchestrator publish` đã dùng từ trước (`orchestrator.py:69`) — nó ĐÃ là câu trả
 # lời cho "người nạp tay được topic nào", và dựng một bảng thứ hai ở đây là hai nguồn cho một sự thật.

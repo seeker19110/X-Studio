@@ -230,7 +230,7 @@ def test_transient_seo_correction_keeps_retry_available(tmp_path, monkeypatch):
     o = _orch(bus, tmp_path, TransientError("unused"), n=0)
     env = Envelope(topic="metadata-packages", key="V1", actor="seo-optimizer", payload={
         "video_id": "V1", "title": "Test", "description": "test", "tags": []})
-    monkeypatch.setattr("studio.orchestrator.preflight", lambda *args: PreflightReport(findings=[
+    monkeypatch.setattr("studio.orchestrator.preflight", lambda *args, **kwargs: PreflightReport(findings=[
         Finding(level="block", text="needs revision")]))
     calls = []
 
