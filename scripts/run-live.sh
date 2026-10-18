@@ -17,4 +17,5 @@ media = load_media_config()
 assert all(s.get('provider') != 'fake' for s in [media.tts, media.image, media.video]), 'Cần provider media thật'
 assert media.production.get('automation') in {'manual', 'production'}, 'Launcher này tạo MP4 và giữ cửa duyệt đăng'
 PY
+uv run --no-sync studio doctor --media media.yaml
 exec uv run --no-sync python -u -m studio.console --media media.yaml --db output/live/production.sqlite "$@"

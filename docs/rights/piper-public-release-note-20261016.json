@@ -1,0 +1,10 @@
+{
+  "checked_at": "2026-10-16",
+  "scope": "No publication authorized",
+  "model": "vi_VN-vais1000-medium",
+  "established": "VAIS1000 model card states CC BY 4.0 dataset; piper-voices repository declares MIT; model card discloses Lessac fine-tuning. Model/config/voice attribution retained in piper-vais1000-evidence.json.",
+  "upstream_training_data_license_url": "https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html",
+  "source_finding": "The upstream Lessac page describes a research license for raw audio/data, with restrictions on commercial uses of those materials. It is not treated here as an output license or blanket commercial grant for the fine-tuned Piper model.",
+  "release_status": "Unresolved training-lineage question for public/commercial release; both publish gates remain pending. Local video render/review received actual rights pass under the operator's private scope.",
+  "voice_quality_status": "Technical timing/QC passed; unprompted local ASR has repeated substitutions. Human listening approval is not recorded."
+}

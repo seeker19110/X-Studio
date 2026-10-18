@@ -9,7 +9,9 @@ Trạng thái gate không lưu riêng: dựng lại từ replay `audit-log` (act
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import get_args
 
@@ -66,7 +68,24 @@ class PersistentGate(CorePersistentGate[Envelope, AuditLog], HumanGate):
     REQUEST_ACTORS = frozenset({"channel-strategist", "desk", "community-manager", "supervisor"})
 
     def __init__(self, bus: InMemoryBus, **kw):
+        self.invalidated_at: dict[str,datetime] = {}
         super().__init__(bus, envelope_cls=Envelope, audit_cls=AuditLog, request_cls=GateRequest, **kw)
+
+    def apply(self, env: Envelope) -> None:
+        if env.topic == 'audit-log' and env.actor == 'console:editor' and env.payload.get('action') == 'gate.invalidate':
+            try: sid = json.loads(env.payload['evidence'])['subject_id']
+            except (ValueError, KeyError, TypeError): return
+            if not isinstance(sid,str): return
+            self.invalidated_at[sid] = env.ts
+            pending = self.pending.pop(sid,None)
+            if pending:
+                pending.decision = 'hold'; pending.reason = 'Nội dung đã được chỉnh sửa'
+                self.history.append(pending)
+            return
+        super().apply(env)
+
+    def invalidate(self, subject_id: str) -> None:
+        self._log('console:editor','gate.invalidate',{'subject_id':subject_id})
 
     def _trusted(self, env: Envelope) -> dict | None:
         data = trusted_decision(env)

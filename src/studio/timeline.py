@@ -58,6 +58,8 @@ def timeline(m: SceneManifest, order: list[str] | None = None, pad: float = 0.0,
     for i, sid in enumerate(ids):
         s = by_id.get(sid)
         if s is None: continue
+        if s.clip_start_s is not None:
+            cues.append(Cue(sid,s.clip_start_s,round(s.clip_start_s+s.duration_s,3),s.narration)); continue
         start = max(0.0, t - i * transition)
         cues.append(Cue(sid, round(start, 3), round(start + s.duration_s, 3), s.narration))
         span = s.duration_s + pad

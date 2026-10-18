@@ -1,0 +1,22 @@
+{
+  "voice": "vi_VN-vais1000-medium",
+  "provider": "command",
+  "engine": "piper-tts 1.8.0, GPL-3.0; isolated local runtime, not redistributed in this repository",
+  "engine_source": "https://github.com/OHF-Voice/piper1-gpl",
+  "model_source": "https://huggingface.co/rhasspy/piper-voices/blob/main/vi/vi_VN/vais1000/medium/MODEL_CARD",
+  "dataset_license": "CC BY 4.0",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "repository_declared_license": "MIT",
+  "attribution": "Giọng tổng hợp: Piper vi_VN-vais1000-medium / Michael Hansen (Rhasspy); dữ liệu VAIS1000, CC BY 4.0 — https://creativecommons.org/licenses/by/4.0/. Thay đổi: tổng hợp kịch bản mới, cắt đuôi im lặng và chuẩn hóa âm lượng; không hàm ý bên cấp phép bảo trợ.",
+  "checked_at": "2026-10-16",
+  "files": {
+    "output/real-validation/piper-models/vi_VN-vais1000-medium.onnx": "ec7c89e2c85f4d1edc24b6120c18aaf1bda614f06b511567eb9c7c0de15e2dab",
+    "output/real-validation/piper-models/vi_VN-vais1000-medium.onnx.json": "fafb9da1354ed4b77c31af228ed41fb41cd825c14cffa105454b25e6ae751ee0",
+    "docs/rights/licenses/piper-vais1000-MODEL_CARD.txt": "302db8a930ffc2b1c2181db26deaf8272116eca2b08b8f80da6375b0a994af7b",
+    "docs/rights/licenses/piper-voices-README.txt": "33e93643fce5180886300f9f0070eeeab8af148efb8e84361f8904def80fd9fb",
+    "docs/rights/licenses/piper-lessac-MODEL_CARD.txt": "ce49eb457742208166d399a40cdec2c7fa9db77960930031564ab56f12882645"
+  },
+  "training_disclosure": "Official model card says finetuned from en_US-lessac-medium. Upstream lessac card and its dataset license URL retained as training lineage; dataset license is distinct from model/output licensing. No raw Lessac or VAIS audio is redistributed.",
+  "release_assessment_ref": "docs/rights/piper-release-assessment-20261017.json",
+  "synthesized_audio_release_status": "NOT_CLEARED; dataset CC BY is not a blanket output license"
+}

@@ -1,0 +1,88 @@
+{
+  "date": "2026-10-16",
+  "environment": "WSL Linux, Python 3.13.15; local synthetic SQLite fixtures",
+  "fixture": "10 scenes and 10 image assets per project; no model/provider/render; median of 3 refresh samples",
+  "before": [
+    {
+      "projects": 10,
+      "events": 120,
+      "refresh_seconds_median": 0.010144527000193193,
+      "full_state_bytes": 160183
+    },
+    {
+      "projects": 100,
+      "events": 1200,
+      "refresh_seconds_median": 0.030446919000041817,
+      "full_state_bytes": 1597304
+    },
+    {
+      "projects": 1000,
+      "events": 12000,
+      "refresh_seconds_median": 1.4498132060002717,
+      "full_state_bytes": 15970305
+    }
+  ],
+  "after": [
+    {
+      "projects": 10,
+      "events": 120,
+      "refresh_seconds_median": 0.002291047999733564,
+      "full_state_bytes": 164243,
+      "overview_bytes": 10283,
+      "python_peak_bytes": null,
+      "process_peak_rss_bytes": 53633024
+    },
+    {
+      "projects": 100,
+      "events": 1200,
+      "refresh_seconds_median": 0.02071010400004525,
+      "full_state_bytes": 1637904,
+      "overview_bytes": 98304,
+      "python_peak_bytes": null,
+      "process_peak_rss_bytes": 75812864
+    },
+    {
+      "projects": 1000,
+      "events": 12000,
+      "refresh_seconds_median": 0.26467284599993945,
+      "full_state_bytes": 16376305,
+      "overview_bytes": 980305,
+      "python_peak_bytes": null,
+      "process_peak_rss_bytes": 263667712
+    }
+  ],
+  "memory_instrumented": [
+    {
+      "projects": 10,
+      "events": 120,
+      "refresh_seconds_median": 0.006911619000220526,
+      "full_state_bytes": 164243,
+      "overview_bytes": 10283,
+      "python_peak_bytes": 2060369,
+      "process_peak_rss_bytes": 55529472
+    },
+    {
+      "projects": 100,
+      "events": 1200,
+      "refresh_seconds_median": 0.07105448799984515,
+      "full_state_bytes": 1637904,
+      "overview_bytes": 98304,
+      "python_peak_bytes": 15868534,
+      "process_peak_rss_bytes": 85741568
+    },
+    {
+      "projects": 1000,
+      "events": 12000,
+      "refresh_seconds_median": 0.838167741000234,
+      "full_state_bytes": 16376305,
+      "overview_bytes": 980305,
+      "python_peak_bytes": 156614516,
+      "process_peak_rss_bytes": 362541056
+    }
+  ],
+  "notes": [
+    "RSS is the cumulative process high-water mark across ascending sizes, not incremental memory per project.",
+    "tracemalloc is enabled only for the memory run and affects its timings; do not compare those times with the baseline.",
+    "UI smoke uses small demo projects; production p95 latency, GPU and 12-hour media workload were not measured."
+  ]
+}

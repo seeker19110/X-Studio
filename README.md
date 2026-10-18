@@ -4,6 +4,10 @@ Từ chủ đề đến kịch bản, lời đọc, hình ảnh/footage, dựng 
 
 ![Bảng điều khiển X-Studio — dữ liệu demo](docs/screenshots/workflow-desktop.png)
 
+Bốn đợt nâng cấp vận hành: doctor và backup/restore; kho ý tưởng SQLite; upload tiếp tục sau restart;
+sửa cảnh/thư viện từ UI và timing TTS; contact sheet, ước tính chi phí/dung lượng, API tổng quan gọn và tạo Shorts
+có gate riêng. Xem [hướng dẫn sử dụng](docs/OPERATIONS-UPGRADES.md) và [ADR-0021](docs/adr/0021-durable-operations-and-editing.md).
+
 ## Chạy xưởng
 
 Cần Python 3.11+, [uv](https://docs.astral.sh/uv/) và FFmpeg/ffprobe có libx264, libass, drawtext cùng font Unicode (Linux: `ffmpeg fonts-dejavu-core`). Không cần Node, Redis hoặc GPU cho bảng điều khiển và bộ dựng mặc định.
@@ -31,7 +35,11 @@ Giữ `llm.yaml` và cấu hình provider TTS/ảnh của bạn; tham khảo [me
 
 Để dùng gói ChatGPT và Claude đã đăng nhập, cấu hình hai backend `codex` / `claude-code` trong `llm.yaml`, với `binary`, `config_dir` và model được tài khoản hỗ trợ. Không cần API key cho hai CLI này. CLI có thể dùng nhiều lượt nội bộ và báo cả token đọc cache; đặt `extra: {tool_budget_tokens: 180000}` ở gốc `llm.yaml` nếu cần trần riêng cho một tác vụ web. Bỏ cấu hình này giữ hạn mức từng agent; trần tổng video vẫn do brief và supervisor kiểm tra, không bỏ đếm token.
 
-Giọng đọc có thể dùng `tts.provider: edge` (Edge TTS có sẵn, miễn phí, có mốc từng từ cho phụ đề); Edge cần Internet và không có SLA — Microsoft đổi token là có thể vỡ bất kỳ lúc nào, nên giữ một provider dự phòng. Hình minh họa vector dùng `image.provider: command`, lệnh `.venv/bin/python -m studio.cli_visual --size {size} --out {out}` và `model: cli-vector`. CLI thiết kế SVG theo cảnh; code kiểm tra SVG rồi rasterize thành PNG thật. Khi gọi helper trực tiếp, SVG và file `.art.json` ghi model/token nằm cùng ảnh; khi đi qua cache renderer, PNG được giữ và tệp trung gian được dọn. Đây là minh họa vector, không phải mô hình sinh ảnh chụp. FFmpeg cần decoder `librsvg` cho hồ sơ này.
+Giọng đọc mặc định cục bộ dùng VieNeu-TTS v3 Turbo, preset Ngọc Huyền, qua `scripts/vieneu-speech.py` và adapter `tts.provider: command`. [Hồ sơ quyền thương mại](docs/rights/vieneu-commercial-voice-evidence.json) giữ xác nhận của tác giả cho model, giọng dựng sẵn, đầu ra thương mại và sự đồng ý của người cung cấp giọng. Runtime riêng ghim `vieneu==3.8.3`, model/codec/preset kiểm theo SHA; Whisper cục bộ phải nhận đúng toàn bộ narration trước khi tạo mốc từ. Không dùng mẫu giọng bên ngoài.
+
+Piper vẫn có wrapper riêng; giọng VAIS1000/Lessac của bản trước **chưa được chốt quyền phát hành**, xem [hồ sơ Piper](docs/rights/piper-release-assessment-20261017.json). Không kế thừa kết luận quyền giữa các giọng. Edge TTS vẫn được hỗ trợ và cần Internet.
+
+Hình minh họa vector dùng `image.provider: command`, lệnh `.venv/bin/python -m studio.cli_visual --size {size} --out {out}` và `model: cli-vector`. CLI thiết kế SVG theo cảnh; code kiểm tra SVG rồi rasterize thành PNG thật. Khi gọi helper trực tiếp, SVG và file `.art.json` ghi model/token nằm cùng ảnh; khi đi qua cache renderer, PNG được giữ và tệp trung gian được dọn. Đây là minh họa vector, không phải mô hình sinh ảnh chụp. FFmpeg cần decoder `librsvg` cho hồ sơ này.
 
 Sau khi cấu hình media thật và `production.automation: production`, chạy `bash scripts/run-live.sh`. Launcher dùng DB riêng `output/live/production.sqlite`, từ chối backend/media giả và giữ bước đăng ở cửa duyệt. Bản dựng MP4, SRT và thumbnail được lưu dưới `output_dir` của hồ sơ; toàn bộ cấu hình tài khoản và đầu ra này bị gitignore.
 
@@ -118,7 +126,7 @@ HunyuanVideo, LTX, AnimateDiff, MoviePy, Blender và Storyboarder cùng license:
 Console nhận mục tiêu **0–720 phút** (lớn hơn 0). [YouTube](https://support.google.com/youtube/answer/71673?hl=en) giới hạn 12 giờ hoặc 256 GB, tùy giới hạn đạt trước; trên 15 phút cần tài khoản đã xác minh. Đây là giới hạn thiết kế/đầu vào, **chưa có benchmark render và upload 12 giờ trong đợt nâng cấp này**.
 
 - Bounded giảm độ lớn graph, không làm mất chi phí theo thời lượng. Bộ nhớ phụ thuộc một cảnh; cache âm thanh lossless và video trung gian vẫn cần ổ đĩa. Đã stress fixture tổng hợp 30 phút 24 giây ở 640×360, chưa đo 12 giờ hoặc phần trăm tiết kiệm trên máy chuẩn. Có thể đặt `render.segment_cache_max_bytes` để dọn segment cũ không dùng; `render.min_free_disk_bytes` mặc định 256 MiB. Đây là kiểm tra giữa các bước, không phải quota ổ đĩa; không dọn cache TTS/ảnh trả phí.
-- Burn-in phụ đề cần thêm lượt encode cuối. Muốn tiết kiệm CPU, tắt burn-in, dùng SRT riêng. Phụ đề theo mốc từng từ thật khi provider có (`tts.provider: edge`, ElevenLabs với `tts.timestamps: true`), provider khác chia theo tỷ lệ lời đọc trong cảnh. `video.karaoke: true` cùng burn-in cho từ đổi màu đúng lúc đọc; YouTube không nhận phụ đề karaoke nên bản SRT vẫn đăng riêng.
+- Burn-in phụ đề cần thêm lượt encode cuối. Muốn tiết kiệm CPU, tắt burn-in, dùng SRT riêng. Provider Edge dùng word timing; command Piper có sidecar SHA và mốc từ từ tensor phoneme, ghi rõ fallback theo câu nếu không khớp token. Provider thiếu timing dùng ước lượng theo lời đọc.
 - Với video nhiều giờ, điều chỉnh `render.timeout_s` và `STUDIO_QC_TIMEOUT_S` theo máy; mặc định QC 300 giây. Ví dụ đặt `STUDIO_QC_TIMEOUT_S=86400` trước khi khởi động worker. Không tắt timeout hoàn toàn.
 - Quota YouTube Data API tính theo rổ từ 6/2026: mặc định khoảng 100 lượt `videos.insert` mỗi ngày cho một project Google Cloud, các lệnh khác dùng rổ 10 000 đơn vị. Xưởng nhiều kênh chung một project sẽ chạm trần upload trước.
 - Ngân sách token là token model text. Tiền TTS/ảnh/clip đi qua sổ chi phí media riêng (ADR-0016): ước tính theo bảng giá bạn khai, không phải hóa đơn provider; không khai giá thì không có trần tiền. Ngân sách token dừng trước chương tiếp theo khi đã hết; một request đang chạy có thể vượt phần còn lại. Chất lượng sáng tạo, tính đúng đắn nội dung và thời lượng thực phụ thuộc model/provider; QC giữ lại sản phẩm lệch mục tiêu quá 20% mặc định.
@@ -132,16 +140,16 @@ make verify            # lint/typecheck + coverage cả 3 package + eval replay
 make studio-demo       # kiểm tra workflow offline
 ```
 
-CI Linux cài FFmpeg/font, khóa phiên bản GitHub Actions và chạy cùng lệnh. Coverage yêu cầu 100% dòng cho từng package. Test renderer thực kiểm tra footage, nhạc, phụ đề, frame timing, cache và retry; test HTTP kiểm tra auth, Origin/CSRF và byte-range. Các lỗi retry nhánh, resume sau lỗi render, QC chưa hoàn tất và HTTP range được chặn bằng regression test; xem [ADR-0011](docs/adr/0011-recovery-and-bounded-checkpoints.md) và [ADR-0012](docs/adr/0012-durable-render-outbox-and-disk-budgets.md). Khởi động/đóng xưởng dọn khóa khi lỗi; ảnh bìa giữ bản cũ khi encode hoặc biến thể sau thất bại; decoder và filter áp dụng cấu hình luồng xử lý — xem [ADR-0014](docs/adr/0014-factory-cleanup-and-thumbnail-staging.md). Kiểm tra UI desktop/mobile bằng Chromium được ghi tại [VALIDATION.md](docs/VALIDATION.md).
+CI Linux cài FFmpeg/font, chạy smoke Chromium; job Windows kiểm SQLite/Unicode và dựng fixture ngắn. CI khóa phiên bản GitHub Actions và chạy cùng lệnh. Coverage yêu cầu 100% dòng cho từng package. Test renderer thực kiểm tra footage, nhạc, phụ đề, frame timing, cache và retry; test HTTP kiểm tra auth, Origin/CSRF và byte-range. Các lỗi retry nhánh, resume sau lỗi render, QC chưa hoàn tất và HTTP range được chặn bằng regression test; xem [ADR-0011](docs/adr/0011-recovery-and-bounded-checkpoints.md) và [ADR-0012](docs/adr/0012-durable-render-outbox-and-disk-budgets.md). Khởi động/đóng xưởng dọn khóa khi lỗi; ảnh bìa giữ bản cũ khi encode hoặc biến thể sau thất bại; decoder và filter áp dụng cấu hình luồng xử lý — xem [ADR-0014](docs/adr/0014-factory-cleanup-and-thumbnail-staging.md). Kiểm tra UI desktop/mobile bằng Chromium được ghi tại [VALIDATION.md](docs/VALIDATION.md).
 
 - `src/studio/`: factory, console, orchestration, render, QC, provider và YouTube adapter.
 - `src/studio/web/`: HTML/CSS/JavaScript native, đóng gói cùng Python.
 - `agents/`, `skills/`, `topics/`: 14 vai, 24 skill và schema sự kiện; giữ prompt hiện có.
 - `gateway/`, `xagents-core/`: thành viên uv workspace có test/coverage riêng.
-- `tests/`: pytest 1173 ca / 69 file.
-- Test: 1173 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
-- `docs/adr/`: ADR 0001–0020; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình.
+- `tests/`: pytest 1329 ca / 84 file Python.
+- Test: 1329 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
+- `docs/adr/`: ADR 0001–0024; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình, [ADR-0022](docs/adr/0022-default-quality-and-native-shorts.md) đưa chất lượng vào mặc định, [ADR-0023](docs/adr/0023-excerpt-ranges-and-rights-evidence.md) giữ mốc cảnh và hồ sơ quyền của bản trích, [ADR-0024](docs/adr/0024-current-export-traceability.md) nối đúng kịch bản và quyền thành phần của bản xuất.
 
 Giấy phép: [Apache-2.0](LICENSE), cùng giấy phép với repo nguồn [`X-Agents`](https://github.com/seeker19110/X-Agents) mà `xagents-core/` và `gateway/` được vendor về.
 
-Tham khảo thêm: [kiến trúc nền](docs/architecture.md), [CLI chi tiết](docs/CLI-REFERENCE.md), [CLAUDE.md](CLAUDE.md). Các hướng dẫn cũ về gate được bổ sung bởi policy ủy quyền ở ADR-0010.
+Tham khảo thêm: [hướng nâng cấp tiếp theo và tiêu chí nghiệm thu](docs/RESEARCH-NEXT-UPGRADES.md), [kiến trúc nền](docs/architecture.md), [CLI chi tiết](docs/CLI-REFERENCE.md), [CLAUDE.md](CLAUDE.md). Các hướng dẫn cũ về gate được bổ sung bởi policy ủy quyền ở ADR-0010.

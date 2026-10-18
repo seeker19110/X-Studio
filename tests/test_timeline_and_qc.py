@@ -410,7 +410,7 @@ def test_qc_catches_a_real_still_image_slideshow_but_not_ken_burns(tmp_path, mon
     for motion, frozen in (("none", True), ("auto", False)):
         out = tmp_path / motion
         cfg = MediaConfig(output_dir=out, video={"provider": "ffmpeg", "fps": 12, "resolution": "320x180",
-                                                 "motion": motion})
+                                                 "motion": motion, "layout":"full_bleed", "burn_captions":False})
         suite = make_media(cfg); suite.image = Textured()
         bus = InMemoryBus(); r = Renderer(bus, suite, out)
         m = SceneManifest(video_id="VS", scenes=[Scene(

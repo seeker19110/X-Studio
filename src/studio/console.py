@@ -12,10 +12,11 @@ import threading
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .factory import Factory
 from .media import MediaConfig, load_media_config
+from .storage import ConflictError
 
 STATIC = Path(__file__).with_name("web")
 
@@ -76,7 +77,31 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             file = STATIC / static[path]
             self.send(200, file.read_bytes(), mimetypes.guess_type(file)[0] or "text/plain"); return
         if not self.authorized(): self.json(401, {"error": "Nhập mã truy cập xưởng"}); return
-        if path == "/api/state": self.json(200, self.server.factory.snapshot()); return
+        if path == "/api/state":
+            self.json(200,self.server.factory.snapshot(lean=True) if self.headers.get('X-Studio-Overview')=='1' else self.server.factory.snapshot()); return
+        if path == '/api/projects':
+            try:
+                query = parse_qs(urlsplit(self.path).query)
+                self.json(200,self.server.factory.projects_page(int(query.get('limit',['50'])[0]),int(query.get('offset',['0'])[0])))
+            except ValueError: self.json(400,{'error':'Invalid project page'})
+            return
+        if path.startswith('/api/projects/'):
+            try: self.json(200,{'project':self.server.factory.project_detail(unquote(path.removeprefix('/api/projects/')))})
+            except ValueError: self.json(404,{'error':'Không tìm thấy dự án'})
+            return
+        if path == '/api/ideas': self.json(200, self.server.factory.ideas.snapshot()); return
+        if path == '/api/library':
+            try: self.json(200,self.server.factory.library.snapshot())
+            except (ValueError,OSError): self.json(400,{'error':'Không đọc được thư viện media'})
+            return
+        if path == '/api/resources':
+            try: self.json(200,self.server.factory.resources(int(parse_qs(urlsplit(self.path).query).get('max_bytes',['0'])[0])))
+            except (ValueError,OSError): self.json(400,{'error':'Không đọc được dung lượng hoặc giới hạn cache'})
+            return
+        if path == '/api/doctor':
+            try: self.json(200, self.server.factory.doctor(parse_qs(urlsplit(self.path).query).get('flow', ['render'])[0]))
+            except ValueError: self.json(400, {'error':'Unknown production flow'})
+            return
         if path.startswith("/media/"):
             media_file = self.server.factory.media_path(path.removeprefix("/media/"))
             if media_file is not None:
@@ -129,8 +154,15 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self.same_origin(): self.json(403, {"error": "Invalid origin"}); return
         try:
+            if urlsplit(self.path).path == '/api/library/upload':
+                if not self.authorized(): self.json(401,{'error':'Authentication required'}); return
+                if self.headers.get('X-Studio-Request') != '1': self.json(403,{'error':'Missing request header'}); return
+                length = int(self.headers.get('Content-Length','0'))
+                filename = parse_qs(urlsplit(self.path).query).get('name',[''])[0]
+                self.json(200,self.server.factory.library.upload(filename,self.rfile,length)); return
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 65536: raise ValueError("request size must be 1–65536 bytes")
+            limit = 4 * 1024 * 1024 if self.path == '/api/ideas' else 65536
+            if not 0 < length <= limit: raise ValueError(f"request size must be 1–{limit} bytes")
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict): raise ValueError("JSON object required")
             if self.path == "/api/login":
@@ -139,9 +171,19 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 self.json(200, {"ok": True}, {"Set-Cookie": f"studio_session={self.server.token}; HttpOnly; SameSite=Strict; Path=/"}); return
             if not self.authorized(): self.json(401, {"error": "Authentication required"}); return
             if self.headers.get("X-Studio-Request") != "1": self.json(403, {"error": "Missing request header"}); return
+            if self.path == '/api/library':
+                self.json(200,self.server.factory.library.save(body['revision'],body['asset'])); return
+            if self.path == '/api/ideas':
+                if body.get('action') == 'import': result = self.server.factory.ideas.import_items(body['ideas'])
+                elif body.get('action') == 'apply': result = self.server.factory.ideas.apply(body['changes'])
+                elif body.get('action') == 'convert': result = self.server.factory.convert_idea(body)
+                else: raise ValueError('Unknown idea action')
+                self.json(200, result); return
             if self.path != "/api/commands": self.json(404, {"error": "Unknown endpoint"}); return
             id = self.server.factory.command(str(body["kind"]), body.get("data", {}))
             self.json(202, {"id": id})
+        except ConflictError as exc:
+            self.json(409, {'error':str(exc)})
         except (ValueError, KeyError, TypeError) as exc:
             self.json(400, {"error": str(exc)[:300]})
 

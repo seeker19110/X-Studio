@@ -20,6 +20,16 @@ PRICES = {"tts": {"price_per_1k_chars": 0.015}, "image": {"price_per_image": 0.0
           "scene_video": {"price_per_second": 0.1}}
 
 
+def test_console_production_prices_are_visible_to_the_provider_ledger(tmp_path):
+    cfg=MediaConfig(output_dir=tmp_path,production={'pricing':{
+        'tts_per_1000_chars':.02,'image_per_request':.03,'video_per_second':.04}})
+    cfg.tts['provider']='command';cfg.image['provider']='command';cfg.scene_video['provider']='comfyui'
+    assert media_cost.priced(cfg)
+    assert media_cost.quote(cfg,'tts',1000)==pytest.approx(.02)
+    assert media_cost.quote(cfg,'image',2)==pytest.approx(.06)
+    assert media_cost.quote(cfg,'scene_video',3)==pytest.approx(.12)
+
+
 def _paid(tmp_path, budget: float | None = None, **video) -> Renderer:
     """Renderer với adapter giả nhưng cấu hình như provider trả phí: sổ chỉ bỏ qua provider tên `fake`."""
     cfg = MediaConfig(output_dir=tmp_path, production={"media_budget_usd": budget} if budget is not None else {})

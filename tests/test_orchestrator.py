@@ -71,6 +71,15 @@ def test_full_pipeline_stops_at_gates_and_publishes_after_approval(tmp_path, mon
     assert briefs[-1]["retry"] == 1 and "hook yếu" in briefs[-1]["hint"]
     assert "PUB-CH1-V2" in o.gate.pending
     assert o.manifest("CH1-V2").version > before_rework
+    # Rework keeps thumbnail history in the log, but reviewers must receive one current file per variant.
+    from studio.orchestrator import _with_package
+    thumbnails = [e.payload for e in bus.replay('media-assets', 'CH1-V2') if e.payload['kind'] == 'thumbnail']
+    assert len(thumbnails) == 4
+    trigger = next(e for e in reversed(list(bus.replay('media-assets', 'CH1-V2'))) if e.payload['kind'] == 'final_video')
+    package = _with_package(trigger, o)['package']
+    assert package['thumbnails'] == thumbnails[-2:]
+    assert package['thumbnail_spec'] == o.latest('thumbnail-specs', 'CH1-V2').payload
+    assert package['thumbnail_version_scope'] == 'thumbnail-specs; independent of scene manifest version'
     # số liệu thật → phân tích với điểm rơi map vào cảnh → strategy nhận insight
     bus.publish(Envelope(topic="publish-events", key="CH1-V1", actor="human", payload={"video_id": "CH1-V1", "status": "published"}))
     bus.publish(Envelope(topic="performance-snapshots", key="CH1-V1", actor="human", payload={
@@ -94,6 +103,26 @@ def test_fact_block_reworks_script_then_blocks_and_opens_escalation(tmp_path):
     assert not list(bus.replay("scene-manifests"))  # không sản xuất khi chưa qua fact
     o.gate.decide("ESC-CH1-V1", "reject", by="human:owner", reason="bỏ chủ đề"); o.run()
     assert o.desk.state["CH1-V1"] == "closed"
+
+
+def test_two_failing_reviews_of_same_final_request_one_combined_rework_across_restart(tmp_path):
+    db=tmp_path/'studio.sqlite';bus=SQLiteBus(db);o=_orch(bus,tmp_path)
+    bus.publish(Envelope(topic='channel-briefs',key='CH1',actor='human:owner',payload=CHANNEL));o.run()
+    o.gate.decide('PLAN-CH1-1','approve',by='human:owner');o.run()
+    failures=[]
+    for source,message in [('quality','Title does not match narration'),('rights','Permission evidence missing')]:
+        failures.append(bus.publish(Envelope(topic='review-results',key='CH1-V1',actor=source+'-checker' if source=='rights' else 'quality-reviewer',
+            payload={'video_id':'CH1-V1','source':source,'verdict':'block','findings':[{'level':'block','text':message}]})))
+    o.process(failures[0])
+    assert o.desk.briefs['CH1-V1'].retry==1
+    assert all(text in o.desk.briefs['CH1-V1'].hint for text in ('Title does not match narration','Permission evidence missing'))
+    bus.close()
+    resumed_bus=SQLiteBus(db);resumed=_orch(resumed_bus,tmp_path)
+    try:
+        resumed.process(failures[1])
+        assert resumed.desk.briefs['CH1-V1'].retry==1
+        assert len(list(resumed_bus.replay('video-briefs','CH1-V1')))==2
+    finally:resumed_bus.close()
 
 
 def test_preflight_block_reruns_seo_once(tmp_path):

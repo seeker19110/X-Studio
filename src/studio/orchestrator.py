@@ -56,11 +56,12 @@ from .events import (
 )
 from .gate_cli import PersistentGate, rollback_target, trusted_decision
 from .gates import GateRequest, gate_approvers
+from .inspection import inspect_project
 from .llm import LLMError, ModelClient, TransientError
 from .media import MediaError, MediaSuite, frame_size
 from .media_cost import MediaBudgetError
 from .motion import verify_graphics
-from .platform import Platform, PlatformError, UploadResult, make_platform
+from .platform import Platform, PlatformError, UploadResult, YouTubePlatform, make_platform
 from .preflight import PreflightReport, preflight, synthetic_media_of
 from .qc import QCReport, qc_scenes, qc_video
 from .registry import AgentSpec, load_agents
@@ -70,6 +71,7 @@ from .routing import retry_after_seconds
 from .runner import CONTEXT_ONLY, AgentRunner, RunnerError
 from .supervisor import Supervisor
 from .timeline import snap_chapters
+from .upload_sessions import UploadSessions
 from .youtube import sync_comments, sync_metrics
 
 ACTOR = "orchestrator"
@@ -108,16 +110,21 @@ def _from(*actors: str) -> When:
     return lambda e, _o: e.actor in actors
 
 
-def _field(name: str, *values: Any) -> When:
-    return lambda e, _o: e.payload.get(name) in values
-
-
 def _retry(e: Envelope, _o: Orchestrator) -> bool:
     return int(e.payload.get("retry", 0)) > 0
 
 
 def _fact_pass(e: Envelope, _o: Orchestrator) -> bool:
     return e.payload.get("source") == "fact" and e.payload.get("verdict") == "pass"
+
+
+def _needs_scene_plan(e: Envelope, o: Orchestrator) -> bool:
+    script = o.latest('scripts',e.payload.get('video_id') or e.key)
+    return _fact_pass(e,o) and (script is None or script.actor not in {'console:editor','console:shorts'})
+
+
+def _original_brief(e: Envelope, _o: Orchestrator) -> bool:
+    return e.payload.get('retry')==0 and e.actor != 'console:shorts'
 
 
 def _kind(k: str) -> When:
@@ -150,6 +157,12 @@ def _with_script(e: Envelope, o: Orchestrator) -> dict[str, Any]:
     s = _latest_payload(o, "scripts", vid); b = o.desk.briefs.get(vid)
     if s: out["script"] = s
     if b: out["brief"] = b.model_dump()
+    out['metadata_quality_contract']='Không dùng thời lượng video làm lời hứa tốc độ thao tác. Không ghi số giây/phút trong title, alt_titles hoặc description khi chưa đo công việc đó. Chỉ hứa nội dung trong narration.'
+    final=next((a for a in reversed(_assets_of(o,vid)) if a['kind']=='final_video'),None)
+    out['measured_runtime_s']=final.get('duration_s') if final else None
+    if assessment := o.renderer.media.cfg.tts.get('rights_assessment'):out['speech_rights']=assessment
+    out['speech_profile']={k:v for k,v in o.renderer.media.cfg.tts.items()
+                           if k in {'provider','model','voice','language','license','source_url','attribution'}}
     return out
 
 
@@ -167,15 +180,20 @@ def _with_manifest_assets(e: Envelope, o: Orchestrator) -> dict[str, Any]:
     phỏng đoán. Máy không có ffmpeg thì trường này rỗng và editor làm việc như cũ."""
     vid = e.payload["video_id"]; m = o.manifest(vid)
     if m is None: return {}
-    return {"manifest": m.model_dump(), "scene_assets": _assets_of(o, vid, m.version), "scene_qc": qc_scenes(m),
+    return {"manifest": m.model_dump(), "scene_assets": [a for a in _assets_of(o,vid) if a['path'] in {p for s in m.scenes for p in s.asset_refs.values()}], "scene_qc": qc_scenes(m),
             "repair_rounds_used": o.desk.repair_rounds[vid], "repair_rounds_max": 3}
 
 
 def _with_package(e: Envelope, o: Orchestrator) -> dict[str, Any]:
     vid = e.payload["video_id"]; m = o.manifest(vid)
+    # Thumbnail paths are replaced by later renders; historical checksums describe obsolete bytes.
+    thumbnails = {a.get('variant_id') or a['path']: a for a in _assets_of(o, vid) if a['kind'] == 'thumbnail'}
     pkg: dict[str, Any] = {"script": _latest_payload(o, "scripts", vid), "metadata": _latest_payload(o, "metadata-packages", vid),
+                           'brief': o.desk.briefs[vid].model_dump() if vid in o.desk.briefs else None,
                            "manifest": m.model_dump() if m else None,
-                           "thumbnails": [a for a in _assets_of(o, vid) if a["kind"] == "thumbnail"],
+                           "thumbnails": list(thumbnails.values()),
+                           'thumbnail_spec': _latest_payload(o, 'thumbnail-specs', vid),
+                           'thumbnail_version_scope': 'thumbnail-specs; independent of scene manifest version',
                            "final_video": next((a for a in reversed(_assets_of(o, vid)) if a["kind"] == "final_video"), None),
                            "captions": next((a for a in reversed(_assets_of(o, vid)) if a["kind"] == "captions"), None),
                            # ADR-0020: một khung giữa mỗi cảnh của BẢN CUỐI — quality-reviewer khai `inputs: [contact_sheet]`
@@ -183,16 +201,76 @@ def _with_package(e: Envelope, o: Orchestrator) -> dict[str, Any]:
                            "contact_sheet": next((a for a in reversed(_assets_of(o, vid)) if a["kind"] == "contact_sheet"), None),
                            "preflight": [f.model_dump() for f in o.preflights.get(vid, PreflightReport()).findings],
                            # QC đo trên FILE thật: quality-reviewer chỉ đọc JSON nên đây là mắt và tai của nó
-                           "qc": o.qcs[vid].as_dict() if vid in o.qcs else None}
+                           "qc": o.qcs[vid].as_dict() if vid in o.qcs else None,
+                           'inspection':o.inspections.get(vid),
+                           'presentation':[json.loads(item.payload['evidence']) for item in o.bus.replay('audit-log')
+                                           if item.actor==RENDERER and item.payload.get('action')=='render.presentation'
+                                           and item.payload.get('video_id')==vid],
+                           'derivation':next((json.loads(item.payload['evidence']) for item in reversed(list(o.bus.replay('audit-log')))
+                                             if item.actor==ACTOR and item.payload.get('action')=='clip.derived'
+                                             and item.payload.get('video_id')==vid),None)}
+    if pkg.get('derivation') and pkg['derivation'].get('thumbnail_spec'):
+        pkg['thumbnail_spec']={**pkg['derivation']['thumbnail_spec'],'video_id':vid,
+                               'reused_from':pkg['derivation']['source_video_id']}
     return {"package": {k: v for k, v in pkg.items() if v is not None}}
 
 
 def _with_provenance(e: Envelope, o: Orchestrator) -> dict[str, Any]:
     vid = e.payload["video_id"]
     s = _latest_payload(o, "scripts", vid) or {}
-    # contact_sheet (ADR-0016) là công cụ soát nội bộ, không lên nền tảng: không đưa vào đầu vào model xét quyền.
-    return {"assets": [{"kind": a["kind"], "scene_id": a.get("scene_id"), "path": a["path"], "provenance": a["provenance"]}
-                       for a in _assets_of(o, vid) if a["kind"] != "contact_sheet"], "claims": s.get("claims", []), "brief": (o.desk.briefs[vid].model_dump() if vid in o.desk.briefs else {})}
+    brief = o.desk.briefs.get(vid); manifest = o.manifest(vid)
+    data = {"assets": [{"kind": a["kind"], "scene_id": a.get("scene_id"), "path": a["path"], "provenance": a["provenance"],
+                       'checksum':a.get('checksum'),'manifest_version':a.get('manifest_version',0),'variant_id':a.get('variant_id')}
+                       for a in _assets_of(o, vid) if a['kind'] != 'contact_sheet'], "claims": s.get("claims", []),
+            "brief": brief.model_dump() if brief else {}, 'script': s,
+            'metadata': _latest_payload(o, 'metadata-packages', vid),
+            'manifest': manifest.model_dump() if manifest else None,
+            'thumbnail_spec': _latest_payload(o, 'thumbnail-specs', vid)}
+    paths={path for scene in manifest.scenes for path in scene.asset_refs.values()} if manifest else set()
+    current={(a['path'],a['kind'],a['scene_id'],a['variant_id']):a for a in data['assets']}
+    for asset in data['assets']:
+        used=(asset['path'] in paths or asset['kind']=='thumbnail' or
+              (manifest is not None and asset['manifest_version']==manifest.version
+               and asset['kind'] in {'final_video','draft_video','captions','music'}))
+        identity=(asset['path'],asset['kind'],asset['scene_id'],asset['variant_id'])
+        asset['usage']='current' if used and asset is current[identity] else 'historical'
+    data['asset_usage_contract']='Current export uses current records only; historical assets keep their original evidence and must be reviewed anew before reuse. Generated assembly is not a grant for its components. Scene audio/video records pointing at one audiovisual excerpt describe that composite file and its scene range; inspect derivation_sources for the individual image and speech licenses.'
+    data['timing_evidence']=[json.loads(item.payload['evidence']) for item in o.bus.replay('audit-log')
+                             if item.actor==RENDERER and item.payload.get('action')=='render.timing'
+                             and item.payload.get('video_id')==vid
+                             and json.loads(item.payload['evidence']).get('path') in paths]
+    data['presentation'] = [json.loads(item.payload['evidence']) for item in o.bus.replay('audit-log')
+                            if item.actor == RENDERER and item.payload.get('action')=='render.presentation'
+                            and item.payload.get('video_id')==vid]
+    from .media import find_font
+    from .presentation import font_evidence
+    font=font_evidence(find_font(o.renderer.media.cfg.video))
+    data['font_evidence']=font
+    if assessment := o.renderer.media.cfg.tts.get('rights_assessment'):data['speech_rights']=assessment
+    if font.get('license_file'):
+        data['font_license_notice']=(Path(__file__).resolve().parents[2]/font['license_file']).read_text(encoding='utf-8')
+    source = o.latest('channel-briefs',brief.channel_id) if brief else None
+    declaration = (source.payload.get('requested_video') or {}).get('rights_dossier') if source else None
+    if declaration and source and brief:
+        data['operator_rights_dossier'] = {'video_id':vid,'channel_id':brief.channel_id,
+            'source_event_id':source.event_id,'source_actor':source.actor,'declaration':declaration}
+    derived = next((item for item in reversed(list(o.bus.replay('audit-log'))) if item.actor == ACTOR
+                    and item.payload.get('action') == 'clip.derived' and item.payload.get('video_id') == vid), None)
+    if derived:
+        trace = json.loads(derived.payload['evidence']); data['derivation'] = trace
+        parent = trace['source_video_id']
+        parent_assets = _assets_of(o,parent)
+        source_version = trace.get('source_manifest_version') or next(asset['manifest_version'] for asset in parent_assets
+                         if asset['kind'] == 'final_video' and asset.get('checksum') == trace['source_sha256'][:16])
+        source_manifest = next(item.payload for item in reversed(list(o.bus.replay('scene-manifests',parent)))
+                               if item.payload['version'] == source_version)
+        paths = {path for scene in source_manifest['scenes'] for path in scene['asset_refs'].values()}
+        checksums = {trace['source_sha256'][:16], trace.get('source_caption_sha256','')[:16]}
+        checksums.update(asset.get('sha256','')[:16] for asset in trace.get('presentation_sources',[]))
+        data['derivation_sources'] = [asset for asset in parent_assets
+                                      if asset['path'] in paths or asset.get('checksum') in checksums]
+        data['source_manifest'] = source_manifest
+    return data
 
 
 def _with_retention(e: Envelope, o: Orchestrator) -> dict[str, Any]:
@@ -220,12 +298,12 @@ ROUTES: tuple[Route, ...] = (
     # chiến lược
     Route("channel-briefs", "trend-researcher", "trend-reports"),
     # từng video: nghiên cứu → kịch bản → kiểm chứng
-    Route("video-briefs", "trend-researcher", "research-dossiers", _field("retry", 0)),
+    Route("video-briefs", "trend-researcher", "research-dossiers", _original_brief),
     Route("video-briefs", "script-writer", "scripts", _retry, enrich=_with_dossier),  # làm lại có hint, giữ hồ sơ cũ
     Route("research-dossiers", "script-writer", "scripts", enrich=_with_brief),
     Route("scripts", "fact-checker", "review-results"),
     # kịch bản qua kiểm chứng → sản xuất + SEO song song
-    Route("review-results", "production-manager", "scene-manifests", _fact_pass, enrich=_with_script),
+    Route("review-results", "production-manager", "scene-manifests", _needs_scene_plan, enrich=_with_script),
     Route("review-results", "seo-optimizer", "metadata-packages", _fact_pass, enrich=_with_script),
     Route("scene-manifests", "thumbnail-designer", "thumbnail-specs", _from("production-manager"), enrich=_with_script),
     # bản nháp → editor quyết định sửa cảnh / chốt; bản cuối → hai review độc lập
@@ -289,6 +367,9 @@ class Orchestrator:
         self.supervisor = Supervisor(bus, max_retries=max_retries)
         self.runner = AgentRunner(bus, client, self.agents, self.blackboard)
         self.platform: Platform = platform or make_platform(self.renderer.media.cfg)
+        database = getattr(bus, 'path', None)
+        if isinstance(self.platform, YouTubePlatform) and database is not None:
+            self.platform.sessions = UploadSessions(Path(database))
         self.sync_every = int(os.environ.get(SYNC_EVERY_ENV, "0") or 0) if sync_every is None else int(sync_every)
         self.last_sync: dict[str, datetime] = {}  # video_id → lần kéo gần nhất (chỉ trong bộ nhớ; mở lại là kéo ngay)
         self.triggers: dict[str, str] = {}       # video_id → người duyệt plan chứa video (ghi vào gate publish)
@@ -298,6 +379,7 @@ class Orchestrator:
         self.reply_batches: dict[str, list[dict[str, Any]]] = {}
         self.preflights: dict[str, PreflightReport] = {}
         self.qcs: dict[str, QCReport] = {}  # QC bằng code trên bản dựng cuối (đo file, không đọc manifest)
+        self.inspections: dict[str,dict] = {}
         self.queue: list[Envelope] = []
         self.deferred: dict[str, tuple[Envelope, str]] = {}
         # Mốc hẹn của backend ("thử lại sau 1515s"): hỏi lại sớm hơn chỉ tốn một dòng lỗi và làm bẩn audit-log.
@@ -332,6 +414,14 @@ class Orchestrator:
                                                     findings=[Finding.model_validate(f) for f in d["findings"]])
                         except ValidationError:
                             pass  # Invalid newer evidence must not overwrite a valid report.
+                elif env.actor == ACTOR and a['actor'] == ACTOR and a['action'] == 'inspection' and d.get('video_id'):
+                    required = {'fingerprint','contact_sheet','contact_sha256','sampled_scenes','total_scenes'} if d.get('available') else set()
+                    if (isinstance(d.get('available'),bool) and isinstance(d.get('manifest_version'),int)
+                            and required.issubset(d) and isinstance(d.get('findings'),list)):
+                        try:
+                            for finding in d['findings']: Finding.model_validate(finding)
+                        except ValidationError: continue
+                        self.inspections[d['video_id']] = d
                 elif a["action"] == "plan.proposed": self.plans[d["plan_id"]] = d
                 elif a["action"] == "replies.proposed": self.reply_batches[d["batch_id"]] = d["drafts"]
                 elif a["action"] == "defer.until" and d.get("event_id"):
@@ -348,7 +438,7 @@ class Orchestrator:
             elif env.topic == "shared-context": self.blackboard._on(env)
             elif env.topic == "metadata-packages":
                 self.desk.replay(env)
-                self.preflights[env.payload["video_id"]] = preflight(MetadataPackage.model_validate(env.payload), self._format(env.payload["video_id"]))
+                self.preflights[env.payload["video_id"]] = self._metadata_preflight(MetadataPackage.model_validate(env.payload))
             else: self.desk.replay(env)
             self.supervisor.replay(env)
         # Plan đã duyệt chỉ coi là "đã dispatch" khi thấy bằng chứng: brief của plan đã lên bus, hoặc event quyết định đã
@@ -392,6 +482,9 @@ class Orchestrator:
 
     def _track_pause(self, env: Envelope) -> None:
         act, target = env.payload["action"], env.payload["target"]
+        if act == 'escalate' and env.payload.get('reason','').startswith('không hoạt động > ') \
+                and self.desk.ready_for_publish(target):
+            return  # Completed exports wait at their publication gate, including when replaying old idle notices.
         if act in PAUSING:
             self.paused.add(target)
             if act == "escalate" and target in self.desk.state and self.desk.state[target] not in {"closed", "blocked"}:
@@ -471,7 +564,8 @@ class Orchestrator:
                 self._remember(key); self._audit("review.reassign", {"video_id": vid, "source": src}, video_id=vid)
                 res = StepResult(fin.event_id, fin.topic, fin.key)
                 self._call(route, fin, res, replay_completed=True); results.append(res)
-        active = {vid for vid, st in self.desk.state.items() if st in ACTIVE_STATES}
+        active = {vid for vid, st in self.desk.state.items() if st in ACTIVE_STATES
+                  and not self.desk.ready_for_publish(vid)}
         self.supervisor.check_timeouts(now, active=active)
         results += self.run(max_steps)
         return results
@@ -613,6 +707,9 @@ class Orchestrator:
 
     def _call(self, r: Route, env: Envelope, res: StepResult, extra: dict[str, Any] | None = None,
               *, replay_completed: bool = False) -> list[Envelope]:
+        vid = env.payload.get('video_id') or env.key
+        invalidated = self.gate.invalidated_at.get('PUB-'+vid)
+        if invalidated and env.ts < invalidated: return []
         # A sibling route may be deferred after this one succeeded. Persist each success
         # independently so retry/restart does not regenerate completed work or charge twice.
         # Explicit overdue-review reassignment may intentionally replay a completed route.
@@ -746,12 +843,25 @@ class Orchestrator:
         manifest = self.manifest(meta.video_id)
         if manifest is None: return
         paths = {p for scene in manifest.scenes for p in scene.asset_refs.values()}
-        assets = _assets_of(self, meta.video_id)
+        assets = list({a['path']:a for a in _assets_of(self, meta.video_id)}.values())
         paths.update(a["path"] for a in assets if a["kind"] == "music" and a["manifest_version"] == manifest.version)
         for asset in assets:
             prov = asset["provenance"]; credit = prov.get("attribution", "").strip()
-            if asset["path"] in paths and prov["license"] == "cc-by" and credit and credit not in meta.description:
-                meta.description += f"\n\nCredit: {credit}" + (f"\n{prov['source_url']}" if prov.get("source_url") else "")
+            notices=[notice for notice in credit.splitlines() if notice.strip()]
+            if asset['path'] in paths and prov['license'] in {'cc-by','licensed'}:
+                for notice in notices:
+                    paragraphs=[]; complete=notice in meta.description
+                    for paragraph in meta.description.split('\n\n'):
+                        prefix=paragraph.removeprefix('Credit: ').strip()
+                        if len(prefix)>=40 and prefix!=notice and notice.startswith(prefix):
+                            if not complete: paragraphs.append(paragraph.replace(prefix,notice,1)); complete=True
+                        else: paragraphs.append(paragraph)
+                    meta.description='\n\n'.join(paragraphs)
+            missing=[notice for notice in notices if notice not in meta.description]
+            if asset["path"] in paths and prov["license"] in {"cc-by","licensed"} and missing:
+                meta.description += "\n\nCredit: " + ('\n'.join(missing) if len(missing)<len(notices) else credit)
+                if prov.get('source_url') and prov['source_url'] not in meta.description:
+                    meta.description += f"\n{prov['source_url']}"
 
     def _after_final(self, m: SceneManifest, order: list[str] | None, final: MediaAsset, res: StepResult) -> None:
         """Hai việc CODE làm ngay khi có bản cuối, trước khi ai duyệt gì:
@@ -784,22 +894,32 @@ class Orchestrator:
                 self._audit("chapters.snapped", {"video_id": vid, "chapters": [c.model_dump() for c in fixed]}, video_id=vid)
                 self.bus.publish(Envelope(topic="metadata-packages", key=vid, actor="chapters", payload=meta.model_dump()))
                 res.actions.append(f"chapters→{len(fixed)}")
+            self.preflights[vid]=self._metadata_preflight(meta)
         v = self.renderer.media.cfg.video
         fps, res_str = int(v.get("fps", 30)), frame_size(v, m.aspect)
         thumb = self._chosen_thumbnail(vid); cap = self._captions_of(vid)
         rep = qc_video(Path(final.path), expected_duration_s=final.duration_s or 0.0, expected_resolution=res_str,
                        expected_fps=fps, thumbnail=Path(thumb) if thumb else None, captions=Path(cap) if cap else None,
-                       narration=[(c.scene_id, c.start, c.end, c.text) for c in cues])
+                       narration=[(c.scene_id,c.start,c.end,c.text) for c in cues])
+        inspection = inspect_project(m,final,self.renderer.media.cfg)
+        self.inspections[vid] = inspection
+        rep.findings.extend(Finding.model_validate(f) for f in inspection['findings'])
+        self._audit('inspection',{'video_id':vid,**inspection},video_id=vid)
         self.qcs[vid] = rep
         self._audit("qc", {"video_id": vid, **rep.as_dict()}, video_id=vid)
         res.actions.append(f"qc:{'block' if rep.blocked else 'ok'}:{len(rep.findings)}" if rep.available else "qc:n/a")
+
+    def _metadata_preflight(self, meta: MetadataPackage) -> PreflightReport:
+        m=self.manifest(meta.video_id)
+        cues=self.renderer.cues(m) if m else []
+        return preflight(meta,self._format(meta.video_id),duration_s=cues[-1].end if cues else None)
 
     def _preflight(self, env: Envelope, res: StepResult) -> None:
         meta = MetadataPackage.model_validate(env.payload)
         self._credit_metadata(meta)
         if meta.description != env.payload["description"]:
             self.bus.publish(Envelope(topic="metadata-packages", key=meta.video_id, actor="chapters", payload=meta.model_dump()))
-        rep = preflight(meta, self._format(meta.video_id)); self.preflights[meta.video_id] = rep
+        rep = self._metadata_preflight(meta); self.preflights[meta.video_id] = rep
         self._audit("preflight", {"video_id": meta.video_id, "blocked": rep.blocked, "findings": [f.model_dump() for f in rep.findings]},
                     video_id=meta.video_id)
         res.actions.append(f"preflight:{'block' if rep.blocked else 'ok'}:{len(rep.findings)}")
@@ -827,7 +947,11 @@ class Orchestrator:
         được kiểm) chứ không so chuỗi trên dict thô. Đường còn lại (`publish-events` rolled_back) đã có hint sẵn
         và KHÔNG phải ReviewResult — không validate nhầm kiểu ở đó."""
         vid = str(env.payload.get("video_id") or env.key)
-        stage = "production"
+        script = self.latest('scripts',vid)
+        if hint is None and script is not None and script.actor in {'console:editor','console:shorts'}:
+            self._audit('review.manual_hold',{'video_id':vid,'reason':'Giữ bản sửa của người dùng để xử lý finding'},video_id=vid)
+            res.actions.append('review:manual_hold'); return
+        stage = "production"; rr = None
         if hint is None:
             try:
                 rr = ReviewResult.model_validate(env.payload)
@@ -838,7 +962,23 @@ class Orchestrator:
             hint = f"{rr.source}: {rr.root_cause or blocks or '; '.join(f.text for f in rr.findings)}"
             stage = "script" if rr.source == "fact" else "production"
         if vid not in self.desk.briefs: return
+        review_key = None
+        if rr is not None:
+            inputs = list(self.bus.replay('scripts' if rr.source == 'fact' else 'media-assets', vid))
+            anchor = next((item for item in reversed(inputs) if item.ts <= env.ts
+                           and (rr.source == 'fact' or item.payload.get('kind') == 'final_video')), None)
+            if anchor:
+                review_key = 'review-rework:'+anchor.event_id
+                if review_key in self.once:
+                    res.actions.append('rework:coalesced'); return
+                sources = {'fact'} if rr.source == 'fact' else {'quality','rights'}
+                peers = {item.payload['source']: ReviewResult.model_validate(item.payload)
+                         for item in self.bus.replay('review-results',vid)
+                         if item.ts >= anchor.ts and item.payload['source'] in sources}
+                hint = '; '.join(f"{item.source}: {item.root_cause or '; '.join(f.text for f in item.findings)}"
+                                 for item in peers.values() if item.verdict != 'pass') or hint
         out = self.desk.rework(vid, hint, stage=stage)
+        if review_key: self._remember(review_key)
         res.actions.append("rework" if out else "blocked")
 
     # ---------- kế hoạch biên tập → gate plan → dispatch ----------
@@ -926,6 +1066,8 @@ class Orchestrator:
         sid = f"PUB-{vid}"
         if not self.desk.ready_for_publish(vid) or sid in self.gate.pending: return
         key = f"publish:{vid}:{self.desk.briefs[vid].retry}"
+        invalidated = self.gate.invalidated_at.get(sid)
+        if invalidated: key += ':'+invalidated.isoformat()
         if key in self.once: return
         self._remember(key)
         self.gate.request(GateRequest(kind="publish", subject_id=sid, created_by="desk", checklist=self._publish_checklist(vid),
@@ -954,6 +1096,8 @@ class Orchestrator:
         một chuỗi bất kỳ trên topic MỞ `audit-log`. `trusted_decision` bỏ qua bản ghi mạo danh; ở đây chỉ còn
         việc ghi lại rằng đã bỏ qua, vì một quyết định bị làm ngơ trong im lặng thì không ai đi tìm được."""
         d = trusted_decision(env)
+        if d and env.ts <= self.gate.invalidated_at.get(d['subject_id'],datetime.min.replace(tzinfo=UTC)):
+            d = None
         if d and env.actor == "policy:studio":
             accepted = next((g for g in reversed(self.gate.history) if g.subject_id == d["subject_id"]), None)
             if not accepted or d.get("request_at") != accepted.created_at.isoformat() or d["subject_id"] in self.gate.pending:
@@ -1101,7 +1245,12 @@ class Orchestrator:
                 self._audit("platform.upload_reused", {"video_id": vid, "platform_ref": up.platform_ref, "approved_by": approved_by}, video_id=vid)
             else:
                 if final is None: raise PlatformError("không có final_video để upload")
-                up = self.platform.upload_video(Path(final["path"]), meta, privacy="private", publish_at=None)
+                if isinstance(self.platform, YouTubePlatform) and self.platform.sessions is not None:
+                    gate = next((g for g in reversed(self.gate.history) if g.subject_id == 'PUB-' + vid), None)
+                    up = self.platform.upload_video(Path(final['path']), meta, privacy='private', publish_at=None,
+                         operation_id=vid, authorization=gate.created_at.isoformat() if gate else '')
+                else:
+                    up = self.platform.upload_video(Path(final["path"]), meta, privacy="private", publish_at=None)
                 steps = {"platform": self.platform.name, "upload": up.evidence, "file": final["path"], "checksum": final.get("checksum")}
                 self._audit("platform.upload", {"video_id": vid, "platform_ref": up.platform_ref, "url": up.url, "approved_by": approved_by, **steps}, video_id=vid)
             res.actions.append(f"platform:upload:{up.platform_ref}")

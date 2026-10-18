@@ -23,6 +23,7 @@ from .events import Envelope
 from .media import MediaConfig, MediaError, MediaResult
 
 RATES = {"tts": "price_per_1k_chars", "image": "price_per_image", "scene_video": "price_per_second"}
+CONSOLE_RATES = {'tts':'tts_per_1000_chars','image':'image_per_request','scene_video':'video_per_second'}
 TTS_PER_SECOND = "price_per_second"
 TTS_CHARS_PER_SECOND = 15.0   # ước lượng trước lượt gọi cho trần; sổ ghi theo thời lượng audio thật sau lượt gọi
 PRICE_KEYS = frozenset(RATES.values()) | {TTS_PER_SECOND}
@@ -50,7 +51,8 @@ def without_prices(section: dict[str, Any]) -> dict[str, Any]:
 
 def rate(cfg: MediaConfig, channel: str) -> float:
     key = RATES[channel]
-    return _usd(getattr(cfg, channel).get(key) or 0, f"{channel}.{key}")
+    configured=cfg.production.get('pricing',{}).get(CONSOLE_RATES[channel])
+    return _usd(configured if configured is not None else getattr(cfg, channel).get(key) or 0, f"{channel}.{key}")
 
 
 def tts_second_rate(cfg: MediaConfig) -> float:

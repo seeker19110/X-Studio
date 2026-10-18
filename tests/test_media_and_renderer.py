@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 from itertools import pairwise
@@ -536,7 +537,9 @@ def test_word_times_from_tts_reach_the_captions_and_survive_the_cache(tmp_path):
     r.media.tts.synthesize = Mock(side_effect=timed)
     m = _manifest(); r.render(m)
     sidecar = Path(m.scenes[0].asset_refs["scene_audio"]).parent / "S1.words.json"
-    assert json.loads(sidecar.read_text())[0] == [0.0, 0.15, "Câu"]
+    saved=json.loads(sidecar.read_text())
+    assert saved['words'][0] == {'text':'Câu','start':0.,'duration':.15}
+    assert saved['sha256'] == hashlib.sha256(Path(m.scenes[0].asset_refs['scene_audio']).read_bytes()).hexdigest()
     final = r.finalize(m)
     captions = next(e.payload for e in r.bus.replay("media-assets", "V1") if e.payload["kind"] == "captions")
     assert captions["provenance"]["generated_by"] == "studio:srt-word-times"

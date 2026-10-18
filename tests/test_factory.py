@@ -13,6 +13,96 @@ def test_project_requests_validate_duration_and_budget():
     assert ProjectRequest(title="x", target_minutes=720).target_minutes == 720
 
 
+def test_rights_dossier_reaches_current_video_with_full_review_inputs_and_survives_restart(tmp_path, monkeypatch):
+    from studio.orchestrator import _with_package, _with_provenance
+    monkeypatch.setenv('STUDIO_POLICY_KEY_FILE',str(tmp_path/'policy.key'))
+    cfg=MediaConfig(output_dir=tmp_path/'out',production={'automation':'production'})
+    db=tmp_path/'studio.sqlite'
+    declaration={'project_name':'X Studio','scope':'private_local_validation','permission':'Operator permits naming the local project in this test'}
+    f=Factory(db,cfg,demo=True)
+    try:
+        f.command('create',{'title':'Permission intake','target_minutes':.5,'rights_dossier':declaration})
+        for _ in range(40):f.cycle()
+        vid=f.snapshot()['projects'][0]['id']
+        trigger=next(e for e in reversed(list(f.bus.replay('media-assets',vid))) if e.payload['kind']=='final_video')
+        data=_with_provenance(trigger,f.orch)
+        assert data['operator_rights_dossier']['video_id']==vid
+        assert data['operator_rights_dossier']['declaration']==declaration
+        assert data['operator_rights_dossier']['source_actor']=='human:owner'
+        assert data['script']['sections'][0]['narration'] and data['manifest']['scenes'][0]['visual_prompt']
+        assert data['thumbnail_spec']['variants'][0]['prompt']
+        assert all(asset['checksum'] and asset['manifest_version'] >= 0 for asset in data['assets'])
+        assert _with_package(trigger,f.orch)['package']['brief']['target_minutes']==.5
+    finally:f.close()
+    reopened=Factory(db,cfg,demo=True)
+    try:
+        assert _with_provenance(trigger,reopened.orch)['operator_rights_dossier']['declaration']==declaration
+        reopened.command('create',{'title':'No declaration for another project','target_minutes':.5})
+        for _ in range(40):reopened.cycle()
+        other=next(p['id'] for p in reopened.snapshot()['projects'] if p['id']!=vid)
+        final=next(e for e in reversed(list(reopened.bus.replay('media-assets',other))) if e.payload['kind']=='final_video')
+        assert 'operator_rights_dossier' not in _with_provenance(final,reopened.orch)
+    finally:reopened.close()
+
+
+def test_factory_backup_quiesces_website_and_restores_offline_project(tmp_path, monkeypatch):
+    import json
+
+    from studio.backup import restore_backup
+    from studio.media import load_media_config
+    monkeypatch.setenv('STUDIO_POLICY_KEY_FILE', str(tmp_path / 'policy.key'))
+    db = tmp_path / 'studio.sqlite'; cfg = MediaConfig(output_dir=tmp_path / 'out', production={'automation':'production','style':'Màu ấm'},
+                                                     video={'provider':'fake','burn_captions':False},render={'threads':3})
+    f = Factory(db, cfg, demo=True)
+    try:
+        assert f.doctor()['demo']
+        with pytest.raises(ValueError): f.doctor('bad')
+        f.ideas.import_items([{'id':'a', 'title':'Bền vững'}])
+        f.command('create', {'title':'Khôi phục video', 'target_minutes':.2})
+        for _ in range(40):
+            f.cycle()
+            if f.snapshot()['gates'] and any(g['kind']=='publish' for g in f.snapshot()['gates']): break
+        assert f.snapshot()['projects']
+        bundle = tmp_path / 'backup'
+        f.command('backup', {'destination':str(bundle)}); f.cycle()
+        assert bundle.is_dir() and f.snapshot()['last_backup'] == str(bundle)
+        assert not f.websites.paused.is_set()
+        f.command('backup', {'destination':str(bundle)}); f.cycle()
+        assert f.commands.recent()[0]['status'] == 'error'
+    finally: f.close()
+    restored = tmp_path / 'restored'; restore_backup(bundle, restored)
+    reopened = Factory(restored / 'studio.sqlite', load_media_config(restored / 'media.restore.yaml'), demo=True)
+    try:
+        assert not reopened.running and reopened.snapshot()['automation'] == 'manual'
+        assert reopened.snapshot()['style']=='Màu ấm' and reopened.snapshot()['threads']==3 and not reopened.snapshot()['burn_captions']
+        assert reopened.ideas.snapshot()['ideas'][0]['title'] == 'Bền vững'
+        for env in reopened.bus.replay('media-assets'):
+            assert reopened.media_path(env.event_id).is_relative_to(restored)
+        assert reopened.snapshot()['projects'][0]['title'] == 'Khôi phục video'
+        assert json.loads((bundle / 'manifest.json').read_text())['files']
+    finally: reopened.close()
+
+
+def test_overview_omits_large_artifacts_and_project_detail_is_independent(tmp_path,monkeypatch):
+    monkeypatch.setenv('STUDIO_POLICY_KEY_FILE',str(tmp_path / 'policy.key'))
+    factory = Factory(tmp_path / 'studio.sqlite',MediaConfig(output_dir=tmp_path / 'out',production={'automation':'production'}),demo=True)
+    try:
+        factory.command('create',{'title':'Chi tiết dự án','target_minutes':.2})
+        for _ in range(40): factory.cycle()
+        full = factory.snapshot()['projects'][0]
+        overview = factory.snapshot(lean=True)['projects'][0]
+        assert overview['summary'] and overview['scene_count'] == len(full['scenes'])
+        assert 'script' not in overview and not overview['scenes']
+        assert all(a['kind'] in {'thumbnail','final_video','captions'} for a in overview['media'])
+        detail = factory.project_detail(full['id']); assert detail['script'] == full['script']
+        detail['title'] = 'changed'; assert factory.project_detail(full['id'])['title'] != 'changed'
+        assert factory.projects_page(1,0)['total'] == 1
+        for limit,offset in [(0,0),(101,0),(1,-1)]:
+            with pytest.raises(ValueError): factory.projects_page(limit,offset)
+        with pytest.raises(ValueError): factory.project_detail('missing')
+    finally: factory.close()
+
+
 @pytest.mark.parametrize("credential", [None, "invalid", '{"refresh_token":"test-token"}'])
 def test_snapshot_distinguishes_youtube_adapter_from_oauth(tmp_path, monkeypatch, credential):
     from studio.platform import TokenStore, YouTubePlatform
@@ -248,3 +338,63 @@ def test_factory_close_failure_still_releases_lease(tmp_path, monkeypatch, error
         factory.close()
     assert factory.stop.is_set()
     assert not db.with_name(db.name + ".lock").exists()
+
+
+def test_overview_pages_details_resources_and_cleanup_preserve_project_data(tmp_path,monkeypatch):
+    import json
+    monkeypatch.setenv('STUDIO_POLICY_KEY_FILE',str(tmp_path/'policy.key'))
+    cfg=MediaConfig(output_dir=tmp_path/'out',production={'automation':'production'})
+    f=Factory(tmp_path/'db',cfg,demo=True)
+    try:
+        f.ideas.import_items([{'id':'idea','title':'Dự án từ SQLite'}])
+        f.convert_idea({'id':'idea','revision':1,'data':{'title':'Dự án từ SQLite','target_minutes':.2}})
+        with pytest.raises(ValueError):f.convert_idea({'id':'idea','revision':1,'data':{'title':'x','visual_mode':'generated_video'}})
+        for _ in range(40):f.cycle()
+        from studio.events import AuditLog, Envelope
+        audit=AuditLog(actor='orchestrator',action='clip.derived',video_id='bad',evidence='bad json')
+        f.bus.publish(Envelope(topic='audit-log',key='bad',actor='orchestrator',payload=audit.model_dump()));f.refresh()
+        project=f.snapshot()['projects'][0];vid=project['id']
+        page=f.projects_page(10,0)
+        assert page['total']==1 and page['projects'][0]['summary'] and page['projects'][0]['scene_count']>0
+        assert not page['projects'][0]['scenes'] and 'script' not in page['projects'][0]
+        assert f.snapshot(lean=True)['projects'][0]['summary']
+        detail=f.project_detail(vid);detail['scenes'].clear()
+        assert f.project_detail(vid)['scenes']
+        with pytest.raises(ValueError):f.project_detail('missing')
+        with pytest.raises(ValueError):f.projects_page(101)
+        f.apply_settings({'pricing':{'image_per_request':.2},'media_budget_usd':2})
+        assert cfg.production['pricing']['image_per_request']==.2
+        folder=cfg.output_dir/vid/'.segments';folder.mkdir(parents=True)
+        segment=folder/('a'*64+'.mkv');segment.write_bytes(b'checkpoint')
+        segment.with_suffix('.json').write_text(json.dumps({'provider':'ffmpeg','model':'bounded-scene'}))
+        resources=f.resources(0);assert resources['cleanup']['bytes']==10
+        body={'max_bytes':0,'fingerprint':resources['cleanup']['fingerprint']}
+        f.command('cleanup',body);f.cycle()
+        assert segment.exists() and any(c['kind']=='cleanup' and c['status']=='error' for c in f.commands.recent())
+        f.command('pause',{});f.cycle();f.command('cleanup',body);f.cycle()
+        assert not segment.exists()
+    finally:f.close()
+
+
+def test_inspection_and_library_media_paths_verify_owned_content(tmp_path,monkeypatch):
+    from io import BytesIO
+
+    from PIL import Image
+
+    from studio.events import MediaAsset, Provenance, SceneManifest
+    from studio.inspection import inspect_project
+    monkeypatch.setenv('STUDIO_POLICY_KEY_FILE',str(tmp_path/'policy.key'))
+    f=Factory(tmp_path/'db',MediaConfig(output_dir=tmp_path/'out'),demo=True)
+    try:
+        image=BytesIO();Image.new('RGB',(5,5),'red').save(image,format='PNG');data=image.getvalue()
+        row=f.library.upload('photo.png',BytesIO(data),len(data))['assets'][0]
+        assert f.media_path('library-'+row['id']).is_file()
+        video=tmp_path/'final.mp4';video.write_bytes(b'fixture')
+        final=MediaAsset(video_id='V1',kind='final_video',path=str(video),provider='ffmpeg',provenance=Provenance(generated_by='test'))
+        report=inspect_project(SceneManifest(video_id='V1',scenes=[]),final,f.orch.renderer.media.cfg)
+        f.orch.inspections['V1']=report
+        id='inspection-'+report['fingerprint'][:32]
+        assert f.media_path(id).is_file() and f.media_path('inspection-missing') is None
+        f.media_path(id).write_bytes(b'changed')
+        assert f.media_path(id) is None
+    finally:f.close()

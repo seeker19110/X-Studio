@@ -19,6 +19,12 @@ from .render_cache import fingerprint
 from .runner import AgentRunner, Generated, RunnerError
 
 
+def _chapter_narration_matches(generated: Generated, script: dict[str, Any]) -> bool:
+    expected = ' '.join(s['narration'] for s in script['sections']).split()
+    actual = ' '.join(s['narration'] for p in generated.payloads for s in p['scenes']).split()
+    return actual == expected
+
+
 def generate_partitioned(runner: AgentRunner, agent: str, inp: Envelope, topic: str,
                          extra: dict[str, Any], root: Path, *, chapter_minutes: float = 8,
                          many: bool = False) -> Generated:
@@ -53,7 +59,7 @@ def generate_partitioned(runner: AgentRunner, agent: str, inp: Envelope, topic: 
             if inp.topic == "scripts": payload = subset
             else: context["script"] = subset
             context["chapter"] = {"index": index//4+1, "total": math.ceil(len(sections)/4),
-                                  "instruction": "Process every supplied section; preserve narration and claim references."}
+                                  "instruction": "Process only the supplied chapter sections, in order; preserve narration and claim references. Do not repeat sections from a complete reference script elsewhere in the brief."}
             parts.append((payload, context))
     if not parts:
         return runner.generate(agent, inp, topic, many=many, extra=extra or None)
@@ -70,6 +76,7 @@ def generate_partitioned(runner: AgentRunner, agent: str, inp: Envelope, topic: 
     config = getattr(runner.client, "cfg", None)
     identity = asdict(config) if is_dataclass(config) and not isinstance(config, type) else type(runner.client).__qualname__
     for index, (payload, context) in enumerate(parts):
+        chapter_script = payload if inp.topic == 'scripts' else context.get('script', {})
         key = fingerprint({"format": 1, "agent": agent, "version": runner.agents[agent].version,
                            "prompt": runner.agents[agent].system_prompt(), "client": identity,
                            "payload": payload, "extra": context, "topic": topic})
@@ -77,6 +84,8 @@ def generate_partitioned(runner: AgentRunner, agent: str, inp: Envelope, topic: 
         try:
             generated = Generated(**json.loads(checkpoint.read_text(encoding="utf-8")))
             for result in generated.payloads: runner.bus.validate(topic, result)
+            if agent == 'production-manager' and not _chapter_narration_matches(generated, chapter_script):
+                raise ValueError('cached chapter narration does not match its script scope')
         except (OSError, ValueError, KeyError, TypeError, BusError):
             if budget and spent >= budget: raise RunnerError(f"video budget exhausted: {spent}/{budget} tokens") from None
             generated = runner.generate(agent, inp.model_copy(update={"payload": payload}), topic, extra=context)
@@ -84,6 +93,8 @@ def generate_partitioned(runner: AgentRunner, agent: str, inp: Envelope, topic: 
             # Charge immediately; a later chapter failing must not hide earlier paid work from the supervisor.
             runner._audit(runner.agents[agent], "chapter.completed", inp, tokens=generated.tokens,
                           evidence=json.dumps({"chapter": index+1, "total": len(parts), "model": generated.model}))
+            if agent == 'production-manager' and not _chapter_narration_matches(generated, chapter_script):
+                raise RunnerError('chapter narration must match only its supplied script sections, in order') from None
             with tempfile.TemporaryDirectory(dir=root) as temp:
                 staged = Path(temp) / "result.json"
                 staged.write_text(json.dumps(asdict(generated), ensure_ascii=False), encoding="utf-8")

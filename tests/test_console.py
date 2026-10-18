@@ -53,6 +53,27 @@ def test_authentication_origin_csrf_and_command_validation(http_console):
     assert request("POST", "/api/commands", {}, auth)[0] == 400
 
 
+def test_ideas_and_doctor_http_require_auth_and_revision_conflicts_use_409(http_console):
+    from studio.storage import ConflictError
+    request, factory, _, _ = http_console
+    factory.ideas.snapshot.return_value = {'ideas': [], 'database_id':'db1'}
+    factory.ideas.import_items.return_value = {'ideas': [{'id':'a','title':'Việt'}]}
+    factory.ideas.apply.return_value = {'ideas': [{'id':'a','revision':1}]}
+    factory.doctor.return_value = {'ok': True, 'checks':[]}
+    auth = {'Authorization':'Bearer test-token', 'X-Studio-Request':'1'}
+    for endpoint in ('/api/ideas', '/api/doctor?flow=website'):
+        assert request('GET', endpoint)[0] == 401
+        assert request('GET', endpoint, headers=auth)[0] == 200
+    factory.doctor.assert_called_with('website')
+    assert request('POST', '/api/ideas', {'action':'import', 'ideas':[]})[0] == 401
+    assert request('POST', '/api/ideas', {'action':'import', 'ideas':[]}, {'Authorization':'Bearer test-token'})[0] == 403
+    assert request('POST', '/api/ideas', {'action':'import', 'ideas':[]}, auth)[0] == 200
+    assert request('POST', '/api/ideas', {'action':'apply', 'changes':[]}, auth)[0] == 200
+    assert request('POST', '/api/ideas', {'action':'unknown'}, auth)[0] == 400
+    factory.ideas.apply.side_effect = ConflictError('stale')
+    assert request('POST', '/api/ideas', {'action':'apply', 'changes':[]}, auth)[0] == 409
+
+
 def test_media_ranges_and_untrusted_file_types(http_console):
     request, _, file, _ = http_console
     auth = {"Authorization":"Bearer test-token"}
@@ -166,3 +187,40 @@ def test_media_length_matches_file_opened_after_atomic_replacement(http_console,
     status, headers, body = request('GET', '/media/known', headers={'Authorization': 'Bearer test-token'})
     assert status == 200 and body == b'new'
     assert headers['Content-Length'] == '3'
+
+
+def test_project_resources_library_and_raw_upload_routes_enforce_http_boundary(http_console):
+    request,factory,_,server=http_console
+    auth={'Authorization':'Bearer test-token','X-Studio-Request':'1'}
+    factory.projects_page.return_value={'projects':[],'total':0}
+    factory.project_detail.return_value={'id':'V1'}
+    factory.resources.return_value={'inventory':{}}
+    factory.library.snapshot.return_value={'revision':0,'assets':[]}
+    factory.library.save.return_value={'revision':1}
+    factory.library.upload.return_value={'assets':[]}
+    assert request('GET','/api/projects?limit=10&offset=2',headers=auth)[0]==200
+    factory.projects_page.assert_called_with(10,2)
+    assert request('GET','/api/projects?limit=invalid',headers=auth)[0]==400
+    assert request('GET','/api/projects/V1',headers=auth)[0]==200
+    factory.project_detail.side_effect=ValueError('missing')
+    assert request('GET','/api/projects/unknown',headers=auth)[0]==404
+    assert request('GET','/api/library',headers=auth)[0]==200
+    factory.library.snapshot.side_effect=ValueError('invalid catalog')
+    assert request('GET','/api/library',headers=auth)[0]==400
+    assert request('POST','/api/library',{'revision':0,'asset':{}},auth)[0]==200
+    assert request('GET','/api/resources?max_bytes=5',headers=auth)[0]==200
+    assert request('GET','/api/resources?max_bytes=no',headers=auth)[0]==400
+    factory.doctor.side_effect=ValueError('invalid flow')
+    assert request('GET','/api/doctor?flow=unknown',headers=auth)[0]==400
+    assert request('POST','/api/library/upload?name=file.png',{})[0]==401
+    assert request('POST','/api/library/upload?name=file.png',{}, {'Authorization':'Bearer test-token'})[0]==403
+    # Raw bytes, including arbitrary binary, must reach the uploader without a JSON round trip.
+    def upload(name,stream,length):
+        assert name=='ảnh.png' and stream.read(length)==b'\x00\xff\x01'
+        return {'assets':[]}
+    factory.library.upload.side_effect=upload
+    conn=http.client.HTTPConnection('127.0.0.1',server.server_port)
+    conn.request('POST','/api/library/upload?name=%E1%BA%A3nh.png',b'\x00\xff\x01',auth)
+    response=conn.getresponse();assert response.status==200;response.read();conn.close()
+    assert request('GET','/api/state',headers={**auth,'X-Studio-Overview':'1'})[0]==200
+    factory.snapshot.assert_called_with(lean=True)

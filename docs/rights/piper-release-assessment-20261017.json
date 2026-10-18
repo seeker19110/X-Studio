@@ -1,0 +1,38 @@
+{
+  "checked_at": "2026-10-17",
+  "model": "vi_VN-vais1000-medium",
+  "publication_decision": "NOT_CLEARED",
+  "scope": "local research preview only; operator explicitly said no YouTube",
+  "engine": {
+    "version": "piper-tts 1.8.0",
+    "license": "GPL-3.0",
+    "finding": "GPL concerns program distribution; generated output is not generally covered by the code license. This is separate from voice/data rights.",
+    "sources": [
+      "https://github.com/OHF-Voice/piper1-gpl/blob/main/COPYING",
+      "https://www.gnu.org/licenses/gpl-faq.en.html#WhatCaseIsOutputGPL"
+    ]
+  },
+  "voice": {
+    "dataset_declared_license": "CC BY 4.0",
+    "source": "https://huggingface.co/rhasspy/piper-voices/blob/main/vi/vi_VN/vais1000/medium/MODEL_CARD",
+    "finding": "The CC BY link appears in the Dataset section; it is not an explicit blanket license for all model ancestry or output."
+  },
+  "pretraining": {
+    "source_model": "en_US-lessac-medium",
+    "source": "https://www.cstr.ed.ac.uk/projects/blizzard/2013/lessac_blizzard2013/license.html",
+    "finding": "Original materials are covered by an individually granted research license with commercial-use restrictions. No matching written permission or exception for this model/output has been found."
+  },
+  "publisher_clarification": {
+    "source": "https://github.com/rhasspy/piper/discussions/271",
+    "discussion_url": "https://github.com/rhasspy/piper/discussions/271",
+    "author": "Michael Hansen / synesthesiam",
+    "date": "2023-11-14",
+    "finding": "Maintainer explicitly says Piper does not impose additional model/checkpoint licenses and leaves assessment of original licenses/training history to the end user. The repository MIT label therefore does not resolve this voice lineage."
+  },
+  "conclusion": "Evidence does not establish clearance for public release, including monetized YouTube. This is an operational clearance decision, not a court ruling that every possible output is infringing. Attribution alone does not resolve the Lessac lineage.",
+  "release_requirements": [
+    "Use a voice with documented compatible model and training rights, or obtain written permission covering this voice lineage.",
+    "Keep the publication gate unapproved in this local request."
+  ],
+  "correction_to_previous_report": "Previous shorthand describing the synthesized voice itself as CC BY 4.0 was too broad. CC BY is the documented VAIS1000 dataset license; new audio uses output-rights-unverified provenance."
+}

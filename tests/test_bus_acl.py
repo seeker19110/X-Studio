@@ -37,7 +37,7 @@ def test_producer_agent_la_tap_con_cua_front_matter_writes():
             if actor in writes:
                 assert topic in writes[actor], f"{actor} phát {topic} nhưng front matter không khai"
     khong_phai_agent = {a for acts in TOPIC_PRODUCERS.values() for a in acts} - set(writes)
-    assert khong_phai_agent == {"renderer", "desk", "orchestrator", "adapter:youtube", "chapters"}
+    assert khong_phai_agent == {"renderer", "desk", "orchestrator", "adapter:youtube", "chapters", "console:editor", "console:shorts"}
 
 
 def test_human_topics_la_dung_MOT_bang_voi_orchestrator_publish():

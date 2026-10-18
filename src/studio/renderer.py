@@ -16,17 +16,32 @@ from __future__ import annotations
 
 import json
 import tempfile
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from .bus import InMemoryBus
 from .events import AssetKind, AuditLog, CutList, Envelope, MediaAsset, Provenance, Scene, SceneManifest, ThumbnailSpec
-from .media import FakeVideo, FFmpegAssembler, MediaError, MediaResult, MediaSuite, frame_size, image_size, make_media
+from .media import (
+    FakeVideo,
+    FFmpegAssembler,
+    MediaError,
+    MediaResult,
+    MediaSuite,
+    find_font,
+    frame_size,
+    image_size,
+    make_media,
+)
 from .media_cost import Ledger, without_prices
 from .motion import LAYOUT_VERSION, MotionSpec, render_motion, safe_bottom
-from .production import copy_asset, finish, selections
+from .presentation import REVISION, caption_width, compose_frame, font_evidence, write_captions
+from .production import component_provenance, copy_asset, finish, selections
 from .render_cache import RenderCache, digest, fingerprint
-from .timeline import caption_pages, chapter_time, karaoke_ass, srt, timeline
+from .resources import MediaAccounting
+from .speech import timed_captions, validate_words
+from .timeline import Cue, caption_pages, chapter_time, karaoke_ass, srt, timeline
 from .video_gen import validate_video_inputs
 
 ACTOR = "renderer"
@@ -62,6 +77,25 @@ class Renderer:
                           provider=r.provider, checksum=checksum(r.path), duration_s=r.duration_s, variant_id=variant_id,
                           provenance=Provenance(generated_by=f"{r.provider}:{r.model}", prompt_ref=prompt_ref, license=license))
 
+    def _speech_asset(self, m: SceneManifest, scene: Scene, result: MediaResult, prompt: str) -> MediaAsset:
+        config = self.media.cfg.tts
+        asset = self._asset(m.video_id, 'scene_audio', result, m.version, scene.scene_id,
+                            prompt_ref=prompt, license=str(config.get('license', 'generated')))
+        asset.provenance.source_url = config.get('source_url')
+        asset.provenance.attribution = str(config.get('attribution', ''))
+        return asset
+
+    def _composite_asset(self, m: SceneManifest, kind: AssetKind, result: MediaResult,
+                         pending: list[MediaAsset]) -> MediaAsset:
+        asset=self._asset(m.video_id,kind,result,m.version,prompt_ref=f'manifest:v{m.version}')
+        paths={path for scene in m.scenes for path in scene.asset_refs.values()}
+        records={e.payload['path']:MediaAsset.model_validate(e.payload) for e in self.bus.replay('media-assets',m.video_id)}
+        records.update({a.path:a for a in pending})
+        components=[a.provenance for a in records.values() if a.path in paths
+                    or (kind=='final_video' and a.kind=='music' and a.manifest_version==m.version)]
+        asset.provenance=component_provenance(asset.provenance,components)
+        return asset
+
     def safe_upload(self, raw: str) -> Path | None:
         """Đường dẫn thay thế hợp lệ khi resolve xong vẫn nằm trong upload_dir và là file; ngược lại None (bị từ chối)."""
         base = self.upload_dir.resolve()
@@ -72,6 +106,39 @@ class Renderer:
     def _video_opts(self, aspect: str) -> tuple[int, str]:
         v = self.media.cfg.video
         return int(v.get("fps", 30)), frame_size(v, aspect)
+
+    def presentation_frame(self, m: SceneManifest, scene: Scene, aspect: str,
+                           pending: list[MediaAsset] | None = None) -> Path:
+        title = m.video_id
+        briefs = list(self.bus.replay('video-briefs',m.video_id))
+        if briefs: title = briefs[-1].payload['working_title']
+        heading = scene.narration.split('. ')[0].split('?')[0].split('!')[0]
+        scripts = list(self.bus.replay('scripts',m.video_id))
+        if scripts:
+            sections = scripts[-1].payload['sections']
+            if scene.order < len(sections): heading = sections[scene.order]['heading']
+        if len(heading)>120 or heading.strip() in {scene.scene_id,'Đoạn trích'}: heading=title
+        source=Path(scene.asset_refs['scene_image']); resolution=frame_size(self.media.cfg.video,aspect)
+        key={'recipe':REVISION,'source':digest(source),'resolution':resolution,'title':title,'heading':heading,
+             'index':scene.order,'total':len(m.scenes),'font':font_evidence(find_font(self.media.cfg.video))}
+        result,hit=self.cache.produce(key,self._dir(m.video_id)/f'v{m.version}'/f'{scene.scene_id}.layout-{aspect.replace(":","x")}.png',
+            lambda p:compose_frame(source,p,resolution,title,heading,scene.order,len(m.scenes),find_font(self.media.cfg.video)))
+        if not hit: self._audit('render.presentation',m.video_id,{'scene_id':scene.scene_id,'source':str(source),
+            'source_sha256':digest(source),'output':str(result.path),'output_sha256':digest(result.path),'aspect':aspect,
+            'title':title,'heading':heading,'resolution':resolution,'recipe':REVISION,'font_evidence':key['font']})
+        records=[e.payload for e in self.bus.replay('media-assets',m.video_id)]+[a.model_dump() for a in pending or []]
+        original=next((a for a in reversed(records) if a['kind']=='scene_image' and a['path']==str(source)
+                       and a.get('checksum')==checksum(source)),{}).get('provenance',{})
+        asset=self._asset(m.video_id,'scene_layout',result,m.version,scene.scene_id,
+                          prompt_ref=json.dumps(key,ensure_ascii=False,sort_keys=True),license=original.get('license','unknown'))
+        asset.provenance.source_url=original.get('source_url')
+        asset.provenance.attribution=original.get('attribution','')
+        # Derived frames have their own durable identity. Do not create a partial
+        # render.prepared outbox: the draft/final checkpoint must contain the whole stage.
+        identity=json.dumps(asset.model_dump(),ensure_ascii=False,sort_keys=True)
+        self._deliver([Envelope(topic='media-assets',key=m.video_id,actor=ACTOR,payload=asset.model_dump(),
+                                event_id=str(uuid5(NAMESPACE_URL,identity)),causation_id=self.operation_id)])
+        return result.path
 
     def _audit(self, action: str, video_id: str, data: dict[str, Any]) -> None:
         a = AuditLog(actor=ACTOR, action=action, video_id=video_id, evidence=json.dumps(data, ensure_ascii=False))
@@ -167,21 +234,43 @@ class Renderer:
             fps = values["fps"]
             resolution = frame_size({"resolution": values["resolution"]}, m.aspect)
         if audio:
-            key: dict[str, Any] = {"kind": "tts", "config": without_prices(self.media.cfg.tts), "voice": m.voice, "text": s.narration,
+            requested_voice = {k:v for k,v in m.voice.items() if k not in {'resolved_provider','resolved_voice_id'}}
+            key: dict[str, Any] = {"kind": "tts", "config": without_prices(self.media.cfg.tts), "voice": requested_voice, "text": s.narration,
                    "adapter": type(self.media.tts).__qualname__, "revision": revision}
-            r, hits["audio"] = self.cache.produce(key, d / f"{s.scene_id}.wav",
-                lambda p: self.ledger.charge(m.video_id, "tts", len(s.narration),
-                                             lambda: self.media.tts.synthesize(s.narration, m.voice, p),
-                                             scene_id=s.scene_id), force=force)
+            suffix = getattr(self.media.tts,'output_suffix','.wav')
+            r, hits["audio"] = self.cache.produce(key, d / f"{s.scene_id}{suffix}",
+                lambda p: MediaAccounting(self.bus,self.media.cfg).generate(m.video_id,'tts',len(s.narration)/1000,
+                          lambda:self.ledger.charge(m.video_id,'tts',len(s.narration),
+                              lambda:self.media.tts.synthesize(s.narration,m.voice,p),scene_id=s.scene_id),provider_ledger=True), force=force)
+            s.asset_refs.pop('scene_audio_source',None)
+            m.voice.update(resolved_provider=r.provider,resolved_voice_id=r.model)
             s.asset_refs["scene_audio"] = str(r.path); s.duration_s = r.duration_s or s.duration_s
-            # Mốc từng từ của provider (nếu có) nằm cạnh audio cảnh để finalize dựng phụ đề theo lời đọc thật;
-            # provider/giọng đổi mà không còn mốc thì xoá bản cũ, không để phụ đề bám nhầm audio trước.
-            sidecar = d / f"{s.scene_id}.words.json"
             if r.words:
-                sidecar.write_text(json.dumps([list(w) for w in r.words], ensure_ascii=False), encoding="utf-8")
+                m.voice.update(resolved_provider=r.provider,resolved_voice_id=r.model)
+                from .website import save_json
+                words = validate_words(r.words,s.duration_s)
+                if isinstance(self.media.video,FFmpegAssembler) and self.media.cfg.video.get('trim_voice_tail',True):
+                    limit=min(s.duration_s,words[-1]['start']+words[-1]['duration']+.28)
+                    speech_source=r.path;s.asset_refs['scene_audio_source']=str(speech_source);engine=self.media.video
+                    out.append(self._speech_asset(m,s,r,f'{s.scene_id}:narration:source'))
+                    def trim(target: Path) -> MediaResult:
+                        engine._run(['-i',str(speech_source.resolve()),'-t',str(limit),'-c:a','pcm_s16le',
+                                              '-ar','48000','-ac','2',str(target.resolve())])
+                        return MediaResult(target,'ffmpeg','speech-tail-trim',limit,words=words,timing_source=r.timing_source)
+                    raw_sha=digest(speech_source)
+                    r,_=self.cache.produce({'kind':'speech-trim-v1','source_sha256':raw_sha,'limit':limit},
+                        d/f'{s.scene_id}.trim.wav',trim)
+                    s.asset_refs['scene_audio']=str(r.path);s.duration_s=r.duration_s or limit
+                timing = d / f'{s.scene_id}.words.json'
+                save_json(timing,{'words':words,'sha256':digest(r.path),'source':r.timing_source})
+                s.asset_refs['scene_timing'] = str(timing)
+                self._audit('render.timing',m.video_id,{'scene_id':s.scene_id,'path':str(timing),
+                    'sha256':digest(timing),'audio_sha256':digest(r.path),'generated_by':r.timing_source,
+                    'manifest_version':m.version})
             else:
-                sidecar.unlink(missing_ok=True)
-            out.append(self._asset(m.video_id, "scene_audio", r, m.version, s.scene_id, prompt_ref=f"{s.scene_id}:narration"))
+                s.asset_refs.pop('scene_timing',None)
+                (d/f'{s.scene_id}.words.json').unlink(missing_ok=True)
+            out.append(self._speech_asset(m,s,r,f'{s.scene_id}:narration'))
         if image:
             if motion:
                 if not isinstance(self.media.video, FFmpegAssembler):
@@ -217,10 +306,10 @@ class Renderer:
                        "duration": duration, "fps": fps, "resolution": resolution, "seed": seed,
                        "adapter": type(generator).__qualname__, "revision": revision}
                 r, hits["video"] = self.cache.produce(key, d / f"{s.scene_id}.mp4",
-                    lambda p: self.ledger.charge(m.video_id, "scene_video", duration,
-                        lambda: generator.generate(prompt, negative_prompt=negative, duration_s=duration,
-                                                   fps=fps, resolution=resolution, seed=seed, out=p),
-                        scene_id=s.scene_id), force=force)
+                    lambda p: MediaAccounting(self.bus,self.media.cfg).generate(m.video_id,'video',duration,
+                          lambda:self.ledger.charge(m.video_id,'scene_video',duration,
+                              lambda:generator.generate(prompt, negative_prompt=negative, duration_s=duration,
+                                  fps=fps, resolution=resolution, seed=seed, out=p),scene_id=s.scene_id),provider_ledger=True), force=force)
                 s.asset_refs.pop("scene_image", None); s.asset_refs["scene_video"] = str(r.path)
                 out.append(self._asset(m.video_id, "scene_video", r, m.version, s.scene_id,
                             prompt_ref=f"{s.scene_id}:visual_prompt:seed={seed}", license=str(config.get("license", "unknown"))))
@@ -230,8 +319,9 @@ class Renderer:
                 key = {"kind": "image", "config": without_prices(self.media.cfg.image), "prompt": prompt, "size": size,
                        "adapter": type(self.media.image).__qualname__, "revision": revision}
                 r, hits["image"] = self.cache.produce(key, d / f"{s.scene_id}.png",
-                    lambda p: self.ledger.charge(m.video_id, "image", 1, lambda: self.media.image.generate(prompt, size, p),
-                                                 scene_id=s.scene_id), force=force)
+                lambda p: MediaAccounting(self.bus,self.media.cfg).generate(m.video_id,'image',1.,
+                          lambda:self.ledger.charge(m.video_id,'image',1,
+                              lambda:self.media.image.generate(prompt,size,p),scene_id=s.scene_id),provider_ledger=True), force=force)
                 s.asset_refs.pop("scene_video", None)
                 s.asset_refs["scene_image"] = str(r.path)
                 out.append(self._asset(m.video_id, "scene_image", r, m.version, s.scene_id, prompt_ref=f"{s.scene_id}:visual_prompt"))
@@ -259,10 +349,15 @@ class Renderer:
         segs = []
         for sid in ids:
             s = by_id[sid]
+            if s.clip_start_s is not None:raise MediaError('Sửa video nguồn rồi tạo lại Shorts có mốc cắt')
             visual = s.asset_refs.get("scene_video") or s.asset_refs.get("scene_image")
             if not visual or "scene_audio" not in s.asset_refs:
                 raise ValueError(f"cảnh {sid} chưa có đủ asset để ghép")
             if s.locked: self._check_locked(m, s, pending)
+            if (isinstance(self.media.video,FFmpegAssembler) and self.media.cfg.video.get('layout','editorial')=='editorial'
+                    and 'scene_video' not in s.asset_refs):
+                visual=str(self.presentation_frame(m,s,m.aspect,pending));s.asset_refs['scene_layout']=visual
+            else: s.asset_refs.pop('scene_layout',None)
             segs.append((Path(visual), Path(s.asset_refs["scene_audio"]), s.duration_s))
         return segs
 
@@ -282,8 +377,8 @@ class Renderer:
             if need:
                 assets += self.render_scene(m, s)
         fps, res = self._video_opts(m.aspect)
-        r = self.media.video.assemble(self._segments(m), self._dir(m.video_id) / f"draft_v{m.version}.mp4", fps, res)
-        assets.append(self._asset(m.video_id, "draft_video", r, m.version, prompt_ref=f"manifest:v{m.version}"))
+        r = self.media.video.assemble(self._segments(m,pending=assets), self._dir(m.video_id) / f"draft_v{m.version}.mp4", fps, res)
+        assets.append(self._composite_asset(m,'draft_video',r,assets))
         # manifest cùng version nhưng đã có asset_refs/duration thật → publish lại để bus là nguồn sự thật (resume, editor, finalize)
         self._publish(assets, "render.draft", m)
         return assets
@@ -305,6 +400,7 @@ class Renderer:
             s = by_id.get(r.scene_id)
             if s is None: continue
             if r.action == "lock": s.locked = True; continue
+            if r.action == 'unlock': s.locked = False; continue
             if s.locked: continue  # cảnh đã khoá không sinh lại
             if ((r.new_narration is not None and r.action not in {"regenerate_audio", "regenerate_both"})
                     or (r.new_visual_prompt is not None and r.action not in {"regenerate_image", "regenerate_both"})
@@ -318,11 +414,16 @@ class Renderer:
                     self._audit("replace_asset.rejected", m.video_id, {"scene_id": r.scene_id, "path": r.replacement_path[:200],
                                                                         "upload_dir": str(self.upload_dir)})
                     continue
-                s.asset_refs.pop("scene_video", None)
-                s.asset_refs["scene_image"] = str(safe); s.locked = True
+                from .production import registered_asset
+                source = registered_asset(self.media.cfg,self.upload_dir,safe)
+                kind: AssetKind = 'scene_video' if source and source.kind == 'video' else 'scene_image'
+                s.asset_refs.pop('scene_image',None); s.asset_refs.pop('scene_video',None)
+                s.asset_refs[kind] = str(safe); s.locked = True
                 # An uploaded file is not proof of a license. Rights review must resolve it.
-                replacements.append(self._asset(m.video_id, "scene_image", MediaResult(safe, "local", "upload"),
-                                                m.version + 1, s.scene_id, license="unknown"))
+                replacement = self._asset(m.video_id, kind, MediaResult(safe, "local", "upload"),
+                                                m.version + 1, s.scene_id, license="unknown")
+                if source: replacement.provenance = source.provenance()
+                replacements.append(replacement)
                 continue
             regen[r.scene_id] = (r.action in {"regenerate_audio", "regenerate_both"}, r.action in {"regenerate_image", "regenerate_both"})
             touched.add(r.scene_id)
@@ -332,6 +433,9 @@ class Renderer:
             m.scenes.sort(key=lambda x: x.order)
         new = SceneManifest(video_id=m.video_id, version=m.version + 1, script_version=m.script_version,
                             scenes=[Scene(**s.model_dump()) for s in m.scenes], voice=m.voice, aspect=m.aspect, cinema=m.cinema)
+        scripts=list(self.bus.replay('scripts',m.video_id))
+        if scripts and [s.narration for s in sorted(new.scenes,key=lambda s:s.order)]==[s['narration'] for s in scripts[-1].payload['sections']]:
+            new.script_version=scripts[-1].payload['version']
         assets: list[MediaAsset] = replacements
         for s in new.scenes:
             if s.scene_id in regen:
@@ -339,7 +443,7 @@ class Renderer:
                 assets += self.render_scene(new, s, audio=a, image=i, revision=fingerprint(cut.model_dump()))
         fps, res = self._video_opts(new.aspect)
         vr = self.media.video.assemble(self._segments(new, pending=assets), self._dir(new.video_id) / f"draft_v{new.version}.mp4", fps, res)
-        assets.append(self._asset(new.video_id, "draft_video", vr, new.version, prompt_ref=f"manifest:v{new.version}"))
+        assets.append(self._composite_asset(new,'draft_video',vr,assets))
         self._publish(assets, f"render.repair:{','.join(sorted(touched)) or 'none'}", new)
         return new
 
@@ -349,19 +453,40 @@ class Renderer:
                         transition=getattr(self.media.video, "transition_s", 0.0),
                         frame_rate=self._video_opts(m.aspect)[0] if getattr(self.media.video, "bounded", False) else None)
 
-    def _word_times(self, m: SceneManifest) -> dict[str, list[Any]]:
-        """Mốc từng từ đã lưu cạnh audio từng cảnh (`<cảnh>.words.json`); file hỏng/thiếu = cảnh đó chia theo tỷ lệ."""
-        out: dict[str, list[Any]] = {}
-        for s in m.scenes:
-            audio = s.asset_refs.get("scene_audio")
-            if not audio:
-                continue
+    def caption_cues(self, m: SceneManifest, order: list[str] | None = None) -> list[Cue]:
+        scenes = {s.scene_id:s for s in m.scenes}; result: list[Cue] = []
+        for cue in self.cues(m,order):
+            scene = scenes[cue.scene_id]
             try:
-                data = json.loads((Path(audio).parent / f"{s.scene_id}.words.json").read_text(encoding="utf-8"))
-                out[s.scene_id] = [(float(a), float(b), str(w)) for a, b, w in data]
-            except (OSError, ValueError, TypeError):
-                continue
-        return out
+                data = json.loads(Path(scene.asset_refs['scene_timing']).read_text(encoding='utf-8'))
+                if data['sha256'] != digest(Path(scene.asset_refs['scene_audio'])): raise ValueError('Timing audio changed')
+                words = validate_words(data['words'],scene.duration_s)
+                result.extend(Cue(scene.scene_id,c['start'],min(c['end'],cue.end),c['text'])
+                              for c in timed_captions(words,cue.start,1.,text=scene.narration,
+                                                      max_chars=caption_width(self.media.cfg.video,m.aspect)))
+            except (OSError,ValueError,KeyError,TypeError):
+                result.extend(caption_pages([cue],max_chars=caption_width(self.media.cfg.video,m.aspect)))
+        result.sort(key=lambda c:c.start)
+        for current, following in pairwise(result): current.end = min(current.end,following.start-.025)
+        return [cue for cue in result if cue.end > cue.start]
+
+    def _word_times(self, m: SceneManifest) -> dict[str, list[Any]]:
+        """Read checksum-bound timing and legacy provider tuples for karaoke."""
+        result: dict[str, list[Any]] = {}
+        for scene in m.scenes:
+            audio=scene.asset_refs.get('scene_audio')
+            if not audio: continue
+            try:
+                path=Path(scene.asset_refs.get('scene_timing') or str(Path(audio).parent/f'{scene.scene_id}.words.json'))
+                data=json.loads(path.read_text(encoding='utf-8'))
+                if isinstance(data,dict):
+                    if data['sha256']!=digest(Path(audio)): raise ValueError('Timing audio changed')
+                    words=validate_words(data['words'],scene.duration_s)
+                    result[scene.scene_id]=[(w['start'],w['start']+w['duration'],w['text']) for w in words]
+                else:
+                    result[scene.scene_id]=[(float(a),float(b),str(w)) for a,b,w in data]
+            except (OSError,ValueError,KeyError,TypeError): continue
+        return result
 
     def finalize(self, m: SceneManifest, order: list[str] | None = None) -> MediaAsset:
         """Bản cuối + phụ đề. Phụ đề sinh thẳng từ narration của manifest (đó chính là văn bản đã đọc) nên không cần
@@ -383,8 +508,7 @@ class Renderer:
                 assets: list[MediaAsset] = []; moves: list[tuple[MediaAsset, Path]] = []
                 captions = None; music_path = None
                 words = self._word_times(m)
-                text = srt(caption_pages(self.cues(m, order),
-                                        max_chars=int(self.media.cfg.video.get("caption_max_chars", 42)), words=words))
+                text = srt(self.caption_cues(m, order))
                 if text:
                     captions = stage / f"captions_v{m.version}.srt"
                     captions.write_text(text, encoding="utf-8")
@@ -397,17 +521,19 @@ class Renderer:
                     ma = self._asset(m.video_id, "music", MediaResult(music_path, "local", "licensed-library"), m.version)
                     ma.provenance = music.provenance()
                     assets.append(ma); moves.append((ma, directory / music_path.name))
-                burn = captions if self.media.cfg.video.get("burn_captions") else None
+                burn = captions if self.media.cfg.video.get("burn_captions",True) else None
                 karaoke = None
-                if burn and words and self.media.cfg.video.get("karaoke"):
-                    # Đốt cứng ASS `\k` (từ đổi màu đúng lúc được đọc); SRT vẫn là phụ đề đăng nền tảng.
-                    karaoke = stage / f"captions_v{m.version}.ass"
-                    karaoke.write_text(karaoke_ass(self.cues(m, order), words, res,
-                                                   max_chars=int(self.media.cfg.video.get("caption_max_chars", 42))),
-                                       encoding="utf-8")
+                if burn and words and self.media.cfg.video.get('karaoke'):
+                    karaoke = stage / f'captions_v{m.version}.ass'
+                    karaoke.write_text(karaoke_ass(self.cues(m,order),words,res,
+                        max_chars=caption_width(self.media.cfg.video,m.aspect)),encoding='utf-8')
                     burn = karaoke
                 # FakeVideo records references only; its JSON must point to durable filenames.
                 fake = isinstance(self.media.video, FakeVideo)
+                if burn and not fake and self.media.cfg.video.get('layout','editorial')=='editorial':
+                    burn=stage/f'captions_v{m.version}.ass'
+                    write_captions(self.caption_cues(m,order),res,burn,find_font(self.media.cfg.video))
+                    (directory/burn.name).write_bytes(burn.read_bytes())
                 finish(self.media.video, r.path, directory / burn.name if burn and fake else burn,
                        directory / music_path.name if music_path and fake else music_path,
                        music.attribution if music else "", float(self.media.cfg.production.get("music_volume", 0.12)))
@@ -419,7 +545,7 @@ class Renderer:
                 for asset, destination in moves:
                     Path(asset.path).replace(destination); asset.path = str(destination)
                 r.path.replace(target); r.path = target
-                a = self._asset(m.video_id, "final_video", r, m.version, prompt_ref=f"manifest:v{m.version}")
+                a = self._composite_asset(m,'final_video',r,assets)
                 assets.insert(0, a)
                 self._publish(assets, "render.final")
                 return a
@@ -450,8 +576,9 @@ class Renderer:
             for var in spec.variants:
                 prompt, size = f"{var.prompt} {NO_TEXT}", image_size(self.media.cfg, "16:9")
                 def generate_base(p: Path, prompt: str = prompt, size: str = size, variant: str = var.variant_id) -> MediaResult:
-                    return self.ledger.charge(spec.video_id, "image", 1, lambda: self.media.image.generate(prompt, size, p),
-                                              variant_id=variant)
+                    return MediaAccounting(self.bus,self.media.cfg).generate(spec.video_id,'image',1.,
+                           lambda:self.ledger.charge(spec.video_id,'image',1,
+                               lambda:self.media.image.generate(prompt,size,p),variant_id=variant),provider_ledger=True)
                 base, _ = self.cache.produce({"kind": "thumbnail", "config": without_prices(self.media.cfg.image), "prompt": prompt, "size": size},
                                              d / f"{var.variant_id}_base.png",
                                              generate_base)
@@ -460,6 +587,8 @@ class Renderer:
                 r = MediaResult(fin.path, base.provider, base.model)
                 out.append(self._asset(spec.video_id, "thumbnail", r, 0, prompt_ref=f"thumbnail:{var.variant_id}",
                                        variant_id=var.variant_id))
+                font=font_evidence(find_font(self.media.cfg.video))
+                out[-1].provenance.attribution=f"Typography: {font.get('family','unverified')}; license={font['license']}; sha256={font['sha256']}; {font.get('source_url','')}"
             # Complete every variant before replacing any published thumbnail.
             for asset in out:
                 destination = d / f"{asset.variant_id}.jpg"

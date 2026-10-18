@@ -44,6 +44,10 @@ class Autopilot:
             return ""
         if gate.kind != "publish" or mode != "publish": return "Chờ người duyệt xuất bản"
         vid = sid.removeprefix("PUB-")
+        brief=o.desk.briefs.get(vid)
+        source=o.latest('channel-briefs',brief.channel_id) if brief else None
+        dossier=(source.payload.get('requested_video') or {}).get('rights_dossier',{}) if source else {}
+        if dossier.get('scope')=='private_local_validation':return 'Hồ sơ chỉ cho phép kiểm thử cục bộ; chưa có quyền phát hành'
         if not o.desk.ready_for_publish(vid): return "Chưa đủ ba review và gói xuất bản"
         assets = [e.payload for e in o.bus.replay("media-assets", vid)]
         final = next((a for a in reversed(assets) if a["kind"] == "final_video"), None)

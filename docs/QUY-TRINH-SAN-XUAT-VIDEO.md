@@ -12,8 +12,9 @@ Một người có thể đảm nhận nhiều vai; người chịu trách nhi�
 4. Dùng **Tổng quan** để thấy quyết định đang chờ; vào **Duyệt & xuất bản** khi có yêu cầu duyệt.
 5. Nếu dự án cần xử lý, đọc finding và **Hoạt động** trước khi sửa hoặc thử lại.
 
-Kho ý tưởng là bản nháp trong `localStorage`, riêng theo trình duyệt và địa chỉ xưởng, tối đa 200 ý tưởng.
-Xóa dữ liệu trình duyệt có thể mất bản nháp; chưa có đồng bộ kho ý tưởng giữa thiết bị.
+Kho ý tưởng lưu trong SQLite của xưởng, dùng chung giữa các trình duyệt kết nối cùng xưởng, tối đa 200 ý tưởng.
+Dữ liệu `localStorage` cũ được import theo ID sau khi server xác nhận; bản cũ vẫn giữ để phục hồi khi cần.
+Hai tab sửa cùng lúc sẽ báo xung đột revision và giữ nội dung đang nhập. Xem [hướng dẫn vận hành](OPERATIONS-UPGRADES.md).
 Sau khi yêu cầu tạo dự án thành công, hồ sơ dự án và tiến độ được lưu trong SQLite của xưởng.
 Chỉ có mã yêu cầu/nhãn đang xử lý chưa đồng nghĩa dự án đã được tạo thành công.
 

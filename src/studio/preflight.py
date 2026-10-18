@@ -56,7 +56,7 @@ def _seconds(t: str) -> int:
     return sum(p * 60 ** i for i, p in enumerate(reversed(parts)))
 
 
-def preflight(meta: MetadataPackage, format: str = "long") -> PreflightReport:
+def preflight(meta: MetadataPackage, format: str = "long", *, duration_s: float | None = None) -> PreflightReport:
     f: list[Finding] = []
     title, desc = meta.title.strip(), meta.description.strip()
     if len(title) > TITLE_MAX: f.append(Finding(level="block", text=f"tiêu đề {len(title)} ký tự > {TITLE_MAX}", location="title"))
@@ -85,7 +85,10 @@ def preflight(meta: MetadataPackage, format: str = "long") -> PreflightReport:
                                             "5/2026 nếu bỏ trống — code điền sau bản cuối, hoặc đặt production.synthetic_media",
                          location="synthetic_media"))
     if format == "long":
-        if not meta.chapters: f.append(Finding(level="warn", text="video dài không có chapter", location="chapters"))
+        if not meta.chapters:
+            # Three chapters of ten seconds cannot fit in a shorter measured export.
+            if duration_s is None or duration_s >= MIN_CHAPTERS * 10:
+                f.append(Finding(level="warn", text="video dài không có chapter", location="chapters"))
         else:
             if meta.chapters[0].time != "00:00": f.append(Finding(level="block", text="chapter đầu phải bắt đầu 00:00", location="chapters"))
             if len(meta.chapters) < MIN_CHAPTERS: f.append(Finding(level="warn", text=f"< {MIN_CHAPTERS} chapter: YouTube không hiện", location="chapters"))

@@ -286,6 +286,7 @@ class _Communicate:
 def test_edge_tts_native_returns_audio_and_word_times(tmp_path, monkeypatch):
     import edge_tts
     monkeypatch.setattr(edge_tts, "Communicate", _Communicate)
+    monkeypatch.setattr('studio.media.probe_duration',lambda _:1.)
     _Communicate.seen = []
     _Communicate.chunks = [{"type": "audio", "data": b"ID3"}, {"type": "WordBoundary", "offset": 1_000_000, "duration": 2_000_000, "text": "Xin"},
                            {"type": "audio", "data": b"MP3"}, {"type": "WordBoundary", "offset": 4_000_000, "duration": 3_000_000, "text": "chào"},
@@ -295,7 +296,7 @@ def test_edge_tts_native_returns_audio_and_word_times(tmp_path, monkeypatch):
     assert isinstance(tts, EdgeTTS)
     r = tts.synthesize("Xin chào", {"voice_id": "alloy", "pace": "slow"}, tmp_path / "a.wav")
     assert r.path.suffix == ".mp3" and r.path.read_bytes() == b"ID3MP3" and r.provider == "edge"
-    assert r.words == [(0.1, 0.3, "Xin"), (0.4, 0.7, "chào")] and r.model == "vi-VN-NamMinhNeural"
+    assert r.words == [{'text':'Xin','start':.1,'duration':.2},{'text':'chào','start':.4,'duration':.3}] and r.model == "vi-VN-NamMinhNeural"
     assert _Communicate.seen[0] == {"text": "Xin chào", "voice": "vi-VN-NamMinhNeural", "rate": "-10%",
                                     "boundary": "WordBoundary", "connect_timeout": 15, "receive_timeout": 60}
     assert EdgeTTS(MediaConfig(tts={"provider": "edge"})).synthesize("x", {"voice_id": "alloy"}, tmp_path / "d.wav").model \

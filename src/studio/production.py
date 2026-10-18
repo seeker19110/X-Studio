@@ -1,6 +1,7 @@
 """Licensed local media and final finishing; no network or model calls."""
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tempfile
@@ -14,13 +15,27 @@ from .events import Provenance, SceneManifest
 from .media import FakeVideo, FFmpegAssembler, MediaConfig, MediaError, VideoAssembler
 
 
+def component_provenance(base: Provenance, components: list[Provenance]) -> Provenance:
+    """Describe incorporated material; generated assembly does not grant new input rights."""
+    result = base.model_copy(deep=True)
+    all_sources = [base,*components]
+    for license in ('unknown','cc-by','licensed'):
+        restricted = next((p for p in all_sources if p.license==license),None)
+        if restricted:
+            result.license=license; result.source_url=restricted.source_url
+            break
+    result.attribution='\n'.join(dict.fromkeys(p.attribution for p in all_sources if p.attribution))
+    return result
+
+
 class LibraryAsset(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["image", "video", "music"]
     path: str
-    license: Literal["owned", "licensed", "cc-by", "cc0"]
+    license: Literal["owned", "licensed", "cc-by", "cc0", "unknown"]
     attribution: str = ""
     source_url: str | None = None
+    checksum: str = ''
 
     def provenance(self) -> Provenance:
         return Provenance(generated_by="human-library", license=self.license,
@@ -52,9 +67,13 @@ def selections(cfg: MediaConfig, upload_dir: Path, manifest: SceneManifest) -> t
             asset = LibraryAsset.model_validate(catalog[name])
             if asset.kind not in kinds:
                 raise MediaError(f"library asset {name}: wrong kind {asset.kind}")
+            if asset.license == 'unknown': raise MediaError('Library asset requires a declared license before production')
             if asset.license == "cc-by" and (not asset.attribution.strip() or not asset.source_url):
                 raise MediaError(f"library asset {name}: cc-by requires attribution and source_url")
             asset.path = str(contained_file(upload_dir, asset.path))
+            if asset.checksum:
+                with Path(asset.path).open('rb') as stream:
+                    if hashlib.file_digest(stream,'sha256').hexdigest() != asset.checksum: raise MediaError('Library asset checksum changed')
             return asset
 
         visuals = {sid: pick(name, {"image", "video"}) for sid, name in mapping.items()}
@@ -68,6 +87,21 @@ def copy_asset(asset: LibraryAsset, target: Path) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(asset.path, out)
     return out
+
+
+def registered_asset(cfg: MediaConfig, upload_dir: Path, path: Path) -> LibraryAsset | None:
+    catalog = upload_dir / str(cfg.production.get('library','library.yaml'))
+    try:
+        for raw in yaml.safe_load(catalog.read_text(encoding='utf-8'))['assets'].values():
+            asset = LibraryAsset.model_validate(raw)
+            if contained_file(upload_dir,asset.path) == path.resolve():
+                if asset.license == 'cc-by' and (not asset.source_url or not asset.attribution): return None
+                if asset.checksum:
+                    with path.open('rb') as stream:
+                        if hashlib.file_digest(stream,'sha256').hexdigest() != asset.checksum: return None
+                return asset
+    except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError, MediaError): pass
+    return None
 
 
 def finish(video: VideoAssembler, src: Path, captions: Path | None, music: Path | None,
@@ -101,13 +135,15 @@ def finish(video: VideoAssembler, src: Path, captions: Path | None, music: Path 
             args += ["-filter_complex", graph, "-map", "0:v:0", "-map", "[mix]"]
         else:
             args += ["-map", "0:v:0", "-map", "0:a:0"]
-        if captions and captions.suffix == ".ass":
-            # Phụ đề karaoke: ASS tự mang style/kích thước theo khung (timeline.karaoke_ass), libass vẽ nguyên.
-            shutil.copyfile(captions, root / "captions.ass")
-            args += ["-vf", "ass=captions.ass", "-c:v", "libx264", "-crf", "20", "-preset", "medium"]
-        elif captions:
-            shutil.copyfile(captions, root / "captions.srt")
-            args += ["-vf", "subtitles=captions.srt:force_style='FontName=DejaVu Sans,FontSize=20,"
+        if captions:
+            ass=captions.suffix.lower()=='.ass'
+            filename='captions.ass' if ass else 'captions.srt'
+            shutil.copyfile(captions, root / filename)
+            if ass:
+                from .media import find_font
+                font=find_font()
+                if font: shutil.copyfile(font,root/'caption-font.ttf')
+            args += ["-vf", "subtitles=captions.ass:fontsdir=." if ass else "subtitles=captions.srt:force_style='FontName=DejaVu Sans,FontSize=20,"
                      "Outline=2,Shadow=0,MarginV=24,Alignment=2'", "-c:v", "libx264", "-crf", "20",
                      "-preset", "medium"]
         else:

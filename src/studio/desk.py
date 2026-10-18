@@ -105,6 +105,9 @@ class ProductionDesk:
             if self.state[vid] in {"scripted", "changes_requested"}: self._set(vid, "in_production")
         elif t == "cut-lists" and vid in self.state and p.get("decision") == "repair":
             self.repair_rounds[vid] += 1
+            if env.actor == 'console:editor':
+                self.reviews[vid].clear(); self.has[vid].discard('final_video'); self.has[vid].discard('metadata')
+                self.state[vid] = 'changes_requested'; self.review_since[vid] = env.ts
         elif t == "media-assets" and vid in self.state:
             k = p.get("kind")
             if k == "final_video":

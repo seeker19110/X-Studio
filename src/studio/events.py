@@ -22,7 +22,7 @@ Topic = Literal[
 ]
 Namespace = Literal["strategy", "research", "voice", "production", "brand", "seo", "rights", "insights", "community", "knowledge"]
 ReviewSource = Literal["fact", "rights", "quality"]
-AssetKind = Literal["scene_audio", "scene_image", "scene_video", "music", "draft_video", "final_video", "thumbnail", "captions",
+AssetKind = Literal["scene_audio", "scene_image", "scene_layout", "scene_video", "music", "draft_video", "final_video", "thumbnail", "captions",
                     "contact_sheet"]  # contact_sheet: lưới khung hình từ bản cuối cho người duyệt (ADR-0016), không đăng lên nền tảng
 VideoFormat = Literal["long", "short"]
 # `SupervisorActionKind` giống hệt bản company (đo được), nên nó lên core ở K3.5a; re-export giữ tên cũ.
@@ -112,6 +112,7 @@ class Scene(BaseModel):
     duration_s: float = 6.0
     locked: bool = False  # cảnh đã đạt: editor/renderer không được sinh lại
     asset_refs: dict[str, str] = {}  # kind → path (renderer điền)
+    clip_start_s: float | None = Field(default=None,ge=0,allow_inf_nan=False)  # measured position in a derived clip
     # ADR-0017: cảnh là đồ họa dữ liệu (title/quote/bars/list/stat) thay vì ảnh; model chọn, code kiểm số và dựng.
     graphic: MotionSpec | None = None
 
@@ -150,7 +151,7 @@ class MediaAsset(BaseModel):
 
 class Repair(BaseModel):
     scene_id: str = Field(pattern=ID_PATTERN)
-    action: Literal["regenerate_audio", "regenerate_image", "regenerate_both", "replace_asset", "lock"]
+    action: Literal["regenerate_audio", "regenerate_image", "regenerate_both", "replace_asset", "lock", "unlock"]
     reason: str
     new_visual_prompt: str | None = None
     new_narration: str | None = None
