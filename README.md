@@ -125,6 +125,12 @@ Console nhận mục tiêu **0–720 phút** (lớn hơn 0). [YouTube](https://s
 - Đồ họa theo cảnh chỉ kiểm con số khớp claim có nguồn, không hiểu nhãn đi kèm có đúng nghĩa không — soát trên contact sheet ở gate publish. Bề rộng chữ là ước lượng theo font DejaVu Sans, không đo glyph thật. Chưa nhúng engine HTML (HyperFrames/Remotion) hay ManimGX: model không viết code chạy được (ADR-0003, ADR-0017).
 - Video diffusion chạy qua workflow ComfyUI cấu hình riêng; chưa cài/benchmark model GPU. Chưa tích hợp stock search tự tải, tracking người nói, editor timeline kéo thả hoặc render cluster. Xem [đối chiếu nguồn và quyết định tích hợp](docs/RESEARCH-VIDEO-FACTORIES.md).
 
+Console hiển thị tổng dung lượng factory và hỗ trợ cảnh báo/chặn **dự án mới** qua
+`production.storage`; mặc định các ngưỡng tắt, không tự xóa dữ liệu hay dừng job đã có.
+Admission này áp dụng cho **Tạo video mới**; **Website → Video** và thư mục xuất
+riêng ngoài roots chưa được bao phủ (xem phạm vi trong tài liệu).
+Xem [phạm vi thống kê và giới hạn admission](docs/STORAGE.md) — đây không phải filesystem quota.
+
 ## Phát triển và xác minh
 
 ```bash
@@ -138,8 +144,8 @@ CI Linux cài FFmpeg/font, khóa phiên bản GitHub Actions và chạy cùng l�
 - `src/studio/web/`: HTML/CSS/JavaScript native, đóng gói cùng Python.
 - `agents/`, `skills/`, `topics/`: 14 vai, 24 skill và schema sự kiện; giữ prompt hiện có.
 - `gateway/`, `xagents-core/`: thành viên uv workspace có test/coverage riêng.
-- `tests/`: pytest 1173 ca / 69 file.
-- Test: 1173 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
+- `tests/`: pytest 1205 ca / 70 file.
+- Test: 1205 ca pytest của studio; xem báo cáo xác minh cho kết quả thực tế.
 - `docs/adr/`: ADR 0001–0020; [ADR-0010](docs/adr/0010-production-factory.md) giải thích kiến trúc factory, [ADR-0013](docs/adr/0013-film-animation-scene-generation.md) bổ sung phim/hoạt hình.
 
 Giấy phép: [Apache-2.0](LICENSE), cùng giấy phép với repo nguồn [`X-Agents`](https://github.com/seeker19110/X-Agents) mà `xagents-core/` và `gateway/` được vendor về.

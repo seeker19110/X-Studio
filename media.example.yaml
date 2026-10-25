@@ -156,3 +156,12 @@ scene_video:
   fps: 24
   resolution: 832x480
   license: unknown
+
+# Quan sát tổng dung lượng của factory; mặc định không chặn người dùng hiện có.
+# Chỉ chặn dự án MỚI, không dừng job đã có và không xóa bất kỳ file nào.
+production:
+  storage:
+    soft_limit_bytes: 0       # 0 = tắt cảnh báo theo dung lượng
+    hard_limit_bytes: 0       # 0 = tắt admission; ví dụ 107374182400 = 100 GiB
+    scan_interval_s: 30       # cache hiển thị/chờ bị chặn; admission hard-limit quét mới
+    max_scan_entries: 100000  # scan không đầy đủ sẽ chặn nhận việc nếu hard limit bật

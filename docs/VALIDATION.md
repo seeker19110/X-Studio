@@ -1,5 +1,192 @@
 # Xác minh bản nâng cấp factory
 
+## PR #9 tách tên module admission để tránh collision với PR #20 (2026-10-25)
+
+Base vẫn là main `93a290a1705ee7c62669804b48cfb9e0f2690a9d`. Đã đọc riêng
+PR #20 (`2a6f033`) và thấy `storage.py`/`test_storage.py` của nhánh đó dùng cho
+bảng ứng dụng và IdeaStore. PR #9 đổi tên module thành `storage_admission.py`
+và test thành `test_storage_admission.py`; cập nhật import/monkeypatch, giữ nguyên
+API `StorageMonitor`/`StorageAdmissionError`, cấu hình và hành vi. Không đưa code,
+migration hoặc tính năng PR #20 vào nhánh này.
+
+Test import tên mới đã chạy đỏ trước khi chuyển source; sau đổi tên **27 test
+admission đạt 100%**. `UV_CACHE_DIR=/tmp/xstudio-pr9-uv-cache make verify` độc lập
+đạt **1.205 Studio + 273 Gateway + 486 core = 1.964 test**, không skip, coverage
+**100%** mỗi package (core cả nhánh). Studio vẫn **7.055** dòng thực thi/**70**
+file test; README không đổi số đếm. Ruff/mypy, **32/32** eval replay, Node syntax
+và diff-check đạt. Gateway giữ warning runpy cũ. Log: `/tmp/pr9-oct25-verify.log`.
+
+Khi hòa giải riêng với PR #20, phải giữ admission trong dispatch `create`, ưu tiên
+controls và bắt `StorageAdmissionError` trước `ValueError` trong worker mới.
+Inventory resources của PR #20 có phạm vi/semantics khác, không thay thế snapshot
+admission có entry limit và trạng thái incomplete. Đổi tên này chỉ xử lý collision
+module, không xác nhận mọi luồng mới của PR #20 đã có admission. Website jobs/export
+ngoài roots vẫn không được bao phủ; chi phí/provider live chưa được kiểm chứng.
+Không merge PR, không chạy provider/upload hoặc deploy.
+
+## PR #9 hòa giải với main PR #19 và reviewers multimodal (2026-10-16)
+
+Đã tích hợp main `93a290a1705ee7c62669804b48cfb9e0f2690a9d` trong worktree
+`/tmp/xstudio-pr9-reconcile`, `.venv` và cache uv riêng; đã đọc `AGENTS.md` mới
+và `CLAUDE.md`, xác nhận đường dẫn import `studio` thuộc worktree. Giữ nguyên
+attachments/reviewers multimodal, hosted video, ASR narration QC, synthetic-media
+metadata, graphics, ledger và các workflow của main. Không sửa prompt hoặc
+provider của main. ADR mới nhất **0020**; checklist rà soát lịch sử đã đánh dấu
+LICENSE/AGENTS/SECURITY/Dependabot là có sẵn, không đề xuất tạo lại.
+
+`UV_CACHE_DIR=/tmp/xstudio-pr9-uv-cache make verify` đạt **1.205 Studio + 273
+Gateway + 486 core = 1.964 test**, không skip; coverage **100%** từng package
+(Studio **7.055** dòng thực thi, **70** file Python trong tests gồm conftest;
+core cả dòng/nhánh 100%). Ruff/mypy cả ba package, **32/32** strict eval replay,
+Node syntax và diff-check đạt. Gateway giữ warning runpy cũ. Log:
+`/tmp/pr9-oct16-verify.log`.
+
+Chỉ xác minh offline, không gọi provider/model CLI/website/upload live, không
+merge PR hoặc deploy. Chưa đối soát chi phí provider thực hoặc chứng minh chất
+lượng provider/multimodal/ASR live. Website jobs/export ngoài output/upload roots
+vẫn ngoài storage admission của `create`, xem [STORAGE.md](STORAGE.md). Scan không
+phải quota hoặc reservation và jobs đã có vẫn có thể tăng dung lượng. PR #7
+upload recovery vẫn là nhánh riêng.
+
+## PR #9 hòa giải với scene graphics và rà soát docs trên main (2026-10-13)
+
+Đã tích hợp main `5f5afae4362d3ff82bd90c8745b7c105bda5637f` (PR #13 và #18)
+trong worktree/venv/cache riêng. Giữ nguyên model-data graphics, kiểm tra số claim,
+layout, fallback/cache, ledger/budget pause, contact sheet/freeze QC và các
+workflow đã có; không nhận các tính năng main là triển khai mới của PR #9.
+ADR mới nhất **0017**. Ghi chú rà soát ngày 2026-10-13 đã đánh dấu
+`SECURITY.md` và Dependabot là có sẵn, không đề xuất tạo lại.
+
+`UV_CACHE_DIR=/tmp/xstudio-pr9-uv-cache make verify` đạt **1.127 Studio + 273
+Gateway + 478 core = 1.878 test**, không skip; coverage **100%** từng package
+(Studio **6.410** dòng thực thi, **69** file Python trong tests gồm conftest;
+core cả dòng/nhánh 100%). Ruff/mypy cả ba package, **29/29** strict eval replay,
+Node syntax và diff-check đạt. Gateway giữ warning runpy cũ. Log kiểm chứng:
+`/tmp/pr9-graphics-verify.log`.
+
+Chỉ chạy offline, không website/model CLI/provider/upload live, không merge PR
+hoặc deploy. Chi phí trả tiền thực chưa được đối soát. Kiểm tra số trong graphic
+chỉ xác nhận số có trong claim nguồn; không chứng minh nhãn–giá trị–nguồn đúng
+ngữ nghĩa. Website jobs/export ngoài roots vẫn ngoài storage admission như
+[STORAGE.md](STORAGE.md); PR #7 upload recovery vẫn riêng.
+
+## PR #9 hòa giải với ledger/budget/QC của PR #12 (2026-10-13)
+
+Đã tích hợp main `d7cb00d507a4e5c3f1208c906ad1195a2e67b8c8` trong worktree
+`/tmp/xstudio-pr9-reconcile`, dùng `.venv` và cache uv riêng; đường dẫn import
+`studio` được xác nhận thuộc worktree. Chỉ README có xung đột; giữ ledger chi
+phí bền, budget pause, contact sheet, freeze QC, Website → Video và cleanup của
+main. Các tính năng từ PR #12 không phải triển khai mới của PR #9. ADR mới nhất
+trên bản tích hợp là **0016**, không thêm số ADR trùng.
+
+`UV_CACHE_DIR=/tmp/xstudio-pr9-uv-cache make verify` đạt **1.083 Studio + 273
+Gateway + 478 core = 1.834 test**, không skip; coverage **100%** từng package
+(Studio **6.234** dòng thực thi, **68** file Python trong tests gồm conftest;
+core cả dòng/nhánh 100%). Ruff/mypy cả ba package, **28/28** eval replay strict,
+`node --check src/studio/web/app.js` và diff-check đạt. Gateway vẫn có warning
+runpy đã tồn tại. Log: `/tmp/pr9-oct13-verify.log`.
+
+Lần hòa giải này chỉ xác minh offline: **chưa kiểm chứng chi phí trả tiền thực
+hoặc đối soát hóa đơn provider**; không gọi website/model CLI/TTS/provider/upload
+live, không deploy hoặc merge PR. Website jobs (`website`) và thư mục xuất riêng
+ngoài output/upload roots vẫn ngoài admission storage của `create`, như ghi tại
+[STORAGE.md](STORAGE.md). Không mở rộng phạm vi hoặc thay đổi job đã có. PR #7
+upload recovery vẫn là nhánh riêng.
+
+## PR #9 hòa giải với Website → Video và cleanup trên main (2026-10-11)
+
+Đã tích hợp main `13ab96abe9709dcd52876cae2b95a59c677f0625` vào nhánh storage
+trong worktree riêng `/tmp/xstudio-pr9-reconcile`, với `.venv` riêng và nguồn
+`studio` xác nhận nằm trong worktree. Giữ nguyên Website → Video, cleanup bằng
+`ExitStack`, staging thumbnail và giới hạn FFmpeg của main; các tính năng này
+không phải phần triển khai mới của PR #9. Giữ cả bộ test cleanup và storage,
+không thay đổi provider/prompt/schema. ADR 0001–0015 không trùng số.
+
+`UV_CACHE_DIR=/tmp/xstudio-uv-cache make verify` đạt **1.062 Studio + 273 Gateway
++ 478 core = 1.813 test**, không skip, coverage **100%** từng package (Studio
+6.106 dòng thực thi, 66 file Python trong tests gồm conftest; core có coverage
+nhánh 100%). Ruff/mypy cả ba package, strict eval replay **28/28**, Node syntax
+và diff-check đạt. Gateway giữ RuntimeWarning runpy đã có trước. Log lần này:
+`/tmp/pr9-reconcile-verify.log`. Không gọi website/model CLI/TTS/provider/upload
+live; lịch sử kiểm tra website thật bên dưới được giữ từ main, không phải một
+lượt chạy lại trong lần hòa giải này.
+
+Phạm vi storage được ghi rõ trong README và [STORAGE.md](STORAGE.md): admission
+chỉ áp dụng command `create` của **Tạo video mới**. Command `website` mới và thư
+mục xuất website ngoài output/upload roots chưa được bao phủ; giữ nguyên
+workflow này, không âm thầm mở rộng chính sách admission. Không xóa file, dừng
+job đã có, merge PR hay deploy. PR #7 upload recovery vẫn là nhánh riêng.
+
+## PR #9 hòa giải với main sau PR #10 (2026-10-11)
+
+Main đổi thành `d9272224709af08e2fe5bdcba90de290fc6fa650` trong khi CI của
+path fix chạy. Đã giữ các thay đổi CLI/publishing preview được merge bên ngoài,
+không nhận chúng là công việc của PR #9. Hòa giải README, giữ cả lịch sử xác minh;
+code storage và regression bypass giữ nguyên.
+
+Bản kết hợp `make verify` đạt **983 Studio + 273 Gateway + 478 core = 1.734 test**,
+không skip, coverage **100%** mỗi package (Studio 5.530 dòng thực thi, 65 file test).
+Ruff/mypy cả ba package và **28/28 eval replay** đạt; Gateway giữ warning runpy cũ.
+Review độc lập + 104 test factory/storage/CLI/media đạt. Chromium console smoke:
+3 dự án, 0 lỗi JS, không overflow; trang publishing và 5 bộ lọc đạt ở desktop và
+mobile 390px. Node syntax và diff-check đạt. Không gọi CLI/provider/upload thật.
+PR #7 và #9 vẫn riêng biệt, chưa merge; tài liệu của hai PR cần hòa giải theo thứ
+tự merge được phê duyệt.
+
+## Sửa bypass admission qua symlink trước `..` trong PR #9 (2026-10-11)
+
+Review độc lập phát hiện `abspath` rút gọn `link/../output` trước khi filesystem
+resolve symlink, khiến monitor đo nhầm thư mục. Tái hiện đỏ ở cả output/cache,
+external uploads và SQLite/WAL: file 200 byte vẫn được nhận dưới hard limit 100.
+Bản sửa giữ nguyên đường dẫn, kiểm tra từng prefix và báo incomplete nếu gặp
+symlink trước `..`; không âm thầm chuyển sang thư mục khác. Luôn kiểm tra upload
+root riêng, kể cả lexical child chứa `..`; inode dedup tránh cộng trùng.
+
+Năm regression mới xác nhận ba root trên bị chặn, đường dẫn `..` thông thường
+vẫn đo đủ cache/media/DB-sidecar và lỗi quyền ở parent được báo an toàn. Storage:
+**27 test, coverage 100%**. `make verify`: **938 Studio + 273 Gateway + 478 core =
+1.689 test**, không skip, coverage **100%** từng package (Studio 5.398 dòng thực
+thi). Ruff/mypy và **28/28 eval replay** đạt. Review code độc lập không thấy blocker.
+
+Không thay đổi UI hoặc code upload. PR #7/#9 vẫn tách riêng; tài liệu có phần
+chồng nhau và cần hòa giải khi một PR được merge sau phê duyệt. Scan vẫn không
+nguyên tử trước filesystem mutation đồng thời và không phải quota OS.
+
+## Thống kê dung lượng và admission riêng cho Factory (2026-10-11)
+
+Base main `4350abfc1742d756494fe718a344101cc66ff2e1` sau PR #8. Nhánh này
+độc lập với PR #7 đang chờ duyệt; không đưa code upload recovery vào bản này.
+Giữ tính năng phim/hoạt hình của main, không nhận các tính năng đó là công việc mới.
+
+`make verify` đạt **933 Studio + 273 Gateway + 478 core = 1.684 test**, không skip;
+coverage **100%** từng package (Studio 5.387 dòng thực thi, 64 file test). Ruff/mypy
+cả ba package và **28/28 eval replay** đạt. Gateway giữ RuntimeWarning runpy cũ.
+Thêm 27 regression cases: 22 accounting/admission và 5 tích hợp Factory.
+
+Kiểm thử gồm hardlink/root lồng nhau, symlink, scan thiếu/quá giới hạn entry,
+phân nhóm cache/temp/media/DB-sidecar, config không hợp lệ, cache và admission
+fresh scan. Tích hợp thực dùng SQLite và file áp lực 2 MiB: dự án còn chờ, controls
+vẫn chạy, 5 vòng bị chặn không quét lại; bỏ riêng fixture áp lực và hết cache thì
+dự án tiếp tục, asset đã duyệt giữ nguyên. Crash sau brief trước command-complete
+không xét admission lại hoặc tạo brief trùng. Không có lệnh xóa dữ liệu trong tính năng.
+
+Chromium smoke qua server demo/SQLite/output riêng: 3 dự án, không lỗi JavaScript,
+không tràn ngang; kiểm tra UI storage absent/normal/warning/blocked/incomplete và
+mobile 390px. Media/provider đều fake. `node --check` và `git diff --check` đạt.
+
+Benchmark filesystem offline tạo 10.003 file tạm, tổng **11.294.720 byte** (cache
+10.240.000, output 1.048.576, DB+WAL 6.144), số liệu khớp chính xác. Lần scan đầu
+**0,410082 giây**; 1.000 snapshot có cache **0,005460 giây**; 1.000 lần kiểm tra
+queued admission đang blocked **0,005924 giây**. Không xóa file trong scan; fixture
+tạm được dọn sau benchmark. Đo trên filesystem local với metadata vừa tạo, không
+đại diện ổ mạng, hàng triệu file hoặc giới hạn thời gian I/O cứng.
+
+Mặc định soft/hard limit = 0, chỉ quan sát. Hard limit chỉ chặn tạo dự án mới của
+Factory; job đã có vẫn có thể tăng dung lượng. Không reservation hoặc quota OS,
+không scan nguyên tử, không tính file/provider ngoài roots và file unlink đang mở.
+Chi tiết phạm vi/giới hạn và cách cấu hình: [STORAGE.md](STORAGE.md).
+
+
 ## Website → Video và hai video Đồng Hành 4K (2026-10-11)
 
 Luồng mới của [ADR-0015](adr/0015-website-to-local-video.md) đã chạy qua form thật,

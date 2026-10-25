@@ -25,6 +25,7 @@ from .media import MediaConfig, make_media
 from .orchestrator import Orchestrator
 from .platform import PlatformError, YouTubePlatform
 from .sqlite_bus import SQLiteBus
+from .storage_admission import StorageAdmissionError, StorageMonitor
 from .website import JobAction, WebsiteJobs, WebsiteRequest
 
 
@@ -76,7 +77,7 @@ class CommandStore:
 
     def pending(self) -> list[dict]:
         with self.connect() as con:
-            return [dict(r) for r in con.execute("SELECT * FROM factory_commands WHERE status='pending' ORDER BY rowid LIMIT 20")]
+            return [dict(r) for r in con.execute("SELECT * FROM factory_commands WHERE status='pending' ORDER BY (kind='create'), rowid LIMIT 20")]
 
     def complete(self, id: str, error: str = "") -> None:
         with self.connect() as con:
@@ -104,6 +105,7 @@ class Factory:
             self.commands = CommandStore(db)
             self.websites = WebsiteJobs(db)
             cleanup.callback(self.websites.close)
+            self.storage = StorageMonitor(cfg, db)
             client = make_scripted_client(plan_size=1, repairs=0) if demo else make_client()
             self.orch = Orchestrator(self.bus, client, media=make_media(cfg))
             self.autopilot = Autopilot(self.orch)
@@ -125,6 +127,7 @@ class Factory:
             request = ProjectRequest.model_validate(body)
             if request.visual_mode == "generated_video" and self.orch.renderer.media.scene_video is None:
                 raise ValueError("Chế độ clip AI cần cấu hình scene_video.provider trong media.yaml")
+            self.storage.check_admission()
         if kind == "website":
             if self.demo: raise ValueError("Website → Video cần xưởng thật; chế độ demo không gọi model hoặc dịch vụ giọng đọc thật")
             WebsiteRequest.model_validate(body)
@@ -159,6 +162,7 @@ class Factory:
             # Deterministic ID makes replay after a crash between publish and command completion idempotent.
             cid = "P" + re.sub(r"[^a-zA-Z0-9]", "", row["id"])[:24]
             if self.bus.latest("channel-briefs", cid) is None:
+                self.storage.check_admission(force=False)
                 payload = {"channel_id": cid, "goals": [request.title], "audience": request.audience,
                            "pillars": [request.title], "cadence": "Một video theo yêu cầu", "language": request.language,
                            "boundaries": [*request.boundaries, *request.direction()], "requested_video": request.model_dump()}
@@ -176,6 +180,10 @@ class Factory:
             try:
                 self.execute(command)
                 self.commands.complete(command["id"])
+            except StorageAdmissionError:
+                # Controls are ordered first. Leave this and later creates pending,
+                # avoid rescanning for every blocked job, and keep current work moving.
+                break
             except (ValueError, KeyError, PermissionError) as exc:
                 self.commands.complete(command["id"], error=str(exc)[:300])
         if self.running:
@@ -260,6 +268,7 @@ class Factory:
             if cid not in project_channels and planning_errors.get(cid): command["planning_error"] = planning_errors[cid]
         events = [e for e in audit_events if e.payload.get("action") not in {"orchestrated", "once"}][-30:]
         snapshot = {"running": self.running, "demo": self.demo, "projects": projects,
+                    "storage": self.storage.snapshot(),
                     "gates": [{"id": sid, "kind": g.kind, "checklist": g.checklist, "request_at": g.created_at.isoformat(),
                                "hold": self.autopilot.holds.get(sid, "")} for sid, g in o.gate.pending.items()],
                     "queue": len(o.queue), "deferred": len(o.deferred), "commands": commands,
