@@ -71,7 +71,7 @@ Location cần đối soát thủ công; không có lệnh tự reset hay đoán
 published sai từ lịch sử cũ cũng cần đối soát, vì thiếu trạng thái để tự sửa chắc
 chắn. SHA-256 đọc file theo block 1 MiB, upload giữ chunk tối đa 8 MiB như PR #6;
 file đầu vào cần bất biến trong lúc gửi. Kiểm tra size/mtime hỗ trợ phát hiện thay
-đổi, không thay snapshot filesystem. Xem [ADR-0021](adr/0021-durable-youtube-upload-reconciliation.md).
+đổi, không thay snapshot filesystem. Xem [ADR-0025](adr/0025-durable-youtube-upload-reconciliation.md).
 
 ## Website → Video và hai video Đồng Hành 4K (2026-10-11)
 
@@ -425,7 +425,7 @@ các giới hạn đã ghi ở ADR-0011/0012.
 
 Tích hợp main `13ab96abe9709dcd52876cae2b95a59c677f0625` vào nhánh upload recovery,
 giữ Website → Video, live-export, ExitStack cleanup và thumbnail staging của main.
-ADR upload chuyển sang [0021](adr/0021-durable-youtube-upload-reconciliation.md)
+ADR upload chuyển sang [0025](adr/0025-durable-youtube-upload-reconciliation.md)
 để giữ nguyên ADR 0014/0015 của PR #11. PR #9 về storage vẫn là thay đổi độc lập.
 
 `UV_CACHE_DIR=/tmp/xstudio-uv-cache make verify` trên Linux/Python 3.12.14 đạt:
@@ -446,7 +446,7 @@ Các giới hạn upload recovery, render 12 giờ và Windows native vẫn còn
 
 Tích hợp main `d7cb00d507a4e5c3f1208c906ad1195a2e67b8c8`, giữ ledger media,
 budget pause, contact sheet từ MP4 cuối và freeze/slideshow QC. Upload ADR chuyển
-sang [0021](adr/0021-durable-youtube-upload-reconciliation.md); ADR 0016 của main giữ nguyên.
+sang [0025](adr/0025-durable-youtube-upload-reconciliation.md); ADR 0016 của main giữ nguyên.
 `UV_CACHE_DIR=/tmp/xstudio-uv-cache make verify` đạt **1.092 Studio + 273 Gateway
 + 478 core = 1.843 tests**, không skip; coverage 100% cả ba package (core cả nhánh),
 Studio 6.224 dòng thực thi/68 file test. Ruff/mypy và 28/28 strict eval replay đạt.
@@ -462,7 +462,7 @@ PR #9 storage độc lập; Website jobs/export riêng vẫn ngoài storage admi
 
 Main `5f5afae4362d3ff82bd90c8745b7c105bda5637f` được tích hợp; giữ graphics
 model chọn dạng dữ liệu, đối chiếu số claim, safe layout/fallback và cache identity.
-Upload ADR hiện là [0021](adr/0021-durable-youtube-upload-reconciliation.md), giữ ADR
+Upload ADR hiện là [0025](adr/0025-durable-youtube-upload-reconciliation.md), giữ ADR
 0017 graphics của main; số ADR trong lịch sử bên trên là số tại thời điểm đó.
 Dependabot/SECURITY đã có trên main; không thực hiện lại đề xuất cũ của docs #18.
 
@@ -481,7 +481,7 @@ Windows native. Website jobs/export riêng vẫn ngoài storage admission của 
 
 Đã giữ toàn bộ phần main về khai báo synthetic media/tài trợ, hosted video, ASR QC và multimodal reviewers;
 không sửa thêm prompt hoặc gọi provider thật. ADR upload chuyển sang
-[0021](adr/0021-durable-youtube-upload-reconciliation.md), giữ ADR 0018–0020 của main.
+[0025](adr/0025-durable-youtube-upload-reconciliation.md), giữ ADR 0018–0020 của main.
 
 Request YouTube chuẩn hóa giờ chứa `containsSyntheticMedia` và
 `paidProductPlacementDetails.hasPaidProductPlacement`, dùng chung cho HTTP body và identity journal.
@@ -503,3 +503,17 @@ Log cục bộ: `/tmp/pr7-verify-93a290a.log`. Không gọi paid provider, CLI m
 chưa chứng minh Windows native, render 12 giờ hay chất lượng/chi phí provider thật.
 Không thay đổi giới hạn cũ: mất/expired journal hoặc lịch sử published sai cần đối soát thủ công;
 không cam kết exactly-once khi mất trạng thái hoặc file đang bị thay đổi.
+
+## 2026-10-25 — PR7 compatibility boundary with PR20
+
+Standalone PR7 on main93a290a, without importing PR20: five regression cases first
+failed on unsupported operation/authorization arguments, then passed. Same gate
+resumes active/completed journals; changed gate fails before POST/PUT; operation_id
+cannot change the video's journal namespace. Default arguments preserve old journals.
+Focused platform + README: 116 passed. `make verify`: Studio1252 + Gateway273 +
+core486 = **2011 passed**, 100% coverage each, Ruff/mypy and 32/32 eval replay pass.
+`node --check src/studio/web/app.js` and `git diff --check` pass. Known gateway runpy
+warning remains. No live provider, YouTube upload, deployment, or 12-hour run performed.
+Upload ADR moved to0025 to reserve PR20's0021–0024. SQLite bridge integration remains
+separate local work: legacy records must require reconciliation if the strong journal
+is absent; weaker auto-reinitialization after404 must not replace PR7's guard.

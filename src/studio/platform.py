@@ -442,7 +442,10 @@ class YouTubePlatform:
             offset = next_offset
 
     def upload_video(self, path: Path, metadata: MetadataPackage, privacy: str = "private", publish_at: str | None = None,
-                     made_for_kids: bool = False, *, require_existing: bool = False) -> UploadResult:
+                     made_for_kids: bool = False, *, require_existing: bool = False,
+                     operation_id: str | None = None, authorization: str = "") -> UploadResult:
+        if operation_id is not None and operation_id != metadata.video_id:
+            raise PlatformError("upload: operation_id must match video_id")
         directory = self.store.path.parent / "youtube-uploads"
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         key = hashlib.sha256(metadata.video_id.encode()).hexdigest()
@@ -460,7 +463,7 @@ class YouTubePlatform:
             if require_existing and not journal.exists():
                 self._reconcile_upload(journal, {"schema": 1}, "prior receipt has no durable session")
             try:
-                return self._durable_upload(Path(path), metadata, privacy, publish_at, made_for_kids, journal)
+                return self._durable_upload(Path(path), metadata, privacy, publish_at, made_for_kids, journal, authorization)
             except PlatformError as error:
                 if error.status in {404, 410} or error.reason == "file_changed":
                     state = json.loads(journal.read_text()) if journal.exists() else {"schema": 1}
@@ -480,7 +483,7 @@ class YouTubePlatform:
                             "reconciliation_needed") from None
 
     def _durable_upload(self, path: Path, metadata: MetadataPackage, privacy: str, publish_at: str | None,
-                        made_for_kids: bool, journal: Path) -> UploadResult:
+                        made_for_kids: bool, journal: Path, authorization: str = "") -> UploadResult:
         state: dict[str, Any] = {}
         if journal.exists():
             try:
@@ -528,6 +531,8 @@ class YouTubePlatform:
                 self._reconcile_upload(journal, state or {"schema": 1}, "cannot identify exactly one authenticated channel")
             identity = {"sha256": digest.hexdigest(), "bytes": size, "request": request,
                         "credential": credential, "channel": channel}
+            if authorization:
+                identity["authorization"] = authorization
             if state:
                 if state.get("identity") != identity:
                     self._reconcile_upload(journal, state, "file, request or account identity changed")

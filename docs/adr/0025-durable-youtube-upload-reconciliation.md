@@ -1,4 +1,4 @@
-# ADR-0021: Phiên upload YouTube bền vững và đối soát khi kết quả không rõ
+# ADR-0025: Phiên upload YouTube bền vững và đối soát khi kết quả không rõ
 
 Trạng thái: Accepted · Ngày: 2026-10-11
 
@@ -58,3 +58,17 @@ tường minh. Vì vậy journal cũ không có khai báo vẫn tương thích k
 nhưng thay đổi bất kỳ khai báo nào ở phiên đang chạy hoặc đã hoàn tất đều yêu cầu đối soát,
 không tạo upload mới. Danh sách `part` được dựng từ chính các phần trong request.
 Bằng chứng hoàn tất giữ `uploadStatus` do adapter nhận được, không suy đoán từ model.
+
+## Tương thích nhánh operations (PR20)
+
+Giữ một engine upload với journal bền vững; không chạy song song engine SQLite và
+journal cho cùng video. `operation_id` phải trùng video_id; `authorization` khác rỗng
+được ràng buộc vào identity, nên thay phiên duyệt cần đối soát cả phiên đang chạy và
+đã hoàn tất. Mặc định rỗng giữ tương thích journal cũ. ADR 0021–0024 được dành cho
+nhánh operations; nhánh này chưa nhập các ADR đó.
+
+Khi tích hợp PR20, bản ghi SQLite cũ không có strong journal phải chặn tạo POST mới
+và yêu cầu đối soát; không tự chuyển record thiếu account/init receipt thành phiên
+đáng tin. SQLite có thể phản chiếu tiến độ nhưng journal là nguồn quyết định duy nhất.
+Session 404/410 luôn cần đối soát, không tự mở session mới. Backup cần bảo toàn cả
+private journal ở cạnh token store; bản sao database riêng không đủ phục hồi upload.

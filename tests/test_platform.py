@@ -926,3 +926,35 @@ def test_changed_disclosure_requires_reconciliation_without_new_insert(tmp_path,
     assert not any(call[0] in {'POST', 'PUT'} for call in recovery.calls)
     journal = next(store.path.parent.glob('youtube-uploads/*.json'))
     assert json.loads(journal.read_text())['state'] == 'reconciliation_needed'
+
+
+@pytest.mark.parametrize('completed', [False, True])
+@pytest.mark.parametrize('changed', [False, True])
+def test_gate_authorization_bound_to_durable_upload(tmp_path, completed, changed):
+    video = tmp_path / 'video.mp4'; video.write_bytes(b'approved')
+    store = _store(tmp_path); location = 'https://www.googleapis.com/upload/gate-session'
+    http = FakeHTTP().on('POST', UPLOAD_URL, (200, {'location': location}, b''))
+    def upload(*args):
+        if not completed: raise SystemExit('interrupted')
+        return 201, {}, {'id': 'confirmed'}
+    http.on('PUT', location, upload)
+    adapter = YouTubePlatform(store, http, lambda: NOW)
+    if completed: adapter.upload_video(video, META, operation_id=META.video_id, authorization='gate1')
+    else:
+        with pytest.raises(SystemExit): adapter.upload_video(video, META, operation_id=META.video_id, authorization='gate1')
+    recovery = FakeHTTP().on('PUT', location, (201, {}, {'id': 'confirmed'}))
+    adapter = YouTubePlatform(store, recovery, lambda: NOW)
+    if changed:
+        with pytest.raises(PlatformError, match='identity changed'):
+            adapter.upload_video(video, META, operation_id=META.video_id, authorization='gate2')
+        assert not any(c[0] in {'POST', 'PUT'} for c in recovery.calls)
+    else:
+        assert adapter.upload_video(video, META, operation_id=META.video_id, authorization='gate1').platform_ref == 'confirmed'
+        assert not any(c[0] == 'POST' for c in recovery.calls)
+
+
+def test_upload_operation_cannot_change_video_namespace(tmp_path):
+    http = FakeHTTP()
+    with pytest.raises(PlatformError, match='operation_id'):
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(tmp_path / 'absent', META, operation_id='other')
+    assert not http.calls
