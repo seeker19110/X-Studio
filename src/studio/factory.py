@@ -25,7 +25,7 @@ from .media import MediaConfig, make_media
 from .orchestrator import Orchestrator
 from .platform import PlatformError, YouTubePlatform
 from .sqlite_bus import SQLiteBus
-from .storage import StorageAdmissionError, StorageMonitor
+from .storage_admission import StorageAdmissionError, StorageMonitor
 from .website import JobAction, WebsiteJobs, WebsiteRequest
 
 

@@ -295,7 +295,7 @@ def test_storage_constructor_failure_releases_factory_lease(tmp_path, monkeypatc
 def test_storage_blocked_cycles_reuse_monitor_scan(tmp_path, monkeypatch):
     import os
 
-    from studio.storage import StorageAdmissionError
+    from studio.storage_admission import StorageAdmissionError
 
     scans = []
     real_scandir = os.scandir
@@ -304,7 +304,7 @@ def test_storage_blocked_cycles_reuse_monitor_scan(tmp_path, monkeypatch):
         scans.append(path)
         return real_scandir(path)
 
-    monkeypatch.setattr("studio.storage.os.scandir", counted)
+    monkeypatch.setattr("studio.storage_admission.os.scandir", counted)
     output = tmp_path / "out"
     output.mkdir()
     pressure = output / "test-pressure.bin"

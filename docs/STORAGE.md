@@ -1,5 +1,10 @@
 # Dung lượng của factory và giới hạn nhận dự án
 
+Module admission là `studio.storage_admission` (`StorageMonitor` và
+`StorageAdmissionError`), kiểm thử tại `tests/test_storage_admission.py`. Tên này
+tránh trùng module lưu bảng ứng dụng đang được đề xuất trong PR #20; PR #9 không
+đưa các tính năng của PR #20 vào nhánh.
+
 Console hiển thị dung lượng trong Cấu hình. Cấu hình qua `production.storage`
 trong media YAML, khởi động lại factory để áp dụng:
 

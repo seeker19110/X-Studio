@@ -1,5 +1,29 @@
 # Xác minh bản nâng cấp factory
 
+## PR #9 tách tên module admission để tránh collision với PR #20 (2026-10-25)
+
+Base vẫn là main `93a290a1705ee7c62669804b48cfb9e0f2690a9d`. Đã đọc riêng
+PR #20 (`2a6f033`) và thấy `storage.py`/`test_storage.py` của nhánh đó dùng cho
+bảng ứng dụng và IdeaStore. PR #9 đổi tên module thành `storage_admission.py`
+và test thành `test_storage_admission.py`; cập nhật import/monkeypatch, giữ nguyên
+API `StorageMonitor`/`StorageAdmissionError`, cấu hình và hành vi. Không đưa code,
+migration hoặc tính năng PR #20 vào nhánh này.
+
+Test import tên mới đã chạy đỏ trước khi chuyển source; sau đổi tên **27 test
+admission đạt 100%**. `UV_CACHE_DIR=/tmp/xstudio-pr9-uv-cache make verify` độc lập
+đạt **1.205 Studio + 273 Gateway + 486 core = 1.964 test**, không skip, coverage
+**100%** mỗi package (core cả nhánh). Studio vẫn **7.055** dòng thực thi/**70**
+file test; README không đổi số đếm. Ruff/mypy, **32/32** eval replay, Node syntax
+và diff-check đạt. Gateway giữ warning runpy cũ. Log: `/tmp/pr9-oct25-verify.log`.
+
+Khi hòa giải riêng với PR #20, phải giữ admission trong dispatch `create`, ưu tiên
+controls và bắt `StorageAdmissionError` trước `ValueError` trong worker mới.
+Inventory resources của PR #20 có phạm vi/semantics khác, không thay thế snapshot
+admission có entry limit và trạng thái incomplete. Đổi tên này chỉ xử lý collision
+module, không xác nhận mọi luồng mới của PR #20 đã có admission. Website jobs/export
+ngoài roots vẫn không được bao phủ; chi phí/provider live chưa được kiểm chứng.
+Không merge PR, không chạy provider/upload hoặc deploy.
+
 ## PR #9 hòa giải với main PR #19 và reviewers multimodal (2026-10-16)
 
 Đã tích hợp main `93a290a1705ee7c62669804b48cfb9e0f2690a9d` trong worktree

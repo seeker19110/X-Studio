@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from studio.media import MediaConfig
-from studio.storage import StorageAdmissionError, StorageMonitor
+from studio.storage_admission import StorageAdmissionError, StorageMonitor
 
 
 def monitor(tmp_path, **settings):
@@ -55,7 +55,7 @@ def test_external_upload_overlap_and_hardlinks(tmp_path):
 
 def test_missing_roots_soft_hard_threshold_and_force_fresh(tmp_path, monkeypatch):
     mon = monitor(tmp_path, soft_limit_bytes=10, hard_limit_bytes=20)
-    monkeypatch.setattr('studio.storage.time.monotonic', lambda: 100)
+    monkeypatch.setattr('studio.storage_admission.time.monotonic', lambda: 100)
     assert mon.snapshot()['total_bytes'] == 0
     path = put(tmp_path / 'output' / 'video', 10)
     assert mon.snapshot()['total_bytes'] == 0
@@ -65,7 +65,7 @@ def test_missing_roots_soft_hard_threshold_and_force_fresh(tmp_path, monkeypatch
         mon.check_admission()
     assert mon.snapshot()['status'] == 'blocked'
     path.write_bytes(b'x')
-    monkeypatch.setattr('studio.storage.time.monotonic', lambda: 131)
+    monkeypatch.setattr('studio.storage_admission.time.monotonic', lambda: 131)
     assert mon.snapshot()['status'] == 'normal'
     copy = mon.snapshot(); copy['categories']['outputs'] = 500
     assert mon.snapshot()['categories']['outputs'] == 1
@@ -112,7 +112,7 @@ def test_io_failures_do_not_disclose_paths_and_fail_closed(tmp_path, monkeypatch
     def broken(path):
         if Path(path) == tmp_path / 'output': raise PermissionError('secret credential /private/password')
         return original(path)
-    monkeypatch.setattr('studio.storage.os.scandir', broken)
+    monkeypatch.setattr('studio.storage_admission.os.scandir', broken)
     mon = monitor(tmp_path, hard_limit_bytes=100)
     with pytest.raises(StorageAdmissionError, match='incomplete'):
         mon.check_admission()
@@ -124,16 +124,16 @@ def test_blocked_queue_reuses_cache_but_admission_always_refreshes_when_hard_ena
 
     mon = monitor(tmp_path, hard_limit_bytes=10)
     path = put(tmp_path / 'output' / 'asset', 10)
-    monkeypatch.setattr('studio.storage.time.monotonic', lambda: 100)
+    monkeypatch.setattr('studio.storage_admission.time.monotonic', lambda: 100)
     scan = Mock(wraps=os.scandir)
-    monkeypatch.setattr('studio.storage.os.scandir', scan)
+    monkeypatch.setattr('studio.storage_admission.os.scandir', scan)
     with pytest.raises(StorageAdmissionError): mon.check_admission(force=False)
     initial = scan.call_count
     for _ in range(10):
         with pytest.raises(StorageAdmissionError): mon.check_admission(force=False)
     assert scan.call_count == initial
     path.write_bytes(b'x')
-    monkeypatch.setattr('studio.storage.time.monotonic', lambda: 131)
+    monkeypatch.setattr('studio.storage_admission.time.monotonic', lambda: 131)
     assert mon.check_admission(force=False)['total_bytes'] == 1
     assert scan.call_count > initial
     # A cached normal result is insufficient to admit another project.
