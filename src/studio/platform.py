@@ -586,7 +586,9 @@ class YouTubePlatform:
             value = json.loads(raw)
             vid = value["id"]
             if not isinstance(vid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", vid): raise ValueError()
-            ps = (value.get("status") or {}).get("privacyStatus", status["privacyStatus"])
+            remote_status = value.get("status", {})
+            if not isinstance(remote_status, dict): raise ValueError()
+            ps = remote_status.get("privacyStatus", status["privacyStatus"])
             if ps not in {"private", "public", "unlisted"}: raise ValueError()
         except (ValueError, KeyError, TypeError, AttributeError):
             self._reconcile_upload(journal, state, "không có id hợp lệ hoặc completion response invalid", st2)

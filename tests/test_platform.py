@@ -958,3 +958,12 @@ def test_upload_operation_cannot_change_video_namespace(tmp_path):
     with pytest.raises(PlatformError, match='operation_id'):
         YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(tmp_path / 'absent', META, operation_id='other')
     assert not http.calls
+
+
+def test_malformed_empty_status_is_not_a_private_completion(tmp_path):
+    video = tmp_path / 'video.mp4'; video.write_bytes(b'video')
+    location = 'https://www.googleapis.com/upload/status-session'
+    http = FakeHTTP().on('POST', UPLOAD_URL, (200, {'location': location}, b''))
+    http.on('PUT', location, (201, {}, {'id': 'remote', 'status': []}))
+    with pytest.raises(PlatformError, match='reconciliation_needed'):
+        YouTubePlatform(_store(tmp_path), http, lambda: NOW).upload_video(video, META)

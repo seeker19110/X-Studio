@@ -517,3 +517,13 @@ warning remains. No live provider, YouTube upload, deployment, or 12-hour run pe
 Upload ADR moved to0025 to reserve PR20's0021–0024. SQLite bridge integration remains
 separate local work: legacy records must require reconciliation if the strong journal
 is absent; weaker auto-reinitialization after404 must not replace PR7's guard.
+
+PR20's malformed-response regression exposed one further parser defect: `status: []`
+was incorrectly treated as omitted status. A new standalone test failed before the
+fix; completion now requires a status object when supplied. Final standalone rerun:
+Studio1253 + Gateway273 + core486 = **2012 passed**, 100% coverage per package;
+Ruff/mypy,32/32 eval replay, Node syntax and diff checks pass. The separate local
+integration retains one strong upload engine, mirrors non-secret SQLite progress,
+blocks legacy SQLite-only sessions, and recovers a completed journal after a failed
+SQLite projection write without another upload. Integration totals are reported
+separately and are not included in this standalone count.
