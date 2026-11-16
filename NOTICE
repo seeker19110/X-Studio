@@ -1,5 +1,5 @@
 X-Studio
-Copyright (c) 2026 seeker19110
+Copyright (c) 2026 www-donghanhcungban-org
 
 Toàn bộ repo (mã, prompt agent, skill, tài liệu, ảnh chụp màn hình) phát hành theo Apache License 2.0
 — xem LICENSE — trừ các mục liệt kê dưới đây.
@@ -7,7 +7,7 @@ Toàn bộ repo (mã, prompt agent, skill, tài liệu, ảnh chụp màn hình)
 Thành phần lấy từ repo khác
 ---------------------------
 
-xagents-core/ và gateway/ — vendor từ seeker19110/X-Agents, cùng chủ sở hữu, cùng Apache License 2.0.
+xagents-core/ và gateway/ — vendor từ www-donghanhcungban-org/X-Agents, cùng chủ sở hữu, cùng Apache License 2.0.
 
 gateway/src/gateway/auth.py — giá trị mặc định DEFAULT_CLIENT_ID / DEFAULT_CLIENT_SECRET là định danh
   OAuth client desktop công khai của Antigravity IDE (Google), không phải tác phẩm của repo này và
