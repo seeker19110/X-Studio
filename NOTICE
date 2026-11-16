@@ -1,0 +1,30 @@
+X-Studio
+Copyright (c) 2026 www-donghanhcungban-org
+
+Toàn bộ repo (mã, prompt agent, skill, tài liệu, ảnh chụp màn hình) phát hành theo Apache License 2.0
+— xem LICENSE — trừ các mục liệt kê dưới đây.
+
+Thành phần lấy từ repo khác
+---------------------------
+
+xagents-core/ và gateway/ — vendor từ www-donghanhcungban-org/X-Agents, cùng chủ sở hữu, cùng Apache License 2.0.
+
+gateway/src/gateway/auth.py — giá trị mặc định DEFAULT_CLIENT_ID / DEFAULT_CLIENT_SECRET là định danh
+  OAuth client desktop công khai của Antigravity IDE (Google), không phải tác phẩm của repo này và
+  không nằm trong phạm vi Apache License 2.0 của repo. Quyền dùng chúng do điều khoản của Google quy
+  định; ghi đè bằng biến môi trường GATEWAY_ANTIGRAVITY_CLIENT_ID / _SECRET / _PROJECT_ID.
+
+Ảnh thử nghiệm
+--------------
+
+evals/fixtures/*.png là ảnh tổng hợp đơn giản tạo riêng cho eval. evals/fixtures/canh-lon-nuoc-logo.png cố ý
+mang tên một nhãn hiệu nước giải khát để thử tác tử kiểm quyền (rights-checker) — không phải logo gốc,
+không liên kết với chủ nhãn hiệu.
+
+Nhãn hiệu
+---------
+
+Tên sản phẩm và tổ chức nhắc trong repo (ví dụ YouTube, Google, Antigravity, OpenAI, Anthropic, Claude,
+ElevenLabs, ComfyUI, FFmpeg, Blender, Coca-Cola; Techcombank, VietQR, NAPAS 247 trên ảnh mã ủng hộ
+docs/assets/) là nhãn hiệu của chủ sở hữu tương ứng, chỉ dùng để gọi đúng tên. X-Studio không liên kết
+với, không được tài trợ hay xác nhận bởi các chủ sở hữu đó.
