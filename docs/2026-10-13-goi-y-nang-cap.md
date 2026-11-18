@@ -1,24 +1,23 @@
 # Gợi ý nâng cấp — rà soát 2026-10-13
 
-> Lấy từ đợt rà soát chéo 19 repo của chủ sở hữu (ma trận vệ sinh ở [seeker19110/stored, mục 23 §8.1](https://github.com/seeker19110/stored/blob/main/23-own-repos-lessons/README.md); gợi ý tích hợp ở §7b của cùng file). Số liệu đo bằng lệnh trên HEAD (đếm `uses:` ghim SHA 40 ký tự, khối `permissions:`, `dependabot.yml`, `.claude/settings.json`), không suy ra từ văn xuôi. Đây là **đề xuất**, chưa sửa code. Mỗi mục kèm bằng chứng để kiểm lại trước khi làm; mục nào đã xử lý thì đánh dấu hoặc xoá.
+> Lấy từ đợt rà soát chéo 19 repo của chủ sở hữu (ma trận vệ sinh ở [seeker19110/stored, mục 23 §8.1](https://github.com/seeker19110/stored/blob/main/23-own-repos-lessons/README.md); gợi ý tích hợp ở §7b của cùng file). Số liệu đo bằng lệnh trên HEAD (đếm `uses:` ghim SHA 40 ký tự, khối `permissions:`, `dependabot.yml`, `.claude/settings.json`), không suy ra từ văn xuôi. Bản gốc ghi đề xuất tại `d7cb00d`; trạng thái sau main mới được cập nhật bên dưới. Mỗi mục còn lại cần kiểm lại bằng chứng trước khi làm.
 
-## Hiện trạng đo được
+## Số liệu lịch sử tại d7cb00d
 
 | HEAD đọc | Action ghim SHA | Workflow thiếu `permissions:` cấp đầu | Dependabot | LICENSE · SECURITY | File test |
 |---|---|---|---|---|---|
 | `d7cb00d` (2026-10-13) | 3/3 | – | **không có** | không · không | 117 |
 
-## Đề xuất (🔴 cao · 🟠 trung bình · 🟢 nhẹ)
+## Cập nhật sau main 93a290a (2026-10-16)
 
-| # | Mức | Đề xuất | Bằng chứng | Kiểm xong khi |
-|---|---|---|---|---|
-| 1 | ✅ | ~~Thêm `.github/dependabot.yml` (uv, github-actions)~~ — đã có từ `1e9ca1b` (#13) | Không có Dependabot, dù đã có `uv.lock` và 3/3 action ghim SHA | Dependabot mở PR đầu tiên |
-| 2 | 🟢 | ~~Thêm `SECURITY.md`~~ (đã có từ `1e9ca1b`), **còn** LICENSE hoặc dòng "giữ mọi quyền" | Repo không có LICENSE và không có SECURITY.md | Có file |
-| 3 | 🟢 | Thêm `AGENTS.md` (tóm tắt luật cho Codex / Gemini), như X-Agents đã làm | Chỉ có CLAUDE.md (52 dòng) | Có file |
+Main đã có `.github/dependabot.yml` cho `uv` và `github-actions`, `SECURITY.md`,
+`LICENSE` Apache-2.0 và `AGENTS.md`. Cả ba đề xuất vệ sinh ban đầu đã được xử lý;
+không đề xuất tạo lại các file này. Chưa xác minh Dependabot đã mở PR đầu tiên.
+Bảng HEAD ở trên là số liệu lịch sử, không phải hiện trạng của bản tích hợp.
 
 ## Giữ nguyên (điểm mạnh)
 
-- 115 file test, `verify.yml` ghim SHA, render cache SHA-256, MotionSpec / `qc.py`.
+- Bộ test hiện hữu, `verify.yml` ghim SHA, render cache SHA-256, MotionSpec / `qc.py`; số ca/file hiện tại được cập nhật trong README.
 
 ## Gợi ý tích hợp từ catalog `stored`
 

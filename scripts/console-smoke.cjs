@@ -92,6 +92,43 @@ const path = require("node:path");
       () => document.querySelectorAll("#project-grid .project-card").length >= 3,
     );
     await page.locator("nav [data-view=settings]").click();
+    // Exercise admission messages and older servers without the optional field.
+    const storageFixture = {
+      total_bytes: 3 * 1024 ** 3,
+      categories: { cache: 1024 ** 3, temp: 0, uploads: 0, outputs: 2 * 1024 ** 3, database: 0 },
+      complete: true,
+      limits: { soft_limit_bytes: 2 * 1024 ** 3, hard_limit_bytes: 4 * 1024 ** 3 },
+      status: "normal",
+    };
+    for (const [storage, expected] of [
+      [undefined, null],
+      [storageFixture, "Dung lượng sản xuất"],
+      [{ ...storageFixture, status: "warning" }, "Cần kiểm tra"],
+      [{ ...storageFixture, status: "blocked" }, "Tạm ngừng nhận dự án mới"],
+      [{ ...storageFixture, status: "blocked", complete: false }, "Chưa đo được đầy đủ"],
+    ]) {
+      await page.route("**/api/state", async (route) => {
+        const response = await route.fetch();
+        const updated = await response.json();
+        updated.storage = storage;
+        await route.fulfill({ response, json: updated });
+      });
+      await page.evaluate(() => refresh());
+      const region = page.locator("#storage-status");
+      if (expected === null) {
+        if (await region.isVisible()) throw new Error("Missing storage field must hide the status");
+      } else {
+        if (!(await region.isVisible()) || !(await region.textContent()).includes(expected) ||
+            !(await region.textContent()).includes("Đã dùng 3 GiB"))
+          throw new Error(`Storage status was not rendered: ${expected}`);
+        await page.setViewportSize({ width: 390, height: 844 });
+        if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth))
+          throw new Error("Storage status overflows on mobile");
+        await page.setViewportSize({ width: 1440, height: 1000 });
+      }
+      await page.unroute("**/api/state");
+    }
+    await page.evaluate(() => refresh());
     const threads = initial.threads === 3 ? 4 : 3;
     await page.locator("#settings-form [name=threads]").fill(String(threads));
     await page.locator("#breadcrumb").click();
