@@ -60,7 +60,7 @@ from .llm import LLMError, ModelClient, TransientError
 from .media import MediaError, MediaSuite, frame_size
 from .media_cost import MediaBudgetError
 from .motion import verify_graphics
-from .platform import Platform, PlatformError, UploadResult, make_platform
+from .platform import Platform, PlatformError, UploadResult, YouTubePlatform, make_platform
 from .preflight import PreflightReport, preflight, synthetic_media_of
 from .qc import QCReport, qc_scenes, qc_video
 from .registry import AgentSpec, load_agents
@@ -1096,17 +1096,27 @@ class Orchestrator:
         prior = self._prior_upload(vid)
         try:
             if prior is not None:
-                up = UploadResult(prior["platform_ref"], prior.get("url") or "", "reused", evidence=f"dùng lại upload trước: {prior['platform_ref']}")
-                steps: dict[str, Any] = {"platform": self.platform.name, "upload": up.evidence, "file": prior.get("file"), "checksum": prior.get("checksum")}
+                if isinstance(self.platform, YouTubePlatform):
+                    if final is None: raise PlatformError("không có final_video để đối soát upload trước")
+                    # Audit alone is not proof that the current file, request and account
+                    # match the uploaded video. Require the adapter's durable identity.
+                    up = self.platform.upload_video(Path(final["path"]), meta, privacy="private", publish_at=None,
+                                                    require_existing=True)
+                    if up.platform_ref != prior["platform_ref"]:
+                        raise PlatformError("upload reconciliation required: journal video differs from prior audit")
+                else:
+                    up = UploadResult(prior["platform_ref"], prior.get("url") or "", str(prior.get("upload_status") or "unknown"), evidence=f"dùng lại upload trước: {prior['platform_ref']}")
+                steps: dict[str, Any] = {"platform": self.platform.name, "upload": up.evidence, "file": prior.get("file"), "checksum": prior.get("checksum"), "upload_status": up.status}
                 self._audit("platform.upload_reused", {"video_id": vid, "platform_ref": up.platform_ref, "approved_by": approved_by}, video_id=vid)
             else:
                 if final is None: raise PlatformError("không có final_video để upload")
                 up = self.platform.upload_video(Path(final["path"]), meta, privacy="private", publish_at=None)
-                steps = {"platform": self.platform.name, "upload": up.evidence, "file": final["path"], "checksum": final.get("checksum")}
+                steps = {"platform": self.platform.name, "upload": up.evidence, "file": final["path"], "checksum": final.get("checksum"), "upload_status": up.status}
                 self._audit("platform.upload", {"video_id": vid, "platform_ref": up.platform_ref, "url": up.url, "approved_by": approved_by, **steps}, video_id=vid)
             res.actions.append(f"platform:upload:{up.platform_ref}")
         except (PlatformError, OSError) as e:
-            p.update(status="failed", platform_ref=None, url=None, evidence=prefix + f"upload lỗi ({self.platform.name}): {str(e)[:300]}")
+            p.update(status="failed", platform_ref=prior.get("platform_ref") if prior else None,
+                     url=prior.get("url") if prior else None, evidence=prefix + f"upload lỗi ({self.platform.name}): {str(e)[:300]}")
             self._audit("platform.upload_failed", {"video_id": vid, "error": str(e)[:300], "status": getattr(e, "status", None)}, video_id=vid)
             res.actions.append("platform:upload!failed"); self._emit(PUBLISH_ROUTE, meta_env, p, g, res); return
         # Bước 2/3 — thumbnail, lịch: lỗi ở đây KHÔNG làm mất platform_ref (event failed vẫn mang ref để người xử lý/duyệt lại)
@@ -1135,7 +1145,12 @@ class Orchestrator:
         if failed: status = "failed"
         elif p.get("scheduled_at"): status = "scheduled"
         else:  # không lên lịch: giữ trạng thái nền tảng báo (public → published), không tự khai "scheduled"
-            status = {"public": "published", "scheduled": "scheduled"}.get(up.status, str(p["status"]))
+            status = {"public": "published", "scheduled": "scheduled"}.get(up.status, "failed")
+            if status == "failed":
+                steps["publication"] = f"upload status={up.status}; no scheduled_at; publication unconfirmed"
+                self._audit("platform.publication_unconfirmed", {"video_id": vid, "platform_ref": up.platform_ref,
+                            "upload_status": up.status, "reason": steps["publication"]}, video_id=vid)
+                res.actions.append("platform:publication!unconfirmed")
         p.update(status=status, platform_ref=up.platform_ref, url=up.url or None, evidence=prefix + json.dumps(steps, ensure_ascii=False))
         self._emit(PUBLISH_ROUTE, meta_env, p, g, res)
 
